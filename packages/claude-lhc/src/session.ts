@@ -27,6 +27,7 @@ import {
   type MessageEventInput,
   type ThreadRef,
 } from "lhc";
+import { AttachmentHarvester, readAttachments } from "./capture/attachments.js";
 import { ToolBatch } from "./capture/batch.js";
 import { compactCommand, HARNESS, mapPrompt, mapSdkMessage } from "./capture/mapper.js";
 import {
@@ -45,9 +46,14 @@ import {
   windowFromUsage,
 } from "./compactPolicy.js";
 import { type ControlCall, parseControl, ReplayLedger } from "./controls.js";
-import { bindSession, createLhc, createThread, resolveSession, threadRef } from "./lhcHome.js";
+import { bindSession, createLhc, createThread, currentSession, resolveSession, threadRef } from "./lhcHome.js";
 import { writeProjectedSession } from "./nativeSessionFile.js";
-import { FALLBACK_CLAUDE_CODE_VERSION, FALLBACK_PROJECTION_MODEL, projectView } from "./projection/project.js";
+import {
+  type AttachmentsByAnchor,
+  FALLBACK_CLAUDE_CODE_VERSION,
+  FALLBACK_PROJECTION_MODEL,
+  projectView,
+} from "./projection/project.js";
 import { parseCompactPolicy, parseSidecarOptions, type SidecarRequestMethod, type WireOptions } from "./protocol.js";
 import { createRetrievalServer, RETRIEVAL_SERVER_NAME, RETRIEVAL_TOOL_NAMES } from "./retrieval.js";
 import { appendRollback, type RollbackAnchor, resolveRollbackAnchor } from "./rollbackAnchor.js";
@@ -196,6 +202,7 @@ export class ClaudeLhcSession {
   #batch = new ToolBatch();
   #turnToolCalls = new Map<string, number>();
   #segmentFold = createSegmentFoldState();
+  readonly #harvester = new AttachmentHarvester();
   #stopping: CompactTrigger | null = null;
   #midTurnFailed = false;
   #swap: { stoppedAt: number; sessionId: string } | null = null;
@@ -271,6 +278,7 @@ export class ClaudeLhcSession {
       this.#compactPolicy = { stored, window: null };
       await this.#settleOpenTurn("session restarted");
       if (anchor !== null) await this.#rollBack(anchor);
+      this.#harvest((await currentSession(resume, this.#home)) ?? resume);
       await this.#startProjectedGeneration();
       const served = this.#servedPastTrigger(await this.#windowRead);
       if (served !== null) await this.#compactBeforeFirstPrompt(served);
@@ -718,6 +726,7 @@ export class ClaudeLhcSession {
         `${stamp()} wire after stop: ${message.type}${message.type === "result" ? `/${message.subtype} terminal=${String((message as unknown as Record<string, unknown>)["terminal_reason"])}` : ""}`,
       );
     if (message.type === "result") {
+      if (this.#gen !== null) this.#harvest(this.#gen.sessionId);
       const stopped = (message as unknown as Record<string, unknown>)["terminal_reason"] === HOOK_STOPPED;
       const trigger = this.#stopping;
       this.#stopping = null;
@@ -1070,18 +1079,49 @@ export class ClaudeLhcSession {
     }
   }
 
+  #harvest(sessionId: string): void {
+    const startedAt = performance.now();
+    const source = { home: this.#home, threadId: this.#threadId, sessionId, cwd: this.#cwd, env: this.#env };
+    try {
+      const { found, bytesRead } = this.#harvester.harvest(source);
+      this.#io.log(
+        `attachments: ${found} new from ${sessionId} in ${Math.round(performance.now() - startedAt)} ms (${bytesRead} bytes read)`,
+      );
+    } catch (cause) {
+      this.#io.log(
+        `attachments: harvest from ${sessionId} failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+      );
+    }
+  }
+
+  async #storedAttachments(): Promise<AttachmentsByAnchor> {
+    try {
+      return await readAttachments(this.#home, this.#threadId);
+    } catch (cause) {
+      this.#io.log(
+        `attachments: read for thread ${this.#threadId} failed: ${cause instanceof Error ? cause.message : String(cause)}; projecting without them`,
+      );
+      return new Map();
+    }
+  }
+
   async #startProjectedGeneration(): Promise<Generation> {
+    if (this.#gen !== null) this.#harvest(this.#gen.sessionId);
     const view = await this.#lhc.threadView.getSessionThreadView(this.#thread);
     if (!view.ok) throw new Error(`LHC view read failed: ${view.error.reason}`);
     const sessionId = randomUUID();
     const cwd = this.#cwd;
-    const entries = projectView(view.value, {
-      sessionId,
-      cwd,
-      version: this.#claudeCodeVersion,
-      permissionMode: this.#permissionMode ?? "default",
-      model: this.#model ?? FALLBACK_PROJECTION_MODEL,
-    });
+    const entries = projectView(
+      view.value,
+      {
+        sessionId,
+        cwd,
+        version: this.#claudeCodeVersion,
+        permissionMode: this.#permissionMode ?? "default",
+        model: this.#model ?? FALLBACK_PROJECTION_MODEL,
+      },
+      { attachments: await this.#storedAttachments() },
+    );
     const title = nativeLhcTitle(this.#threadId);
     const dest = entries.length === 0 ? null : await writeProjectedSession({ sessionId, cwd, entries, env: this.#env });
     if (dest !== null) await labelNativeSession(sessionId, title, cwd, this.#io);

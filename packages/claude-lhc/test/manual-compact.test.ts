@@ -57,7 +57,7 @@ afterEach(() => {
 });
 
 type Frame = Record<string, unknown>;
-type StockCase = "success" | "failed" | "queued";
+type StockCase = "success" | "failed" | "queued" | "empty";
 
 const stockLines = readFileSync(new URL("./fixtures/stock-compact.jsonl", import.meta.url), "utf8")
   .split("\n")
@@ -74,48 +74,57 @@ function stock(name: StockCase): { sent: { text: string; uuid: string }[]; frame
 
 const COMPACT_ERROR_PREFIX = "Error during compaction: ";
 
+const UNCOMPARED_FIELDS = new Map([
+  ["uuid", "fresh for every frame"],
+  ["session_id", "a generation id; the success case checks that the boundary and result name the new generation"],
+  ["duration_ms", "wall time"],
+  ["logical_parent_uuid", "links a stock boundary to the message before it; a projected generation has none"],
+  ["total_cost_usd", "stock bills its summary call to the result; claude-lhc's summary workers run outside the CLI"],
+  ["usage", "as total_cost_usd"],
+  ["modelUsage", "as total_cost_usd"],
+  ["model_usage_since_last_result", "as total_cost_usd"],
+  ["fast_mode_state", "CLI session telemetry that claude-lhc does not synthesize"],
+  ["fast_mode_disabled_reason", "as fast_mode_state"],
+  ["subagent_stats", "as fast_mode_state"],
+  ["safety_stops", "as fast_mode_state"],
+  ["queued_turn_count", "CLI result counters; a host pairs a result with its input by user_message_uuids"],
+  ["result_index", "as queued_turn_count"],
+]);
+const UNCOMPARED_COMPACT_METADATA = new Map([
+  ["pre_tokens", "measured"],
+  ["post_tokens", "measured"],
+  ["duration_ms", "wall time"],
+  ["cumulative_dropped_tokens", "claude-lhc does not report it"],
+]);
+
 function compactSettlementFields(
   frames: readonly Frame[],
   labels: ReadonlyMap<string, string>,
   compactUuid: string,
 ): Frame[] {
   const label = (uuid: unknown): unknown => (typeof uuid === "string" ? (labels.get(uuid) ?? "<unknown>") : uuid);
-  const reason = (text: unknown): unknown =>
+  const maskErrorReason = (text: unknown): unknown =>
     typeof text === "string" && text.startsWith(COMPACT_ERROR_PREFIX) ? `${COMPACT_ERROR_PREFIX}<reason>` : text;
+  const compared = (fields: Frame, skip: ReadonlyMap<string, string>): Frame =>
+    Object.fromEntries(Object.entries(fields).filter(([key]) => !skip.has(key)));
+  const settlement = (frame: Frame): Frame => {
+    const fields = compared(frame, UNCOMPARED_FIELDS);
+    for (const key of ["command_uuid", "user_message_uuid"]) if (key in fields) fields[key] = label(fields[key]);
+    if (Array.isArray(fields["user_message_uuids"]))
+      fields["user_message_uuids"] = fields["user_message_uuids"].map(label);
+    if ("compact_error" in fields) fields["compact_error"] = "<reason>";
+    if ("result" in fields) fields["result"] = maskErrorReason(fields["result"]);
+    if ("compact_metadata" in fields)
+      fields["compact_metadata"] = compared(fields["compact_metadata"] as Frame, UNCOMPARED_COMPACT_METADATA);
+    return fields;
+  };
   return frames.flatMap((frame): Frame[] => {
-    if (frame["type"] === "command_lifecycle")
-      return frame["command_uuid"] === compactUuid
-        ? [{ type: "command_lifecycle", command: label(frame["command_uuid"]), state: frame["state"] }]
-        : [];
-    if (frame["type"] === "system" && frame["subtype"] === "status")
-      return [
-        {
-          type: "system",
-          subtype: "status",
-          status: frame["status"],
-          compact_result: frame["compact_result"],
-          compact_error: frame["compact_error"] === undefined ? undefined : "<reason>",
-        },
-      ];
-    if (frame["type"] === "system" && frame["subtype"] === "compact_boundary")
-      return [{ type: "system", subtype: "compact_boundary" }];
+    if (frame["type"] === "command_lifecycle") return frame["command_uuid"] === compactUuid ? [settlement(frame)] : [];
+    if (frame["type"] === "system" && (frame["subtype"] === "status" || frame["subtype"] === "compact_boundary"))
+      return [settlement(frame)];
     if (frame["type"] !== "result") return [];
     if (frame["local_command"] !== "compact") return [{ type: "result", answers: label(frame["user_message_uuid"]) }];
-    return [
-      {
-        type: "result",
-        subtype: frame["subtype"],
-        is_error: frame["is_error"],
-        result: reason(frame["result"]),
-        num_turns: frame["num_turns"],
-        stop_reason: frame["stop_reason"],
-        duration_api_ms: frame["duration_api_ms"],
-        permission_denials: frame["permission_denials"],
-        user_message_uuid: label(frame["user_message_uuid"]),
-        user_message_uuids: (frame["user_message_uuids"] as unknown[] | undefined)?.map(label),
-        local_command: frame["local_command"],
-      },
-    ];
+    return [settlement(frame)];
   });
 }
 
@@ -235,6 +244,35 @@ test("a failed rebuild settles like a failed stock compact, with the error as th
   ]);
   expect(compactSettlementFields(frames, labels, compact.uuid as string)).toEqual(stockSettlement("failed"));
   expect(generations).toHaveLength(1);
+  await session.close();
+});
+
+test("a /compact on a session with no turns settles like stock, plus the rebuild frames stock skips", async () => {
+  const { session, frames } = await openSession();
+  const compact = user("/compact");
+  await session.pushUser(compact);
+  await vi.waitFor(() => expect(frames.at(-1)).toMatchObject({ type: "command_lifecycle", state: "completed" }), {
+    timeout: 10_000,
+  });
+
+  const settled = compactSettlementFields(
+    frames,
+    new Map([[compact.uuid as string, "/compact"]]),
+    compact.uuid as string,
+  );
+  const completedAfterStockCaptureEnded = settled.pop();
+  const rebuild = (frame: Frame): boolean => frame["subtype"] === "status" || frame["subtype"] === "compact_boundary";
+  expect(settled.filter((frame) => !rebuild(frame))).toEqual(stockSettlement("empty"));
+  expect(settled.filter(rebuild)).toEqual([
+    { type: "system", subtype: "status", status: "compacting" },
+    { type: "system", subtype: "status", status: null, compact_result: "success" },
+    { type: "system", subtype: "compact_boundary", compact_metadata: { trigger: "manual" } },
+  ]);
+  expect(completedAfterStockCaptureEnded).toEqual({
+    type: "command_lifecycle",
+    command_uuid: "/compact",
+    state: "completed",
+  });
   await session.close();
 });
 

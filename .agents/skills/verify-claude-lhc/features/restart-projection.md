@@ -10,6 +10,15 @@
   current alias, and resumes by UUID as a fresh generation.
 - Every native session id a thread has run under stays an alias; the
   latest is current. Restarting never forks the store.
+- A projected generation keeps the CLI's attachment lines: the
+  environment, model and date reminders and the prompt snapshots. Each
+  generation's native transcript is harvested into
+  `<lhc.home>/attachments/<threadId>.jsonl` on each `result`, before
+  each projection, and on resume (`capture/attachments.ts`). Projection
+  writes each one after the message it followed
+  (`projection/project.ts`), so a resume keeps the request prefix and
+  reads the prompt cache. A message that only a summary band holds gets
+  none of its attachments back.
 - `start{resume: <unknown id>}`: one `error` frame
   (`no LHC thread holds the Claude session ...`), exit 1. The LHC home
   directory is created, but no registry database, thread file, or
@@ -30,6 +39,7 @@ dead process's memory.
 .agents/skills/verify-claude-lhc/drive.mjs restart
 .agents/skills/verify-claude-lhc/drive.mjs resume-unknown
 .agents/skills/verify-claude-lhc/drive.mjs resume-empty
+CLAUDE_LHC_LIVE=1 .agents/skills/verify-claude-lhc/drive.mjs resume-cache-live
 ```
 
 The `restart` drive seeds start + `/compact` (so the view is non-empty),
@@ -38,6 +48,16 @@ half: `resumed thread ... via <gen2> as generation <gen3>`, exit 0 on
 stdin close. Outcome half: `<gen3>.jsonl` projected file exists with >= 1
 line — the session restarted onto its own projected file — and
 `threads/*.sqlite` count is unchanged (one thread).
+
+`resume-cache-live` is live only. It grows a stock thread and an LHC
+thread to about 80k tokens, resumes each twice through a capture proxy,
+and reads each resume's first result. User-only half: every turn
+succeeds. Outcome half: each resume reads at least 0.8 of its input from
+the cache, and the second LHC resume's request holds the historical
+environment reminder where the first's did. The same drive runs larger:
+`RESUME_CACHE_LINES=56000 RESUME_CACHE_RESUMES=3 RESUME_CACHE_SIDES=lhc`
+grows past 500k tokens on a 1M-context model, and
+`RESUME_CACHE_COMPACT=1` adds a `/compact` with two resumes after it.
 
 ## Gotchas
 
@@ -52,6 +72,22 @@ line — the session restarted onto its own projected file — and
   on stderr against isolated or fresh homes. `<detail>` is whatever the
   Agent SDK's `renameSession` throws. It is a best-effort label, not a
   restart failure.
+- The SDK stream carries no attachment frame. The CLI writes
+  attachments only to its native transcript, so the harvest reads that
+  file, from where the last harvest in the same process stopped, so a turn
+  costs the bytes it appended. Each harvest logs
+  `attachments: <n> new from <session id> in <ms> ms (<bytes> bytes read)`.
+  A failed harvest logs `attachments: harvest from <session id> failed: ...`
+  and the turn goes on. Its only cost is a cache miss on the next resume.
+- On load the CLI sends an attachment line's stored `rendered` text with
+  its `renderedRole`, and re-renders only when they are missing. So the
+  store keeps every field of the line except the envelope fields
+  (`uuid`, `parentUuid`, `sessionId`, `cwd`, `timestamp` and the like),
+  which projection writes for its own generation.
+- After a compact the projected prefix is rebuilt by design, so the
+  first request after it writes the cache. Resumes after that read it.
+- A fork's copied history carries no attachments. Its first new prompt
+  gets fresh reminders, and those are harvested from then on.
 - Recall after restart is live-only: the final block of
   `packages/claude-lhc/scripts/standalone.ts`, which logs
   `resumed as <id>; turn remembers secret and answer.txt`.

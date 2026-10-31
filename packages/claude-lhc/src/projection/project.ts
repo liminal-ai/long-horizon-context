@@ -1,5 +1,12 @@
 import { randomUUID } from "node:crypto";
-import type { SessionAssistantPart, SessionThreadView, SessionThreadViewEntry, SessionThreadViewMessage } from "lhc";
+import type {
+  SessionAssistantMessage,
+  SessionAssistantPart,
+  SessionThreadView,
+  SessionThreadViewEntry,
+  SessionThreadViewMessage,
+} from "lhc";
+import { HARNESS } from "../capture/mapper.js";
 
 export interface ProjectionStamp {
   sessionId: string;
@@ -20,17 +27,37 @@ export type ThinkingRebuildArm = "signed_verbatim" | "omit";
 export const SELECTED_THINKING_REBUILD_ARM: ThinkingRebuildArm = "signed_verbatim";
 
 const DANGLING_RESULT = "[tool result unavailable: the session was interrupted before this call completed]";
+const SUMMARY_BAND = /^\[context · [a-z]+\]\n/;
+
+export interface ProjectedAttachment {
+  readonly uuid: string;
+  readonly line: NativeEntry;
+}
+
+export type AttachmentsByAnchor = ReadonlyMap<string, readonly ProjectedAttachment[]>;
+
+export interface ProjectionOptions {
+  readonly arm?: ThinkingRebuildArm;
+  readonly attachments?: AttachmentsByAnchor;
+}
+
+export function anchorOf(key: string): string | null {
+  const harness = `${HARNESS}:`;
+  const end = key.startsWith(harness) ? key.indexOf(":", harness.length) : -1;
+  return end === -1 ? null : key.slice(0, end + 1);
+}
 
 export function projectView(
   view: SessionThreadView,
   stamp: ProjectionStamp,
-  arm: ThinkingRebuildArm = SELECTED_THINKING_REBUILD_ARM,
+  { arm = SELECTED_THINKING_REBUILD_ARM, attachments = new Map() }: ProjectionOptions = {},
 ): NativeEntry[] {
   const now = new Date().toISOString();
   const lines: NativeEntry[] = [];
   let parent: string | null = null;
   let model = stamp.model;
   const openCalls = new Set<string>();
+  const lastHolder = lastFullFidelityHolders(view.entries, attachments);
 
   const base = (): NativeEntry => ({
     parentUuid: parent,
@@ -82,22 +109,7 @@ export function projectView(
     for (const id of [...openCalls]) toolResult(id, DANGLING_RESULT, true, null);
   };
 
-  for (const entry of view.entries) {
-    if (!("role" in entry)) {
-      if (entry.kind === "model_change" && entry.modelId !== "") model = entry.modelId;
-      continue;
-    }
-    const source = sourceKey(entry);
-    if (entry.role === "user") {
-      settleOpenCalls();
-      userText(entry.blocks ?? entry.content, source);
-      continue;
-    }
-    if (entry.role === "toolResult") {
-      toolResult(entry.toolCallId, entry.blocks ?? entry.content, entry.isError === true, source);
-      continue;
-    }
-    settleOpenCalls();
+  const assistant = (entry: SessionAssistantMessage, source: string | null): void => {
     const aligned = entry.sourceMessages.length === entry.content.length;
     const blocks = entry.content
       .map((part, i) => ({
@@ -105,7 +117,7 @@ export function projectView(
         source: aligned ? (entry.sourceMessages[i]?.idempotencyKey ?? null) : source,
       }))
       .filter((b): b is { block: NativeEntry; source: string | null } => b.block !== null);
-    if (blocks.length === 0) continue;
+    if (blocks.length === 0) return;
     const stop = blocks.some(({ block }) => block["type"] === "tool_use") ? "tool_use" : "end_turn";
     const id = `msg_${randomUUID().replace(/-/g, "")}`;
     const requestId = `req_${randomUUID().replace(/-/g, "")}`;
@@ -131,6 +143,27 @@ export function projectView(
         blockSource,
       );
     }
+  };
+
+  for (const [index, entry] of view.entries.entries()) {
+    if (!("role" in entry)) {
+      if (entry.kind === "model_change" && entry.modelId !== "") model = entry.modelId;
+      continue;
+    }
+    const source = sourceKey(entry);
+    if (entry.role === "user") {
+      settleOpenCalls();
+      userText(entry.blocks ?? entry.content, source);
+    } else if (entry.role === "toolResult") {
+      toolResult(entry.toolCallId, entry.blocks ?? entry.content, entry.isError === true, source);
+    } else {
+      settleOpenCalls();
+      assistant(entry, source);
+    }
+    for (const anchor of anchorsOf(entry)) {
+      if (lastHolder.get(anchor) !== index) continue;
+      for (const { uuid, line } of attachments.get(anchor) ?? []) push({ ...base(), ...line }, `attachment:${uuid}`);
+    }
   }
   settleOpenCalls();
   return lines;
@@ -138,6 +171,30 @@ export function projectView(
 
 function sourceKey(entry: SessionThreadViewMessage): string | null {
   return entry.sourceMessages.at(-1)?.idempotencyKey ?? null;
+}
+
+function anchorsOf(entry: SessionThreadViewMessage): Set<string> {
+  const anchors = new Set<string>();
+  for (const { idempotencyKey } of entry.sourceMessages) {
+    const anchor = idempotencyKey === null ? null : anchorOf(idempotencyKey);
+    if (anchor !== null) anchors.add(anchor);
+  }
+  return anchors;
+}
+
+function lastFullFidelityHolders(
+  entries: readonly SessionThreadViewEntry[],
+  attachments: AttachmentsByAnchor,
+): Map<string, number> {
+  const holders = new Map<string, number>();
+  if (attachments.size === 0) return holders;
+  let inLeadingBands = true;
+  for (const [index, entry] of entries.entries()) {
+    inLeadingBands &&= "role" in entry && entry.role === "user" && SUMMARY_BAND.test(entry.content);
+    if (inLeadingBands || !("role" in entry)) continue;
+    for (const anchor of anchorsOf(entry)) if (attachments.has(anchor)) holders.set(anchor, index);
+  }
+  return holders;
 }
 
 function nativeBlock(part: SessionAssistantPart, arm: ThinkingRebuildArm): NativeEntry | null {
