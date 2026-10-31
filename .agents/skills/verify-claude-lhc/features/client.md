@@ -95,7 +95,8 @@ thread and answers `getContextUsage`. It then bundles
 which resolves the installed manifest's `./client` entry to
 `node_modules/claude-lhc/dist/client/index.js`, and saves the metafile as
 `installed-client-meta.json`. Its inputs list the installed
-`dist/client/` modules, and its output's `exports` list names `query`,
+`dist/client/index.js` and the modules it imports, and its output's
+`exports` list names `query`,
 `forkSession`, `getSessionMessages`, `getSubagentMessages` and
 `inspectSessions`. It passes only when the installed manifest has
 `"sideEffects": false` and `./client`, and the metafile names no module
