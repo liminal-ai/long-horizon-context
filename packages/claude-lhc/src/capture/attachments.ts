@@ -1,13 +1,7 @@
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 import { nativeSessionPath } from "../nativeSessionFile.js";
-import {
-  type AttachmentsByAnchor,
-  anchorOf,
-  type NativeEntry,
-  PROJECTED_SOURCE_FIELD,
-  type ProjectedAttachment,
-} from "../projection/project.js";
+import { anchorOf, type NativeEntry, PROJECTED_SOURCE_FIELD, type ProjectedAttachment } from "../projection/project.js";
 import { messageKeyPrefix } from "./mapper.js";
 
 // Projection writes these afresh for its own generation. The rest of an attachment line, `attachment` and the
@@ -51,8 +45,8 @@ export async function harvestAttachments(source: AttachmentSource, log: (line: s
     const found: StoredAttachment[] = [];
     for (const line of native.records) {
       const uuid = line["uuid"];
-      if (line["type"] !== "attachment" || typeof uuid !== "string" || held.has(uuid)) continue;
-      if (PROJECTED_SOURCE_FIELD in line) continue;
+      if (line["type"] !== "attachment" || PROJECTED_SOURCE_FIELD in line) continue;
+      if (typeof uuid !== "string" || held.has(uuid)) continue;
       const anchor = anchorAbove(line, byUuid);
       if (anchor === null) continue;
       held.add(uuid);
@@ -66,6 +60,7 @@ export async function harvestAttachments(source: AttachmentSource, log: (line: s
     log(`attachments: ${found.length} new from ${source.sessionId} in ${Math.round(performance.now() - startedAt)} ms`);
     return found.length;
   } catch (cause) {
+    // A missed harvest costs a cache miss on the next resume, never the turn.
     log(
       `attachments: harvest from ${source.sessionId} failed: ${cause instanceof Error ? cause.message : String(cause)}`,
     );
@@ -73,16 +68,19 @@ export async function harvestAttachments(source: AttachmentSource, log: (line: s
   }
 }
 
-export async function readAttachments(home: string, threadId: string): Promise<AttachmentsByAnchor> {
+export async function readAttachments(
+  home: string,
+  threadId: string,
+): Promise<ReadonlyMap<string, readonly StoredAttachment[]>> {
   const byAnchor = new Map<string, StoredAttachment[]>();
   const seen = new Set<string>();
   for (const record of (await readJsonl(attachmentStorePath(home, threadId))).records) {
     const { uuid, anchor, line } = record as Partial<StoredAttachment>;
     if (typeof uuid !== "string" || typeof anchor !== "string" || !isRecord(line) || seen.has(uuid)) continue;
     seen.add(uuid);
-    const held = byAnchor.get(anchor) ?? [];
-    held.push({ uuid, anchor, line });
-    byAnchor.set(anchor, held);
+    const list = byAnchor.get(anchor) ?? [];
+    list.push({ uuid, anchor, line });
+    byAnchor.set(anchor, list);
   }
   return byAnchor;
 }
