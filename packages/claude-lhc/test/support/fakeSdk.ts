@@ -10,6 +10,15 @@ const textOf = (message: SDKUserMessage): string => {
   return typeof content === "string" ? content : JSON.stringify(content);
 };
 
+const lifecycle = (sessionId: string, user: SDKUserMessage, state: string): SDKMessage =>
+  ({
+    type: "command_lifecycle",
+    command_uuid: user.uuid,
+    state,
+    uuid: randomUUID(),
+    session_id: sessionId,
+  }) as unknown as SDKMessage;
+
 export function query({ prompt, options }: { prompt: AsyncIterable<SDKUserMessage>; options: Options }) {
   const sessionId = options.sessionId ?? options.resume ?? randomUUID();
   const model = options.model ?? "claude-sonnet-5";
@@ -33,6 +42,8 @@ export function query({ prompt, options }: { prompt: AsyncIterable<SDKUserMessag
           mcp_servers: [],
         } as unknown as SDKMessage;
       }
+      yield lifecycle(sessionId, user, "queued");
+      yield lifecycle(sessionId, user, "started");
       const text = textOf(user);
       let reply = `echo: ${text}`;
       if (text.startsWith("slow:")) await new Promise((resolve) => setTimeout(resolve, 500));
@@ -64,6 +75,7 @@ export function query({ prompt, options }: { prompt: AsyncIterable<SDKUserMessag
         uuid: randomUUID(),
         session_id: sessionId,
       } as unknown as SDKMessage;
+      yield lifecycle(sessionId, user, "completed");
     }
   }
 

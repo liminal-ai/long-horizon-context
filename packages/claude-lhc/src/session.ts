@@ -100,6 +100,10 @@ const HOOK_STOPPED = "hook_stopped";
 
 type CompactTrigger = "manual" | "auto";
 type QueuedInput = { kind: "prompt"; message: SDKUserMessage } | { kind: "compact" };
+interface SentPrompt {
+  message: SDKUserMessage;
+  started: boolean;
+}
 const stamp = (): string => new Date().toISOString().slice(11, 23);
 
 interface QueuedPrompt {
@@ -195,7 +199,8 @@ export class ClaudeLhcSession {
   #midTurnFailed = false;
   #swap: { stoppedAt: number; sessionId: string } | null = null;
   readonly #inputs: QueuedInput[] = [];
-  #answering = false;
+  readonly #sent = new Map<string, SentPrompt>();
+  #lifecycleSeen = false;
   #advancing = false;
   #inputEnded = false;
   #model: string | undefined;
@@ -293,7 +298,10 @@ export class ClaudeLhcSession {
 
   async pushUser(message: SDKUserMessage): Promise<void> {
     if (this.#closed) return;
-    this.#inputs.push(compactCommand(message) === null ? { kind: "prompt", message } : { kind: "compact" });
+    if (compactCommand(message) !== null) this.#inputs.push({ kind: "compact" });
+    else if (this.#inputs.length > 0 || this.#compacting || this.#stopping !== null || this.#autoCompactDue)
+      this.#inputs.push({ kind: "prompt", message });
+    else await this.#send(message);
     await this.#advance();
   }
 
@@ -303,16 +311,17 @@ export class ClaudeLhcSession {
   }
 
   #endIfIdle(): void {
-    if (this.#inputEnded && this.#inputs.length === 0 && !this.#answering && !this.#compacting && !this.#closed)
+    if (this.#inputEnded && this.#inputs.length === 0 && this.#sent.size === 0 && !this.#compacting && !this.#closed)
       this.#io.end();
   }
 
-  // Hosts pair results with inputs in order, so an input starts only once every earlier one has its result.
+  // Hosts pair results with inputs in order, so a queued input starts only once every earlier one has its
+  // result. A prompt sent while nothing is queued goes straight to the CLI, which may fold it into the running turn.
   async #advance(): Promise<void> {
     if (this.#advancing) return;
     this.#advancing = true;
     try {
-      while (!this.#closed && !this.#answering && !this.#compacting && this.#stopping === null) {
+      while (!this.#closed && this.#sent.size === 0 && !this.#compacting && this.#stopping === null) {
         const next = this.#inputs.shift();
         if (next === undefined) break;
         if (next.kind === "compact") await this.#compact("manual");
@@ -331,8 +340,8 @@ export class ClaudeLhcSession {
     }
     const gen = this.#gen;
     if (gen === null) throw new Error("no live generation");
-    this.#answering = true;
     const promptUuid = message.uuid ?? randomUUID();
+    this.#sent.set(promptUuid, { message: { ...message, uuid: promptUuid }, started: false });
     gen.input.push({
       message: { ...message, uuid: promptUuid },
       before: async () => {
@@ -657,6 +666,12 @@ export class ClaudeLhcSession {
       );
       this.#swap = null;
     }
+    if ((message as { type: string }).type === "command_lifecycle") {
+      this.#onCommandLifecycle(message as unknown as { command_uuid: string; state: string });
+      this.#io.emit(message);
+      await this.#advance();
+      return;
+    }
     if (message.type === "system" && message.subtype === "init") {
       this.#claudeCodeVersion = message.claude_code_version;
       const pending = (message.mcp_servers ?? [])
@@ -707,11 +722,19 @@ export class ClaudeLhcSession {
     }
     this.#turnOpen = false;
     this.#turnStartedAt = undefined;
+    for (const [uuid, sent] of this.#sent) if (sent.started || !this.#lifecycleSeen) this.#sent.delete(uuid);
     const trigger = this.#dueCompact();
     if (trigger === null) this.#io.emit(message);
     else await this.#compact(trigger, message);
-    this.#answering = false;
     await this.#advance();
+  }
+
+  #onCommandLifecycle({ command_uuid, state }: { command_uuid: string; state: string }): void {
+    this.#lifecycleSeen = true;
+    const sent = this.#sent.get(command_uuid);
+    if (sent === undefined) return;
+    if (state === "started") sent.started = true;
+    else if (state === "completed" || state === "cancelled") this.#sent.delete(command_uuid);
   }
 
   async #maybeSegment(message: SDKMessage, events: readonly MessageEventInput[]): Promise<void> {
@@ -892,7 +915,18 @@ export class ClaudeLhcSession {
     }
     const uuid = randomUUID();
     const note = { ...this.#continuationNote(), uuid };
+    for (const [id, sent] of this.#sent) if (sent.started || !this.#lifecycleSeen) this.#sent.delete(id);
+    this.#sent.set(uuid, { message: note, started: false });
     target.input.push({ message: note, before: async () => this.#intake(mapPrompt(note, uuid, true)) });
+  }
+
+  #requeueUnstarted(moved: ReadonlySet<string | undefined>): void {
+    if (!this.#lifecycleSeen) return;
+    const unstarted = [...this.#sent].filter(([uuid, sent]) => !sent.started && !moved.has(uuid));
+    if (unstarted.length === 0) return;
+    for (const [uuid] of unstarted) this.#sent.delete(uuid);
+    this.#inputs.unshift(...unstarted.map(([, sent]): QueuedInput => ({ kind: "prompt", message: sent.message })));
+    this.#io.log(`requeued ${unstarted.length} prompt(s) the replaced generation had not started`);
   }
 
   #compactBoundary(
@@ -1011,7 +1045,9 @@ export class ClaudeLhcSession {
     this.#gen = next;
     if (old !== null) {
       old.superseded = true;
-      for (const item of old.input.drain()) next.input.push(item);
+      const moved = old.input.drain();
+      for (const item of moved) next.input.push(item);
+      this.#requeueUnstarted(new Set(moved.map((item) => item.message.uuid)));
       old.query.close();
     }
     this.#io.log(
