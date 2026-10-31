@@ -82,7 +82,9 @@ An import change alone is not enough. Pass `lhc` through each of these call path
 - The in-process `getSubagentMessages` call at `ClaudeAdapterV2.ts:1366`, the subagent lookup.
   Add `lhc` to its options.
 
-Evidence. PR #45 adds the three functions. `getSessionMessages` and `getSubagentMessages` resolve
+Evidence. PR #45 adds the three functions. The live `consumer` drive forks a thread through
+`forkSession` at the first of two turns, resumes the fork through `query()`, and the fork no
+longer knows the second turn while the source still does. `getSessionMessages` and `getSubagentMessages` resolve
 any session id the thread has had, so T3's stored first id keeps working after a compact. The
 call paths above come from C6's audit of T3's call sites.
 

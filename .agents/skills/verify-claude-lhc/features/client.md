@@ -23,7 +23,7 @@
   a prompt iterable that ends, sends an `end` frame. The sidecar exits
   once every prompt sent before it has its `result`, and the stream
   ends.
-- `examples/consumer.ts` is a host built on `query()`.
+- `examples/consumer.ts` is a host built on `query()` and `forkSession`.
 
 ## How to get to it (user POV)
 

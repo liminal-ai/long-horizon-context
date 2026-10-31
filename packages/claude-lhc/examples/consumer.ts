@@ -2,11 +2,12 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
-import { type LhcQuery, type LhcQueryOptions, query } from "claude-lhc";
+import { forkSession, type LhcQuery, type LhcQueryOptions, query } from "claude-lhc";
 
 const work = resolve(process.argv[2] ?? "");
 if (process.argv[2] === undefined) throw new Error("usage: consumer.ts <work dir>");
 const cwd = join(work, "cwd");
+const home = join(work, "lhc");
 mkdirSync(cwd, { recursive: true });
 
 const options = (extra: LhcQueryOptions = {}): LhcQueryOptions => ({
@@ -16,7 +17,7 @@ const options = (extra: LhcQueryOptions = {}): LhcQueryOptions => ({
   permissionMode: "bypassPermissions",
   allowDangerouslySkipPermissions: true,
   stderr: (line) => process.stderr.write(line),
-  lhc: { home: join(work, "lhc"), compact: { trigger: 300_000, target: 180_000 } },
+  lhc: { home, compact: { trigger: 300_000, target: 180_000 } },
   ...extra,
 });
 
@@ -93,13 +94,23 @@ step("compact", boundary !== undefined, `boundary in generation ${boundary?.sess
 await host.close();
 step("close", true, "the stream ended after close()");
 
+const fork = await forkSession(sessionId, { upToMessageId: anchor, lhc: { home } });
+const forked = new Session({ resume: fork.sessionId });
+const fromFork = await forked.turn(ask);
+await forked.close();
+step(
+  "fork",
+  fromFork.answer.includes(first) && !fromFork.answer.includes(second),
+  `forked at ${anchor} as ${fork.sessionId}, answered "${fromFork.answer.trim()}"`,
+);
+
 const restarted = new Session({ resume: sessionId });
 const recall = await restarted.turn(ask);
 await restarted.close();
 step(
   "restart",
   recall.answer.includes(first) && recall.answer.includes(second),
-  `resumed by the first session id, answered "${recall.answer.trim()}"`,
+  `the source resumed by its first session id after the fork, answered "${recall.answer.trim()}"`,
 );
 
 const rolledBack = new Session({ resume: sessionId, resumeSessionAt: anchor });

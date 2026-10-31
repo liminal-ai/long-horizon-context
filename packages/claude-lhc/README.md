@@ -29,7 +29,7 @@ for await (const message of q) handle(message);
 
 `query` has the SDK's signature, so it type-checks where `typeof query` from
 `@anthropic-ai/claude-agent-sdk` is expected (`test/client.test.ts`). `examples/consumer.ts` is a
-complete host that starts, answers, compacts, restarts, rolls back and closes.
+complete host that starts, answers, compacts, forks, restarts, rolls back and closes.
 
 The package also exports `forkSession`, `getSessionMessages` and `getSubagentMessages`. They take
 the SDK's arguments plus `lhc: { home }`.
