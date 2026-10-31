@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { HookCallback, Options, SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { expect, test, vi } from "vitest";
-import { ClaudeLhcSession } from "../src/session.ts";
+import { createSidecar } from "../src/frames.ts";
+import { type DriverFrame, encodeFrame, type SidecarFrame } from "../src/protocol.ts";
 
 interface Turn {
   id: number;
@@ -13,6 +14,7 @@ interface Turn {
   stage: "begin" | "tool" | "stopped" | "finish";
   heavy: boolean;
   tool: boolean;
+  afterTool: boolean;
 }
 
 interface FakeCli {
@@ -96,9 +98,9 @@ const textOf = (message: SDKUserMessage): string => {
   return typeof content === "string" ? content : content.map((block) => ("text" in block ? block.text : "")).join("");
 };
 
-// Each request carries more context than the one before it in the same CLI.
-const assistant = (cli: FakeCli, content: unknown[], heavy: boolean): SDKMessage => {
-  cli.context += heavy ? 50_000 : 200;
+// Each request carries more context than the one before it in the same CLI. Messages from one request share its usage.
+const assistant = (cli: FakeCli, content: unknown[], heavy: boolean, newRequest: boolean): SDKMessage => {
+  if (newRequest) cli.context += heavy ? 50_000 : 200;
   return {
     type: "assistant",
     uuid: randomUUID(),
@@ -152,6 +154,7 @@ interface Run {
   steersSent: number;
   steersFolded: number;
   promptsWhileStopping: number;
+  promptsAfterDeferral: number;
   dueWithQueued: number;
   severalHeldInOneCompact: number;
   pendingAutoSends: Array<{ input: number; sentAt: number }>;
@@ -179,6 +182,7 @@ async function runOnce(seed: number): Promise<Run> {
     steersSent: 0,
     steersFolded: 0,
     promptsWhileStopping: 0,
+    promptsAfterDeferral: 0,
     dueWithQueued: 0,
     severalHeldInOneCompact: 0,
     pendingAutoSends: [],
@@ -188,7 +192,7 @@ async function runOnce(seed: number): Promise<Run> {
   const heavyRate = random() < 0.5 ? 0.6 : 0.2;
   // Some hosts run a system prompt larger than the trigger, so even a rebuilt view starts past it.
   startingContext = random() < 0.2 ? COMPACT.trigger + 5_000 : 1_000;
-  const host = (["eager", "slow", "during compacts", "during turns"] as const)[Math.floor(random() * 4)];
+  const host = (["eager", "slow", "during compacts", "during turns", "at stops"] as const)[Math.floor(random() * 5)];
   const statusAt = (): number[] =>
     run.frames.flatMap((m, i) => ((m as { subtype?: string }).subtype === "status" ? [i] : []));
   const compactingSince = (): number | null => {
@@ -222,31 +226,35 @@ async function runOnce(seed: number): Promise<Run> {
   const steerTurn = new Map<string, number>();
   let turns = 0;
   let stoppedLabels: string[] = [];
-  let serial: Promise<void> = Promise.resolve();
-  const frame = (work: () => Promise<void>): void => {
-    serial = serial.then(work).catch((cause) => {
-      run.failed ??= cause instanceof Error ? cause.message : String(cause);
-    });
-  };
-  const session = new ClaudeLhcSession({
-    emit: (message) => run.frames.push(message),
-    request: async () => ({ behavior: "allow" }),
-    end: () => {
-      run.ended = true;
-    },
-    fail: (message) => {
-      run.failed ??= message;
+  const logs: string[] = [];
+  let deferredAt: number | null = null;
+  const sidecar = createSidecar({
+    write: (frame: SidecarFrame) => {
+      if (frame.type === "msg") run.frames.push(frame.message);
+      if (frame.type === "error") run.failed ??= frame.message;
     },
     log: (line) => {
+      logs.push(line);
+      if (line.includes("waiting for the CLI to start a prompt it holds")) deferredAt = run.frames.length;
       if (process.env.INPUT_ORDER_DEBUG !== undefined) console.log(`[seed ${seed}] ${line.slice(0, 160)}`);
     },
+    exit: async (code) => {
+      if (code === 0) run.ended = true;
+    },
   });
-  await session.start({
-    cwd: dir,
-    model: "claude-sonnet-5",
-    env: { CLAUDE_CONFIG_DIR: join(dir, "claude") },
-    lhc: { home: join(dir, "lhc"), compact: COMPACT },
-    sessionId: randomUUID(),
+  const wire = (frame: DriverFrame): void => sidecar.line(encodeFrame(frame).trimEnd());
+  wire({
+    type: "start",
+    options: {
+      cwd: dir,
+      model: "claude-sonnet-5",
+      env: { CLAUDE_CONFIG_DIR: join(dir, "claude") },
+      lhc: { home: join(dir, "lhc"), compact: COMPACT },
+      sessionId: randomUUID(),
+    },
+  });
+  await vi.waitFor(() => expect(logs.some((line) => line.startsWith("created thread"))).toBe(true), {
+    timeout: 10_000,
   });
 
   const live = (): FakeCli | undefined => clis.filter((cli) => !cli.closed).at(-1);
@@ -268,17 +276,20 @@ async function runOnce(seed: number): Promise<Run> {
         stage: "begin",
         heavy: random() < heavyRate,
         tool: random() < 0.6,
+        afterTool: false,
       };
     }
     const turn = cli.turn;
     if (turn.stage === "begin") {
-      cli.emit(assistant(cli, [{ type: "text", text: `working on ${turn.labels.join("+")}` }], turn.heavy));
+      cli.emit(assistant(cli, [{ type: "text", text: `working on ${turn.labels.join("+")}` }], turn.heavy, true));
       turn.stage = turn.tool ? "tool" : "finish";
       return;
     }
     if (turn.stage === "tool") {
       const toolUseId = `toolu_${randomUUID()}`;
-      cli.emit(assistant(cli, [{ type: "tool_use", id: toolUseId, name: "Read", input: {} }], turn.heavy));
+      cli.emit(
+        assistant(cli, [{ type: "tool_use", id: toolUseId, name: "Read", input: {} }], turn.heavy, turn.afterTool),
+      );
       await settle();
       const hook = cli.options.hooks?.PostToolUse?.[0]?.hooks[0] as HookCallback;
       const answer = await hook(
@@ -309,6 +320,7 @@ async function runOnce(seed: number): Promise<Run> {
           turn.uuids.push(steer.uuid ?? "");
           if (steerTurn.get(textOf(steer)) === turn.id) run.steersFolded += 1;
         }
+      turn.afterTool = true;
       turn.stage = random() < 0.5 ? "tool" : "finish";
       return;
     }
@@ -319,7 +331,7 @@ async function runOnce(seed: number): Promise<Run> {
       for (const uuid of turn.uuids) cli.emit(lifecycle(cli, uuid, "completed"));
       return;
     }
-    cli.emit(assistant(cli, [{ type: "text", text: `answer:${turn.labels.join("+")}` }], turn.heavy));
+    cli.emit(assistant(cli, [{ type: "text", text: `answer:${turn.labels.join("+")}` }], turn.heavy, turn.afterTool));
     if (turn.heavy && cli.pulled.length > 0) run.dueWithQueued += 1;
     cli.turn = null;
     cli.emit(result(cli, `answer:${turn.labels.join("+")}`));
@@ -343,6 +355,9 @@ async function runOnce(seed: number): Promise<Run> {
       heldBy.set(input, since);
       if ([...heldBy.values()].filter((at) => at === since).length === 2) run.severalHeldInOneCompact += 1;
       if (compactingMidTurn()) heldMidTurn.add(input);
+    } else if (deferredAt !== null && !run.frames.slice(deferredAt).some((m) => boundaryTrigger(m) !== null)) {
+      held.add(input);
+      run.promptsAfterDeferral += 1;
     } else if (live()?.turn?.stage === "stopped") {
       held.add(input);
       run.promptsWhileStopping += 1;
@@ -352,9 +367,10 @@ async function runOnce(seed: number): Promise<Run> {
     send(text);
   };
   const send = (text: string): void =>
-    frame(async () =>
-      session.acceptUser({ type: "user", message: { role: "user", content: text }, parent_tool_use_id: null }),
-    );
+    wire({
+      type: "user",
+      message: { type: "user", message: { role: "user", content: text }, parent_tool_use_id: null },
+    });
 
   const actions = (): Array<[string, () => Promise<void>]> => {
     const out: Array<[string, () => Promise<void>]> = [];
@@ -367,7 +383,9 @@ async function runOnce(seed: number): Promise<Run> {
       (host === "during turns" &&
         (cli?.turn?.stage === "stopped" ||
           (cli?.turn != null && compactingSince() === null && random() < 0.25) ||
-          (idle && (sent === 0 || random() < 0.05))));
+          (idle && (sent === 0 || random() < 0.05)))) ||
+      (host === "at stops" &&
+        (cli?.turn?.stage === "stopped" || deferredAt !== null || (idle && (sent === 0 || random() < 0.05))));
     if (sent < inputs.length && typing) out.push(["send", async () => sendOne()]);
     const burst: [string, () => Promise<void>] = [
       "burst",
@@ -381,7 +399,7 @@ async function runOnce(seed: number): Promise<Run> {
         "end",
         async () => {
           endSent = true;
-          frame(async () => session.endInput());
+          wire({ type: "end" });
         },
       ]);
     if (cli !== undefined && !cli.pulling)
@@ -429,9 +447,10 @@ async function runOnce(seed: number): Promise<Run> {
         await new Promise((resolve) => setTimeout(resolve, 5));
       } else idle = 0;
     }
-    await serial;
   } finally {
-    await session.close();
+    const ended = run.ended;
+    await sidecar.shutdown(0);
+    run.ended = ended;
     rmSync(dir, { recursive: true, force: true });
   }
   return run;
@@ -492,51 +511,57 @@ function violations(run: Run): string[] {
   return out;
 }
 
-test("every input is answered in input order, a steer may share its turn's result, and a /compact runs only after every earlier input is answered", async () => {
-  const savedNoInference = process.env.CLAUDE_LHC_NO_INFERENCE;
-  process.env.CLAUDE_LHC_NO_INFERENCE = "1";
-  const failures: Array<{ seed: number; inputs: string[]; problems: string[]; actions: string }> = [];
-  const seen = {
-    midTurnStops: 0,
-    autoBoundaries: 0,
-    manualBoundaries: 0,
-    promptsDuringCompact: 0,
-    steersSent: 0,
-    steersFolded: 0,
-    dueWithQueued: 0,
-    promptsWhileStopping: 0,
-    severalHeldInOneCompact: 0,
-    promptsAcrossPendingAutoSwap: 0,
-    compactsBehindHeld: 0,
-  };
-  try {
-    const base = Number(process.env.INPUT_ORDER_SEED ?? 1);
-    for (let seed = base; seed < base + RUNS; seed++) {
-      const run = await runOnce(seed);
-      const problems = violations(run);
-      const boundaries = run.frames.map(boundaryTrigger);
-      seen.midTurnStops += run.midTurnStops;
-      seen.autoBoundaries += boundaries.filter((t) => t === "auto").length;
-      seen.manualBoundaries += boundaries.filter((t) => t === "manual").length;
-      seen.promptsDuringCompact += run.promptsDuringCompact;
-      seen.steersSent += run.steersSent;
-      seen.steersFolded += run.steersFolded;
-      seen.dueWithQueued += run.dueWithQueued;
-      seen.promptsWhileStopping += run.promptsWhileStopping;
-      seen.severalHeldInOneCompact += run.severalHeldInOneCompact;
-      seen.promptsAcrossPendingAutoSwap += answeredAcrossAutoSwap(run);
-      seen.compactsBehindHeld += run.compactsBehindHeld;
-      if (problems.length > 0) failures.push({ seed, inputs: run.inputs, problems, actions: run.actions.join(" ") });
+test(
+  "every input is answered in input order, a steer may share its turn's result, and a /compact runs only after every earlier input is answered",
+  async () => {
+    const savedNoInference = process.env.CLAUDE_LHC_NO_INFERENCE;
+    process.env.CLAUDE_LHC_NO_INFERENCE = "1";
+    const failures: Array<{ seed: number; inputs: string[]; problems: string[]; actions: string }> = [];
+    const seen = {
+      midTurnStops: 0,
+      autoBoundaries: 0,
+      manualBoundaries: 0,
+      promptsDuringCompact: 0,
+      steersSent: 0,
+      steersFolded: 0,
+      dueWithQueued: 0,
+      promptsWhileStopping: 0,
+      promptsAfterDeferral: 0,
+      severalHeldInOneCompact: 0,
+      promptsAcrossPendingAutoSwap: 0,
+      compactsBehindHeld: 0,
+    };
+    try {
+      const base = Number(process.env.INPUT_ORDER_SEED ?? 1);
+      for (let seed = base; seed < base + RUNS; seed++) {
+        const run = await runOnce(seed);
+        const problems = violations(run);
+        const boundaries = run.frames.map(boundaryTrigger);
+        seen.midTurnStops += run.midTurnStops;
+        seen.autoBoundaries += boundaries.filter((t) => t === "auto").length;
+        seen.manualBoundaries += boundaries.filter((t) => t === "manual").length;
+        seen.promptsDuringCompact += run.promptsDuringCompact;
+        seen.steersSent += run.steersSent;
+        seen.steersFolded += run.steersFolded;
+        seen.dueWithQueued += run.dueWithQueued;
+        seen.promptsWhileStopping += run.promptsWhileStopping;
+        seen.promptsAfterDeferral += run.promptsAfterDeferral;
+        seen.severalHeldInOneCompact += run.severalHeldInOneCompact;
+        seen.promptsAcrossPendingAutoSwap += answeredAcrossAutoSwap(run);
+        seen.compactsBehindHeld += run.compactsBehindHeld;
+        if (problems.length > 0) failures.push({ seed, inputs: run.inputs, problems, actions: run.actions.join(" ") });
+      }
+    } finally {
+      if (savedNoInference === undefined) delete process.env.CLAUDE_LHC_NO_INFERENCE;
+      else process.env.CLAUDE_LHC_NO_INFERENCE = savedNoInference;
     }
-  } finally {
-    if (savedNoInference === undefined) delete process.env.CLAUDE_LHC_NO_INFERENCE;
-    else process.env.CLAUDE_LHC_NO_INFERENCE = savedNoInference;
-  }
-  if (process.env.INPUT_ORDER_REPORT !== undefined)
-    writeFileSync(process.env.INPUT_ORDER_REPORT, `${JSON.stringify({ runs: RUNS, seen, failures }, null, 2)}\n`);
-  expect(failures.slice(0, 5)).toEqual([]);
-  expect(
-    Object.values(seen).every((count) => count > 0),
-    JSON.stringify(seen),
-  ).toBe(true);
-}, 600_000);
+    if (process.env.INPUT_ORDER_REPORT !== undefined)
+      writeFileSync(process.env.INPUT_ORDER_REPORT, `${JSON.stringify({ runs: RUNS, seen, failures }, null, 2)}\n`);
+    expect(failures.slice(0, 5)).toEqual([]);
+    expect(
+      Object.values(seen).every((count) => count > 0),
+      JSON.stringify(seen),
+    ).toBe(true);
+  },
+  Math.max(600_000, RUNS * 5_000),
+);
