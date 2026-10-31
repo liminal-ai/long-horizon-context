@@ -587,6 +587,14 @@ describe("prompts held during a mid-turn compact", () => {
     const settledBefore = settled();
     const toolUseId = `toolu_${gen}`;
     const toolTurn = randomUUID();
+    if (gen > 0) {
+      const rebuilt = assistantMessage(randomUUID(), [{ type: "text", text: "reading the rebuilt view" }]);
+      const inner = (rebuilt as unknown as { message: Record<string, unknown> }).message;
+      streams[gen]!({
+        ...rebuilt,
+        message: { ...inner, usage: { input_tokens: 1_000, output_tokens: 1 } },
+      } as SDKMessage);
+    }
     streams[gen]!(
       pastTrigger(assistantMessage(toolTurn, [{ type: "tool_use", id: toolUseId, name: "Read", input: {} }])),
     );
