@@ -162,7 +162,7 @@ export function query({
   const startFrame = encodeFrame({ type: "start", options: toWireOptions(options, stderr) as WireOptions });
   const child: ChildProcess = spawn(command.command, [...(command.args ?? [])], {
     stdio: ["pipe", "pipe", "pipe"],
-    env: command.env ?? options.env ?? process.env,
+    env: command.env ?? process.env,
     windowsHide: true,
   });
 

@@ -366,6 +366,28 @@ describe("start options", () => {
     expect(existsSync(join(dir, "lhc"))).toBe(false);
   });
 
+  test("the sidecar inherits the host environment when options.env is set", async () => {
+    const saved = { thread: process.env.T3CODE_THREAD_ID, inference: process.env.CLAUDE_LHC_NO_INFERENCE };
+    process.env.T3CODE_THREAD_ID = "thread-42";
+    process.env.CLAUDE_LHC_NO_INFERENCE = "1";
+    try {
+      const { q } = start("env:T3CODE_THREAD_ID", {
+        lhc: {
+          home: join(dir, "lhc"),
+          spawn: { command: process.execPath, args: ["--import", "tsx", "--import", FAKE_SDK, SIDECAR] },
+        },
+      });
+      expect(replyText(await untilResult(q))).toBe("env thread-42");
+    } finally {
+      for (const [key, value] of [
+        ["T3CODE_THREAD_ID", saved.thread],
+        ["CLAUDE_LHC_NO_INFERENCE", saved.inference],
+      ] as const)
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+    }
+  });
+
   test("lhc.spawn runs the host's command", async () => {
     const { q } = start("hi", {
       lhc: { home: join(dir, "lhc"), spawn: { command: join(dir, "no-such-sidecar") } },

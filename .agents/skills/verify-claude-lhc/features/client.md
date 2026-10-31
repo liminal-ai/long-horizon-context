@@ -12,6 +12,9 @@
 - Every row of `CONTROLS` except `close` and `streamInput` is a method
   that sends a `req` frame and resolves with the `res` value. A failed
   `res` rejects with its error.
+- `options.env` reaches the Claude process through the start frame. The
+  sidecar process inherits the host's environment unless
+  `lhc.spawn.env` replaces it.
 - `canUseTool` and `onUserDialog` answer the sidecar's `req` frames.
   `stderr` gets the sidecar's log lines. `abortController` closes the
   query.

@@ -75,9 +75,10 @@ The client handles these options itself:
 - `canUseTool` and `onUserDialog` run in the host. The sidecar asks for each answer over the wire.
 - `stderr` gets the sidecar's log lines and the client's own notices.
 - `abortController` closes the query when it aborts. An already aborted controller starts nothing.
-- `env` is the base of the Claude process's environment, as in the SDK. It is also the sidecar's
-  environment unless `lhc.spawn.env` is set. The sidecar writes projected sessions under the
-  `CLAUDE_CONFIG_DIR` it names, else `~/.claude`.
+- `env` is the base of the Claude process's environment, as in the SDK. The sidecar writes
+  projected sessions under the `CLAUDE_CONFIG_DIR` it names, else `~/.claude`. The sidecar itself
+  inherits the host's environment unless `lhc.spawn.env` is set, so settings such as
+  `CLAUDE_LHC_NO_INFERENCE` and `T3CODE_THREAD_ID` come from there.
 - `hooks`, `onElicitation`, `sessionStore`, `sessionStoreFlush`, `spawnClaudeCodeProcess` and
   in-process (`type: "sdk"`) MCP servers cannot cross a process boundary. The client drops each
   one and names it on `stderr`.

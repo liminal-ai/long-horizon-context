@@ -1018,7 +1018,9 @@ const drives = {
       const sid = randomUUID();
       const options = baseOptions(scratch, { sessionId: sid, model: "claude-sonnet-4-6" });
       const t0 = Date.now();
-      q = query({ prompt: silent, options: { ...options, env: { ...options.env, CLAUDE_LHC_NO_INFERENCE: "1" }, stderr: (d) => stderr.push(d) } });
+      process.env.CLAUDE_LHC_NO_INFERENCE = "1";
+      process.env.VERIFY_CLAUDE_LHC_SCRATCH = scratch.dir;
+      q = query({ prompt: silent, options: { ...options, stderr: (d) => stderr.push(d) } });
       await until(() => stderr.join("").includes(`as generation ${sid}`), "created-thread log line from the default sidecar");
       const readyMs = Date.now() - t0;
       const usage = await q.getContextUsage();
@@ -1027,7 +1029,8 @@ const drives = {
       assert(refused.startsWith("rewindFiles is refused"), `rewindFiles answered ${refused}`);
       await q.setCompactPolicy({ trigger: 700000, target: 140000 });
       assert(stderr.join("").includes("compact policy set on thread: trigger 700000 target 140000"), "no `compact policy set on thread` line");
-      assert(scratchProcesses(scratch).length > 0, "no sidecar or claude process carries the scratch env before close");
+      const sidecars = scratchProcesses(scratch).filter((pid) => readFileSync(`/proc/${pid}/environ`, "utf8").includes(`VERIFY_CLAUDE_LHC_SCRATCH=${scratch.dir}`));
+      assert(sidecars.length > 0, "no process inherited the host's environment before close: the sidecar did not inherit it");
       q.close();
       const end = await Promise.race([q.next(), new Promise((r) => setTimeout(() => r("timeout"), 15_000))]);
       assert(end !== "timeout" && end.done, `the stream did not end after close(): ${JSON.stringify(end)}`);

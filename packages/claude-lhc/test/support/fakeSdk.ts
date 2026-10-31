@@ -47,6 +47,7 @@ export function query({ prompt, options }: { prompt: AsyncIterable<SDKUserMessag
       const text = textOf(user);
       let reply = `echo: ${text}`;
       if (text.startsWith("slow:")) await new Promise((resolve) => setTimeout(resolve, 500));
+      if (text.startsWith("env:")) reply = `env ${options.env?.[text.slice(4)]}`;
       if (text.startsWith("big:")) reply = "lorem ipsum dolor ".repeat(Number(text.slice(4)) / 18);
       if (text.startsWith("tool:")) {
         const decision = await options.canUseTool?.(
