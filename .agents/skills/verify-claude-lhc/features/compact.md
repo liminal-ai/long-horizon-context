@@ -126,7 +126,11 @@ summarization quality over real turns is the live standalone proof's job.
   compact they wait for the continued turn's `result` (success, error or
   interrupt), then run as their own turns. stdin close drops them with `closing with <n> held
   prompt(s) never sent`. `packages/claude-lhc/test/input-order.property.test.ts`
-  checks the order on random interleavings, steers included. Unit-covered in
+  checks the order on random interleavings, steers included, through the
+  sidecar's frame dispatch (`src/frames.ts`). It runs 60 seeds by default.
+  For more, run `INPUT_ORDER_RUNS=300 pnpm --filter claude-lhc exec vitest
+  run test/input-order.property.test.ts`; its timeout grows with the seed
+  count. Unit-covered in
   `packages/claude-lhc/test/rollback-start.test.ts` and live-covered by
   `turn` and `prompt-order-live`, not seeded.
 - No `system/init` arrives before the first prompt, so the window read
