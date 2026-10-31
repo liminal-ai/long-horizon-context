@@ -236,6 +236,13 @@ Lane screenshots (`u2-restart.png`, `u2-rollback-shape.png` in the plan)
 are captures of these drives' terminal output at the PR head, taken by the
 lane runner; the transcripts above are the machine-checkable evidence.
 
+Secrets: a `start` frame's `options.env` is the host's whole environment,
+API keys included, because `baseOptions` spreads `process.env` into it.
+`drive.mjs` saves only the frames it receives. A probe that saves or prints
+the frames it sends must replace `options.env` with its key names first.
+A host `XAI_API_KEY` reached saved evidence and a thread transcript this way
+in the host-ready program.
+
 After cleanup, confirm `summary.json` and the frame transcripts still
 exist in the evidence dir — a cleanup that eats the proof fails the run.
 
