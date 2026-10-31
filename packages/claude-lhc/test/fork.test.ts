@@ -137,7 +137,7 @@ describe("forkSession", () => {
     const messages = await getSessionMessages(forked.sessionId, store());
     expect(JSON.stringify(messages)).toContain("KEEP-ANSWER");
     expect(JSON.stringify(messages)).toContain("LATER-ANSWER");
-    expect(forked.headMessageId).toBe(messages.at(-1)?.uuid);
+    expect(forked.headMessageId?.startsWith(`claude-lhc-cursor:${forkThread}:`)).toBe(true);
     const policy = await threads.getCompactPolicy(threadRef(forkThread!, home));
     expect(policy.ok && policy.value).toEqual(SEED_POLICY);
   });

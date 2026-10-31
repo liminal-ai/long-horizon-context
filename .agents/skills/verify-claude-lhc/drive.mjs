@@ -157,6 +157,10 @@ const userFrame = (text, uuid) => ({
   message: { type: "user", message: { role: "user", content: [{ type: "text", text }] }, parent_tool_use_id: null, session_id: "", ...(uuid ? { uuid } : {}) },
 });
 const generationFrom = (s) => /as generation (\S+)/.exec(s.stderr.join("\n"))?.[1];
+const namesLastCapture = (head, file) => {
+  const last = file.trim().split("\n").map((l) => JSON.parse(l).lhcSource).filter((k) => typeof k === "string").at(-1);
+  return typeof head === "string" && /^claude-lhc-cursor:th_[0-9a-f]+:/.test(head) && head.endsWith(`:${last}`);
+};
 const threadIdFrom = (s) => /created thread (\S+)|resumed thread (\S+)/.exec(s.stderr.join("\n"))?.slice(1).find(Boolean);
 
 function assert(cond, reason) { if (!cond) throw new Error(reason); }
@@ -979,7 +983,7 @@ const drives = {
       assert(forked.code === 0, `forkSession failed: ${forked.error ?? forked.stderr}`);
       const { sessionId, headMessageId } = forked.value;
       const forkFile = scratch.projected(sessionId) ?? "";
-      assert(headMessageId === JSON.parse(forkFile.trim().split("\n").filter((l) => JSON.parse(l).uuid).at(-1)).uuid, "headMessageId is not the fork file's last message");
+      assert(namesLastCapture(headMessageId, forkFile), `headMessageId ${headMessageId} is not a cursor naming the fork file's last captured message`);
       const fork = await startAndStop(scratch, "resume-fork", { resume: sessionId }, evidenceDir);
       const source = await startAndStop(scratch, "resume-source", { resume: gen1 }, evidenceDir);
       const files = { "projected-fork": scratch.projected(fork.gen) ?? "", "projected-source": scratch.projected(source.gen) ?? "" };
@@ -993,6 +997,7 @@ const drives = {
       assert(files["projected-source"].includes("REMOVED-TURN answer two"), "the source lost a turn after the fork");
       const forkThread = threadIdFrom(fork.s);
       assert(forkThread && forkThread !== threadId, `resuming the fork did not open a separate thread (${forkThread})`);
+      assert(headMessageId.startsWith(`claude-lhc-cursor:${forkThread}:`), `headMessageId ${headMessageId} does not name the fork's thread ${forkThread}`);
       assert(fork.s.logHas("compact policy from thread: trigger 700000 target 140000"), "the fork did not carry the source's compact policy");
       assert(rows.threads.length === 2 && rows.threads.every((t) => t.trigger === 700000 && t.target === 140000), `thread rows: ${JSON.stringify(rows.threads)}`);
       const history = await callInScratchEnv(scratch, "getSessionMessages", [gen1, { lhc: { home: scratch.lhcHome }, dir: scratch.cwd }]);
@@ -1003,12 +1008,17 @@ const drives = {
       const againFile = scratch.projected(again.value.sessionId) ?? "";
       writeFileSync(join(evidenceDir, "projected-history-fork.jsonl"), againFile);
       assert(againFile.includes("KEEP-TURN answer one") && !againFile.includes("REMOVED-TURN"), "the fork at a history id does not end at KEEP");
+      for (const file of scratch.projectedFiles().filter((f) => f.includes(sessionId) || f.includes(fork.gen))) rmSync(join(scratch.claudeHome, "projects", file));
+      assert(scratch.projected(sessionId) === null && scratch.projected(fork.gen) === null, "the fork's projected files are still on disk");
       const head = await startAndStop(scratch, "resume-fork-at-head", { resume: sessionId, resumeSessionAt: headMessageId }, evidenceDir);
-      assert(head.s.stderr.some((l) => l.includes(`via ${headMessageId}`)), "resumeSessionAt the fork's headMessageId did not resolve");
+      assert(head.s.stderr.some((l) => l.includes(`via ${headMessageId}`)), "resumeSessionAt the fork's headMessageId did not resolve after its projection was deleted");
+      const atHead = scratch.projected(head.gen) ?? "";
+      writeFileSync(join(evidenceDir, "projected-fork-at-head.jsonl"), atHead);
+      assert(atHead.includes("KEEP-TURN answer one") && !atHead.includes("REMOVED-TURN"), "the fork resumed at its head does not end at KEEP");
       await compactOnce(scratch, "compact-source", { resume: gen1 }, evidenceDir);
       const afterCompact = await callInScratchEnv(scratch, "forkSession", [gen1, { lhc: { home: scratch.lhcHome }, dir: scratch.cwd }]);
       assert(afterCompact.code === 0, `forkSession right after a /compact failed: ${afterCompact.error ?? afterCompact.stderr}`);
-      return `fork at KEEP -> thread ${forkThread} ends at KEEP (fork file and resume), source ${threadId} keeps REMOVED, both rows 700000/140000; a fork at the projected history id ends at KEEP; resumeSessionAt headMessageId resolves; a fork right after /compact succeeds`;
+      return `fork at KEEP -> thread ${forkThread} ends at KEEP (fork file and resume), source ${threadId} keeps REMOVED, both rows 700000/140000; a fork at the projected history id ends at KEEP; resumeSessionAt headMessageId resolves after the fork's projection is deleted; a fork right after /compact succeeds`;
     } finally { scratch.cleanup(); }
   },
 
@@ -1030,7 +1040,7 @@ const drives = {
       const forkFile = scratch.projected(fork.value.sessionId) ?? "";
       writeFileSync(join(evidenceDir, "projected-fork.jsonl"), forkFile);
       assert(forkFile.includes("KEEP-TURN answer one") && !forkFile.includes("REMOVED-TURN"), "the fork in the operation's Claude home does not end at KEEP");
-      assert(fork.value.headMessageId === JSON.parse(forkFile.trim().split("\n").filter((l) => JSON.parse(l).uuid).at(-1)).uuid, "headMessageId is not the fork file's last message");
+      assert(namesLastCapture(fork.value.headMessageId, forkFile), `headMessageId ${fork.value.headMessageId} is not a cursor naming the fork file's last captured message`);
       assert(!existsSync(join(hostHome, ".claude", "projects")), "an operation wrote under the host's own Claude home");
       assert(JSON.stringify(forkMessages).includes("KEEP-TURN answer one") && !JSON.stringify(forkMessages).includes("REMOVED-TURN"), "getSessionMessages(fork) does not read the fork");
       assert(viaFirst.length > 0 && viaFirst.every((m) => m.session_id === compacted), "getSessionMessages(gen1) did not read the compacted generation");

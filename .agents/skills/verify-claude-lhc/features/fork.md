@@ -20,8 +20,11 @@
   the copy, drains the derivation work the copy carries and the rollback
   queued, projects the copy into a new session file
   under `dir` (default the thread's cwd), and binds the new session id last
-  (`src/fork.ts`). It returns `{ sessionId, headMessageId }`, where
-  `headMessageId` is the last line of that file. An empty thread forks with
+  (`src/fork.ts`). It returns `{ sessionId, headMessageId }`. The
+  `headMessageId` is a cursor, `claude-lhc-cursor:<fork thread>:<capture
+  key>`, that names the copied event behind the file's last line with an
+  `lhcSource`. It names no line of the file, so it stays valid after the
+  fork's projection is rebuilt or deleted. An empty thread forks with
   no file and no `headMessageId`. A step that fails after the copy discards
   the copy (core `discardCopy`) and its session file before the error
   returns. An untitled fork takes the SDK's default title, the source
@@ -55,8 +58,17 @@
   result the projection adds for an unanswered tool call has no source and
   no `lhcSource`; it resolves through its parent assistant line. So a message id
   `getSessionMessages` returns after a restart, compact or fork works as
-  `upToMessageId`, and a fork's `headMessageId` works as `resumeSessionAt`
-  (a host rollback to the fork's first turn).
+  `upToMessageId`.
+- A fork's `headMessageId` works as `resumeSessionAt` on that fork (a host
+  rollback to the fork point) and as `upToMessageId` when forking that fork.
+  The resolver reads the cursor from the store before it walks any native
+  file (`resolveRollbackAnchor` in `src/rollbackAnchor.ts`), so it resolves
+  after a restart, a compact, or the deletion of every projected file. A
+  cursor that names another thread is refused (`rollback cursor <cursor>
+  names LHC thread <other>, not <this>`), and one whose key the thread
+  never recorded is refused as `rollback anchor <cursor> not found`. Both
+  refusals write no event and no file. A fork of a fork returns a cursor
+  that names the newer fork.
 - `copyThread` requeues any derivation claim it copies, so a fork taken
   while the source's summary worker holds a lease still drains at once.
 
@@ -94,7 +106,8 @@ Every drive calls the library from a child node process, with
 `fork` seeds a KEEP turn and a REMOVED turn, stores a 700000/140000 policy
 through a resume, forks at the KEEP assistant message, then resumes the fork
 and the source through the sidecar. User-only half: `forkSession` returns a
-session id whose file ends at `headMessageId`, and the fork's resume logs
+session id and a `headMessageId` cursor that names the fork's thread and the
+`lhcSource` of the fork file's last captured line, and the fork's resume logs
 `compact policy from thread: trigger 700000 target 140000`. Outcome half:
 `projected-fork.jsonl` keeps KEEP and drops REMOVED,
 `projected-source.jsonl` keeps REMOVED, and `thread-rows.txt` shows two
@@ -102,8 +115,9 @@ threads, both 700000/140000.
 
 The drive then reads the restarted source through `getSessionMessages`,
 forks at the projected KEEP line's id (`projected-history-fork.jsonl` ends
-at KEEP), and resumes the first fork with `resumeSessionAt:
-<headMessageId>`, which must resolve. Last it sends `/compact` to the source and
+at KEEP), deletes the first fork's projected files, and resumes it with
+`resumeSessionAt: <headMessageId>`, which must resolve and project a file
+that ends at KEEP (`projected-fork-at-head.jsonl`). Last it sends `/compact` to the source and
 forks it again, which must succeed.
 
 `history` seeds two turns, compacts, then reads through gen1, a session id
@@ -123,7 +137,8 @@ operation's `env`. It forks gen1 at KEEP, reads the fork and gen1 through
 and forks an unknown id. User-only half: each call answers, and the
 unknown id rejects with `no LHC thread holds the Claude session <id>`.
 Outcome half: `projected-fork.jsonl` sits under the operation's Claude
-home, keeps KEEP, drops REMOVED and ends at `headMessageId`, and the
+home, keeps KEEP and drops REMOVED, `headMessageId` names its last
+captured line, and the
 host's own `~/.claude/projects` does not exist. Last it runs the same fork
 in-process from `dist/index.js`. The PASS line gives both fork times, so
 a reader sees the cost of the sidecar start. Evidence:
