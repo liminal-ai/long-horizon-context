@@ -146,9 +146,13 @@ a reader sees the cost of the sidecar start. Evidence:
 
 `fork-live` takes two real turns that set KEEP-ALPHA and then
 REMOVED-BRAVO, forks at the first turn's last assistant message, and asks
-the fork and then the source for the second word. It passes when the fork's
-answer lacks REMOVED-BRAVO and the source's answer has it. Evidence:
-`fork-result.json`, `answers.json`, `transcript.jsonl`.
+the fork and then the source for the second word. Then it deletes the
+fork's two projected files (the fork's own and its resumed generation's),
+resumes the fork with `resumeSessionAt: <headMessageId>`, and asks again.
+It passes when both fork answers lack REMOVED-BRAVO, the source's answer
+has it, and the last resume logs `via <headMessageId>`. Evidence:
+`fork-result.json`, `answers.json`, `deleted-projections.json`,
+`transcript.jsonl`.
 
 `subagent-live` takes one real turn, sends `/compact`, then asks Claude to
 launch a subagent. It passes when the agent's transcript sits under the

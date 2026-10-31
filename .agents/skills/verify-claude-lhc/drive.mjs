@@ -1096,20 +1096,32 @@ const drives = {
       writeFileSync(join(evidenceDir, "fork-result.json"), `${JSON.stringify(forked, null, 2)}\n`);
       assert(forked.code === 0, `forkSession failed: ${forked.error ?? forked.stderr}`);
       const answers = {};
-      for (const [label, resume] of [["fork", forked.value.sessionId], ["source", gen1]]) {
+      const forkGenerations = [forked.value.sessionId];
+      const askIn = async (label, options) => {
         const s = new Sidecar(scratch, `ask-${label}`, { live: true });
         sidecars.push(s);
-        s.send({ type: "start", options: liveOptions({ resume }) });
+        s.send({ type: "start", options: liveOptions(options) });
         await s.waitFor(() => s.logHas("resumed thread"), `${label} resumed-thread log line`);
         const turn = await liveTurn(s, ask);
         assert((await s.stop()) === 0, `${label} sidecar did not exit 0`);
         assert(turn.result?.subtype === "success" && turn.result.is_error !== true, `the ${label} turn failed: ${JSON.stringify(turn.result?.errors ?? turn.result?.result)}`);
         answers[label] = String(turn.result.result ?? "");
-      }
+        return s;
+      };
+      forkGenerations.push(generationFrom(await askIn("fork", { resume: forked.value.sessionId })));
+      await askIn("source", { resume: gen1 });
+      const deleted = scratch.projectedFiles().filter((f) => forkGenerations.some((id) => f.includes(id)));
+      for (const file of deleted) rmSync(join(scratch.claudeHome, "projects", file));
+      writeFileSync(join(evidenceDir, "deleted-projections.json"), `${JSON.stringify(deleted, null, 2)}\n`);
+      assert(deleted.length === 2, `expected the fork's two projected files, found ${JSON.stringify(deleted)}`);
+      const head = forked.value.headMessageId;
+      const atHead = await askIn("fork-at-head", { resume: forked.value.sessionId, resumeSessionAt: head });
       writeFileSync(join(evidenceDir, "answers.json"), `${JSON.stringify(answers, null, 2)}\n`);
       assert(!answers.fork.includes("REMOVED-BRAVO"), `the fork knows the turn after the fork point: ${answers.fork}`);
       assert(answers.source.includes("REMOVED-BRAVO"), `the source lost the second word: ${answers.source}`);
-      return `fork at the first turn answers "${answers.fork.trim()}"; source answers "${answers.source.trim()}"`;
+      assert(atHead.stderr.some((l) => l.includes(`via ${head}`)), "resumeSessionAt the fork's headMessageId did not resolve after its projection was deleted");
+      assert(!answers["fork-at-head"].includes("REMOVED-BRAVO"), `the fork resumed at its head knows the turn after the fork point: ${answers["fork-at-head"]}`);
+      return `fork at the first turn answers "${answers.fork.trim()}"; source answers "${answers.source.trim()}"; with its projection deleted, the fork resumed at headMessageId answers "${answers["fork-at-head"].trim()}"`;
     } finally {
       for (const s of sidecars) if (s.exitCode === undefined) await s.stop();
       mkdirSync(evidenceDir, { recursive: true });
