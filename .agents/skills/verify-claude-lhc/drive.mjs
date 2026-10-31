@@ -168,7 +168,8 @@ async function seedCompacted(scratch, evidenceDir, extra = {}, ready = (s, sid1)
   const s = new Sidecar(scratch, "seed");
   s.send({ type: "start", options: baseOptions(scratch, { sessionId: sid1, ...extra }) });
   await s.waitFor(() => ready(s, sid1), "created-thread log line");
-  s.send(userFrame("/compact"));
+  const compactUuid = randomUUID();
+  s.send(userFrame("/compact", compactUuid));
   await s.waitFor(() => s.msgs().some((m) => m.type === "result"), "compact result frame");
   const boundary = s.msgs().find((m) => m.type === "system" && m.subtype === "compact_boundary");
   assert(boundary, "no compact_boundary after /compact");
@@ -176,7 +177,7 @@ async function seedCompacted(scratch, evidenceDir, extra = {}, ready = (s, sid1)
   const code = await s.stop();
   s.saveEvidence(evidenceDir);
   assert(code === 0, `seed sidecar exited ${code}`);
-  return { sid1, sid2, seed: s };
+  return { sid1, sid2, seed: s, compactUuid };
 }
 
 async function seedCaptured(scratch, turns) {
@@ -444,6 +445,12 @@ async function until(pred, what, timeoutMs = 60_000) {
 
 const lifecycleAt = (msgs, uuid, state) => msgs.findIndex((m) => m.type === "command_lifecycle" && m.command_uuid === uuid && (state === undefined || m.state === state));
 const resultsIn = (msgs) => msgs.flatMap((m, i) => (m.type === "result" ? [i] : []));
+const compactSequence = (msgs, uuid) => msgs.map((m) =>
+  m.type === "command_lifecycle" ? (m.command_uuid === uuid ? `lifecycle:${m.state}` : null)
+  : m.type === "system" && m.subtype === "status" ? `status:${m.status ?? "null"}${m.compact_result ? ":" + m.compact_result : ""}`
+  : m.type === "system" && m.subtype === "compact_boundary" ? "boundary"
+  : m.type === "result" ? "result" : null).filter(Boolean);
+const settlesCompact = (result, uuid) => result?.local_command === "compact" && result.user_message_uuid === uuid && JSON.stringify(result.user_message_uuids) === JSON.stringify([uuid]);
 const boundaryAt = (msgs, trigger, from = 0) => msgs.findIndex((m, i) => i >= from && m.type === "system" && m.subtype === "compact_boundary" && m.compact_metadata?.trigger === trigger);
 // The CLI's own prompt is about 37000 tokens. Reading filler.txt (about 20000 tokens) carries the next request past
 // 45000, while a view rebuilt to 500 tokens lands back under it.
@@ -493,17 +500,32 @@ const drives = {
   async compact(evidenceDir) {
     const scratch = new Scratch("compact");
     try {
-      const { sid1, sid2, seed } = await seedCompacted(scratch, evidenceDir);
+      const { sid1, sid2, seed, compactUuid } = await seedCompacted(scratch, evidenceDir);
       assert(sid2 !== sid1, "compact did not mint a new session id");
-      const seq = seed.msgs().map((m) =>
-        m.type === "system" && m.subtype === "status" ? `status:${m.status ?? "null"}${m.compact_result ? ":" + m.compact_result : ""}`
-        : m.type === "system" && m.subtype === "compact_boundary" ? "boundary"
-        : m.type === "result" ? "result" : null).filter(Boolean);
-      assert(JSON.stringify(seq) === JSON.stringify(["status:compacting", "status:null:success", "boundary", "result"]),
+      const seq = compactSequence(seed.msgs(), compactUuid);
+      assert(JSON.stringify(seq) === JSON.stringify(["lifecycle:queued", "lifecycle:started", "status:compacting", "status:null:success", "boundary", "result", "lifecycle:completed"]),
         `compact frame order ${JSON.stringify(seq)}`);
+      const result = seed.msgs().find((m) => m.type === "result");
+      assert(settlesCompact(result, compactUuid) && result.is_error === false && result.result === "", `compact result ${JSON.stringify(result)}`);
+      assert(result.session_id === sid2, "the compact result is not on the new generation");
       assert(scratch.projectedFiles().some((f) => f.includes(sid2)), `no projected file for ${sid2}`);
       assert(scratch.threads().length === 1, "store does not hold exactly one thread");
-      return `order=${seq.join(">")} gen1=${sid1.slice(0, 8)} gen2=${sid2.slice(0, 8)} projected=yes threads=1 (empty view; proves boundary/projection plumbing, not summarization)`;
+
+      const failing = new Sidecar(scratch, "failed-rebuild");
+      const failedUuid = randomUUID();
+      failing.send({ type: "start", options: baseOptions(scratch, { resume: sid2, lhc: { home: scratch.lhcHome, forceRebuildFailure: true } }) });
+      await failing.waitFor(() => failing.logHas("resumed thread"), "resumed-thread log line");
+      failing.send(userFrame("/compact", failedUuid));
+      await failing.waitFor(() => lifecycleAt(failing.msgs(), failedUuid, "completed") > -1, "the failed compact's completed lifecycle");
+      const failedCode = await failing.stop();
+      failing.saveEvidence(evidenceDir);
+      assert(failedCode === 0, `failed-rebuild sidecar exited ${failedCode}`);
+      const failedSeq = compactSequence(failing.msgs(), failedUuid);
+      assert(JSON.stringify(failedSeq) === JSON.stringify(["lifecycle:queued", "lifecycle:started", "status:compacting", "status:null:failed", "result", "lifecycle:completed"]),
+        `failed compact frame order ${JSON.stringify(failedSeq)}`);
+      const failed = failing.msgs().find((m) => m.type === "result");
+      assert(settlesCompact(failed, failedUuid) && failed.is_error === false && String(failed.result).startsWith("Error during compaction: "), `failed compact result ${JSON.stringify(failed)}`);
+      return `order=${seq.join(">")} gen1=${sid1.slice(0, 8)} gen2=${sid2.slice(0, 8)} result carries the /compact uuid and local_command=compact; failed rebuild order=${failedSeq.join(">")} result "${String(failed.result).slice(0, 60)}"; projected=yes threads=1 (empty view; proves boundary/projection plumbing, not summarization)`;
     } finally { scratch.cleanup(); }
   },
 
@@ -1251,8 +1273,8 @@ const drives = {
     const gate = liveAuth();
     if (gate.skip) return gate;
     const together = await livePromptOrder(join(evidenceDir, "held-one-at-a-time"), "held-one-at-a-time", { trigger: 300000, target: 180000 }, async (s) => {
-      const [one, two] = [randomUUID(), randomUUID()];
-      s.send(userFrame("/compact"));
+      const [compact, one, two] = [randomUUID(), randomUUID(), randomUUID()];
+      s.send(userFrame("/compact", compact));
       s.send(userFrame("Reply with exactly the word ONE.", one));
       s.send(userFrame("Reply with exactly the word TWO.", two));
       s.send({ type: "end" });
@@ -1263,7 +1285,9 @@ const drives = {
       assert(String(m[results[1]].result).includes("ONE") && String(m[results[2]].result).includes("TWO"), `results ${JSON.stringify(results.map((i) => m[i].result))}`);
       assert(lifecycleAt(m, one) > boundaryAt(m, "manual"), "ONE reached the CLI before the /compact ended");
       assert(lifecycleAt(m, two) > results[1], "TWO reached the CLI before ONE had its result");
-      return "TWO reached the CLI after ONE's result";
+      assert(settlesCompact(m[results[0]], compact), `the /compact's result does not carry its uuid and local_command: ${JSON.stringify(m[results[0]])}`);
+      assert(lifecycleAt(m, compact, "completed") > results[0], "the /compact's completed lifecycle did not follow its result");
+      return "TWO reached the CLI after ONE's result; the /compact's result carries its uuid";
     });
     const pending = await livePromptOrder(join(evidenceDir, "pending-across-swap"), "pending-across-swap", FILLER_POLICY, async (s) => {
       const [steer, queued] = [randomUUID(), randomUUID()];
@@ -1288,12 +1312,12 @@ const drives = {
       return `the pending prompt started once, ${path}; the prompt sent after the compact fell due got its own result`;
     });
     const behindHeld = await livePromptOrder(join(evidenceDir, "compact-behind-held"), "compact-behind-held", FILLER_POLICY, async (s) => {
-      const held = randomUUID();
+      const [held, compact] = [randomUUID(), randomUUID()];
       s.send(userFrame(HELD_TURN));
       await s.waitFor(() => s.msgs().some((m) => m.subtype === "status" && m.status === "compacting"), "a mid-turn compact", 180_000);
       const compactingAt = s.msgs().length - 1;
       s.send(userFrame("Reply with exactly the word HELD.", held));
-      s.send(userFrame("/compact"));
+      s.send(userFrame("/compact", compact));
       s.send({ type: "end" });
       await s.waitFor(() => s.exitCode !== undefined, "every input answered", 900_000);
       const m = s.msgs();
@@ -1304,6 +1328,7 @@ const drives = {
       assert(heldResult !== undefined, "the held prompt got no result of its own");
       assert(manual > heldResult, "the /compact ran before the held prompt's result");
       assert(m[resultsIn(m).at(-1)].result === "", "the /compact's own result is not last");
+      assert(settlesCompact(m[resultsIn(m).at(-1)], compact), "the /compact's result does not carry its uuid and local_command");
       return "the /compact ran after the held prompt's result";
     });
     return `${together}; ${pending}; ${behindHeld}`;
