@@ -99,7 +99,7 @@ const MID_TURN_STOP_REASON = "lhc mid-turn compact";
 const HOOK_STOPPED = "hook_stopped";
 
 type CompactTrigger = "manual" | "auto";
-type QueuedInput = { kind: "prompt"; message: SDKUserMessage } | { kind: "compact" };
+type QueuedInput = { kind: "prompt"; message: SDKUserMessage } | { kind: "compact"; uuid: string };
 interface SentPrompt {
   message: SDKUserMessage;
   started: boolean;
@@ -299,8 +299,11 @@ export class ClaudeLhcSession {
 
   async pushUser(message: SDKUserMessage): Promise<void> {
     if (this.#closed) return;
-    if (compactCommand(message) !== null) this.#inputs.push({ kind: "compact" });
-    else if (this.#inputs.length > 0 || this.#compacting || this.#stopping !== null || this.#autoCompactDue)
+    if (compactCommand(message) !== null) {
+      const uuid = message.uuid ?? randomUUID();
+      this.#io.emit(this.#commandLifecycle(uuid, "queued"));
+      this.#inputs.push({ kind: "compact", uuid });
+    } else if (this.#inputs.length > 0 || this.#compacting || this.#stopping !== null || this.#autoCompactDue)
       this.#inputs.push({ kind: "prompt", message });
     else await this.#send(message);
     await this.#advance();
@@ -329,7 +332,7 @@ export class ClaudeLhcSession {
       while (!this.#closed && this.#sent.size === 0 && !this.#compacting && this.#stopping === null) {
         const next = this.#inputs.shift();
         if (next === undefined) break;
-        if (next.kind === "compact") await this.#compact("manual");
+        if (next.kind === "compact") await this.#compact("manual", undefined, next.uuid);
         else await this.#send(next.message);
       }
     } finally {
@@ -865,7 +868,10 @@ export class ClaudeLhcSession {
     return open.turnId;
   }
 
-  async #compact(trigger: CompactTrigger, heldResult?: SDKMessage): Promise<void> {
+  // A host /compact settles as the CLI settles one: lifecycle frames for its uuid around the compact, and a
+  // result that carries the uuid and local_command "compact". A failed compact is still a success result
+  // whose text is the error, as stock Claude Code 2.1.312 sends it.
+  async #compact(trigger: CompactTrigger, heldResult?: SDKMessage, command?: string): Promise<void> {
     if (this.#gen === null || this.#compacting) {
       if (heldResult !== undefined) this.#io.emit(heldResult);
       return;
@@ -874,6 +880,7 @@ export class ClaudeLhcSession {
     const startedAt = Date.now();
     const preTokens = this.#lastContextTokens;
     const previous = this.#gen;
+    if (command !== undefined) this.#io.emit(this.#commandLifecycle(command, "started"));
     this.#io.emit(this.#syntheticStatus(previous.sessionId, "compacting"));
     try {
       const { next, postTokens } = await this.#rebuild(trigger, preTokens);
@@ -881,7 +888,7 @@ export class ClaudeLhcSession {
       this.#io.emit(this.#compactBoundary(trigger, preTokens, postTokens, startedAt, next.sessionId));
       this.#lastContextTokens = 0;
       if (heldResult !== undefined) this.#io.emit({ ...heldResult, session_id: next.sessionId } as SDKMessage);
-      else if (trigger === "manual") this.#io.emit(this.#syntheticResult(next.sessionId, startedAt, ""));
+      else if (command !== undefined) this.#io.emit(this.#compactResult(next.sessionId, startedAt, "", command));
     } catch (cause) {
       const reason = cause instanceof Error ? cause.message : String(cause);
       this.#io.log(`compact (${trigger}) failed: ${reason}`);
@@ -892,11 +899,19 @@ export class ClaudeLhcSession {
         this.#syntheticStatus(previous.sessionId, null, { compact_result: "failed", compact_error: reason }),
       );
       if (heldResult !== undefined) this.#io.emit(heldResult);
-      else if (trigger === "manual")
-        this.#io.emit(this.#syntheticResult(previous.sessionId, startedAt, `LHC compact failed: ${reason}`));
+      else if (command !== undefined)
+        this.#io.emit(
+          this.#compactResult(
+            previous.sessionId,
+            startedAt,
+            `Error during compaction: LHC compact failed: ${reason}`,
+            command,
+          ),
+        );
     } finally {
       this.#compacting = false;
     }
+    if (command !== undefined) this.#io.emit(this.#commandLifecycle(command, "completed"));
   }
 
   async #compactMidTurn(trigger: CompactTrigger): Promise<void> {
@@ -1098,7 +1113,17 @@ export class ClaudeLhcSession {
     } as unknown as SDKMessage;
   }
 
-  #syntheticResult(sessionId: string, startedAt: number, resultText: string): SDKMessage {
+  #commandLifecycle(commandUuid: string, state: "queued" | "started" | "completed"): SDKMessage {
+    return {
+      type: "command_lifecycle",
+      command_uuid: commandUuid,
+      state,
+      uuid: randomUUID(),
+      session_id: this.#gen?.sessionId ?? "",
+    } as unknown as SDKMessage;
+  }
+
+  #compactResult(sessionId: string, startedAt: number, resultText: string, commandUuid: string): SDKMessage {
     return {
       type: "result",
       subtype: "success",
@@ -1112,6 +1137,9 @@ export class ClaudeLhcSession {
       usage: { input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
       modelUsage: {},
       permission_denials: [],
+      user_message_uuid: commandUuid,
+      user_message_uuids: [commandUuid],
+      local_command: "compact",
       uuid: randomUUID(),
       session_id: sessionId,
     } as unknown as SDKMessage;
