@@ -104,8 +104,9 @@ one `rollback anchor <uuid> not found` frame and exit 1, no projected file
 exists, and the thread's `claude-lhc:` event key count is unchanged.
 
 `rollback-restart` rolls back, stops, then restarts through the rollback's
-generation and again through gen1. It passes when all three projected
-files end at the KEEP turn and the plain restart logs no second rollback.
+generation and again through gen1. It passes when both restarts keep the
+rollback's generation, its projected file ends at the KEEP turn, and the
+plain restart logs no second rollback.
 
 `rollback-synthetic-anchor` writes the native transcript the CLI would
 hold, with a `<synthetic>` notice after an uncaptured prompt, rolls back to

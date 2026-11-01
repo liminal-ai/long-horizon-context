@@ -104,7 +104,8 @@ no compact), then sends `setModel` `claude-sonnet-4-6` (200k). User-only
 half: the cap line `trigger 160000 target 80000`, the `served context`
 queue line, and no compact yet. It stops, resumes on `claude-sonnet-4-6`,
 and passes when stderr shows `served context`, then `[lhc compact:auto]
-... (target 80000)`, then `resumed thread`, with two generation lines.
+... (target 80000)`, then `resumed thread`, with two generation lines:
+the kept oversized generation and the compacted one.
 The CLI counts the projection with no credential, so the drive needs no
 model call.
 
