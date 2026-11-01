@@ -4,10 +4,25 @@
 
 - `start{resume: <any session id alias of a thread>}`: resolves the alias
   (`lhcHome.ts` `resolveSession`), closes the first open turn when it has
-  member messages (`outcomeReason: "session restarted"`), projects the
-  LHC served view into a new native session file
-  (`projection/project.ts` → `nativeSessionFile.ts`), binds the new id as
-  current alias, and resumes by UUID as a fresh generation.
+  member messages (`outcomeReason: "session restarted"`), and reads the
+  LHC served view. When the current generation's native transcript still
+  holds that view, it resumes that generation under its own session id,
+  logged `generation <id>: kept, its native transcript holds the <n>
+  served messages`. Otherwise it projects the view into a new native
+  session file (`projection/project.ts` → `nativeSessionFile.ts`), binds
+  the new id as current alias, and resumes by UUID as a fresh generation,
+  logged `generation <old id>: not kept, <reason>` first.
+- The transcript holds the view when the user and assistant lines on its
+  chain name the same captured messages, in the same order, as a fresh
+  projection would (`projection/match.ts`). The CLI writes each message
+  under the uuid claude-lhc captured it by, and a projected line names its
+  capture key in `lhcSource`. A summary band must carry the same text. A
+  compact, a missing or unreadable transcript, or a message only one side
+  holds (a crash between capture and the CLI's write, a CLI line
+  claude-lhc never captured) mints a new id. A compact always mints one,
+  and so does every start with `resumeSessionAt`, because a rollback can
+  cut between blocks of one captured message, below what the match
+  compares.
 - Every native session id a thread has run under stays an alias; the
   latest is current. Restarting never forks the store.
 - A projected generation keeps the CLI's attachment lines: the
@@ -28,10 +43,12 @@
 
 Your sidecar died or you are a new driver process. Spawn a fresh sidecar
 and send `start` with `resume` set to the last native session id you saw.
-The sidecar answers on a **new** session id (announced in its stderr
-`resumed thread ... as generation <id>` line and in subsequent frames);
-that generation's context is the thread's projected served view, not the
-dead process's memory.
+The sidecar answers on the **same** session id when nothing changed the
+thread's served view since that generation started, as a stock resume
+does, and on a **new** one after a compact or a rollback (announced in its
+stderr `resumed thread ... as generation <id>` line and in subsequent
+frames). Either way the generation's context is the thread's served
+view, not the dead process's memory.
 
 ## Driving it with the harness
 
@@ -43,18 +60,22 @@ CLAUDE_LHC_LIVE=1 .agents/skills/verify-claude-lhc/drive.mjs resume-cache-live
 ```
 
 The `restart` drive seeds start + `/compact` (so the view is non-empty),
-stops the sidecar, then starts a new one with `resume: gen2`. User-only
-half: `resumed thread ... via <gen2> as generation <gen3>`, exit 0 on
-stdin close. Outcome half: `<gen3>.jsonl` projected file exists with >= 1
-line — the session restarted onto its own projected file — and
+stops the sidecar, then starts a new one with `resume: gen2` three times,
+with a `/compact` in the second. User-only half: the first two restarts
+log `resumed thread ... via <gen2> as generation <gen2>` and the kept
+line, the `/compact` boundary names a new gen3, and the third restart
+opens gen3; exit 0 on stdin close. Outcome half: `<gen2>.jsonl` exists
+with >= 1 line, only the `/compact` wrote a projected file, and
 `threads/*.sqlite` count is unchanged (one thread).
 
 `resume-cache-live` is live only. It grows a stock thread and an LHC
 thread to about 80k tokens, resumes each twice through a capture proxy,
 and reads each resume's first result. User-only half: every turn
 succeeds. Outcome half: each resume reads at least 0.8 of its input from
-the cache, and the second LHC resume's request holds the historical
-environment reminder where the first's did. The same drive runs larger:
+the cache, the second LHC resume's request holds the historical
+environment reminder where the first's did, and every LHC resume keeps
+the session id the thread was grown on, which an account-affine proxy
+routes by. The same drive runs larger:
 `RESUME_CACHE_LINES=56000 RESUME_CACHE_RESUMES=3 RESUME_CACHE_SIDES=lhc`
 grows past 500k tokens on a 1M-context model, and
 `RESUME_CACHE_COMPACT=1` adds a `/compact` with two resumes after it.
@@ -62,9 +83,14 @@ grows past 500k tokens on a 1M-context model, and
 ## Gotchas
 
 - Resuming a thread with **0 served entries** (start-only, never
-  compacted) writes no projected file. The generation starts as a fresh
-  native session under the new id, logged `(fresh native session)`, and
-  the id still binds to the thread. The `resume-empty` drive covers it.
+  compacted) writes no projected file and keeps no generation. The
+  generation starts as a fresh native session under a new id, logged
+  `(fresh native session)`, and the id still binds to the thread. The
+  `resume-empty` drive covers it.
+- A reopen reads the current generation's whole native transcript once to
+  match it, beside the attachment harvest's own read of it.
+- A kept generation's transcript keeps growing across restarts, as a
+  stock session's does, until a compact or rollback starts a new one.
 - The projected file may gain lines after the Claude child touches it
   (seeded runs observed 1 projected line → 5 file lines). Assert
   existence/projection from the sidecar log line, not an exact line count.

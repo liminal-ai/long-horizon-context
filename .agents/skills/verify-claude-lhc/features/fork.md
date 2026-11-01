@@ -165,11 +165,13 @@ a reader sees the cost of the sidecar start. Evidence:
 REMOVED-BRAVO, forks at the first turn's last assistant message through
 `forkSession` from `dist/client/index.js`, with the host's env as the
 operation's `env`, and asks the fork and then the source to list every
-secret word. Then it deletes the fork's two projected files (the fork's own
-and its resumed generation's), resumes the fork with `resumeSessionAt:
-<headMessageId>`, and asks again. It passes when both fork answers have
-KEEP-ALPHA and lack REMOVED-BRAVO, the source's answer has both, and the
-last resume logs `via <headMessageId>`. Evidence: `fork-result.json`,
+secret word. The fork's first reopen keeps the fork's session id, so the
+fork has one projected file. The drive deletes it, resumes the fork with
+`resumeSessionAt: <headMessageId>`, and asks again. It passes when the
+first reopen kept the fork's id, exactly one file was deleted, the last
+resume logs `via <headMessageId>` under a new session id, both fork
+answers have KEEP-ALPHA and lack REMOVED-BRAVO, and the source's answer
+has both. Evidence: `fork-result.json`,
 `answers.json`, `deleted-projections.json`, `transcript.jsonl`. The earlier
 question, "what was the second secret word", drew NONE from the source in 3
 of 12 runs across L1's trunk and head (head 4 of 6, trunk 5 of 6;

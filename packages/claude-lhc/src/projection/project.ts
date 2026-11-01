@@ -26,8 +26,8 @@ export const FALLBACK_PROJECTION_MODEL = "claude-sonnet-5";
 export type ThinkingRebuildArm = "signed_verbatim" | "omit";
 export const SELECTED_THINKING_REBUILD_ARM: ThinkingRebuildArm = "signed_verbatim";
 
-const DANGLING_RESULT = "[tool result unavailable: the session was interrupted before this call completed]";
-const SUMMARY_BAND = /^\[context · [a-z]+\]\n/;
+export const DANGLING_RESULT = "[tool result unavailable: the session was interrupted before this call completed]";
+export const SUMMARY_BAND = /^\[context · [a-z]+\]\n/;
 
 export interface ProjectedAttachment {
   readonly uuid: string;

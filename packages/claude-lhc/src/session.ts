@@ -47,11 +47,13 @@ import {
 } from "./compactPolicy.js";
 import { type ControlCall, parseControl, ReplayLedger } from "./controls.js";
 import { bindSession, createLhc, createThread, currentSession, resolveSession, threadRef } from "./lhcHome.js";
-import { writeProjectedSession } from "./nativeSessionFile.js";
+import { nativeSessionPath, writeProjectedSession } from "./nativeSessionFile.js";
+import { matchTranscript } from "./projection/match.js";
 import {
   type AttachmentsByAnchor,
   FALLBACK_CLAUDE_CODE_VERSION,
   FALLBACK_PROJECTION_MODEL,
+  type NativeEntry,
   projectView,
 } from "./projection/project.js";
 import { parseCompactPolicy, parseSidecarOptions, type SidecarRequestMethod, type WireOptions } from "./protocol.js";
@@ -155,6 +157,12 @@ class InputQueue implements AsyncIterable<SDKUserMessage> {
       });
     }
   }
+}
+
+interface ServedProjection {
+  readonly sessionId: string;
+  readonly entries: readonly NativeEntry[];
+  readonly served: number;
 }
 
 interface Generation {
@@ -278,8 +286,10 @@ export class ClaudeLhcSession {
       this.#compactPolicy = { stored, window: null };
       await this.#settleOpenTurn("session restarted");
       if (anchor !== null) await this.#rollBack(anchor);
-      this.#harvest((await currentSession(resume, this.#home)) ?? resume);
-      await this.#startProjectedGeneration();
+      const current = (await currentSession(resume, this.#home)) ?? resume;
+      this.#harvest(current);
+      if (anchor === null) await this.#reopenGeneration(current);
+      else await this.#startProjectedGeneration(await this.#projectServedView());
       const served = this.#servedPastTrigger(await this.#windowRead);
       if (served !== null) await this.#compactBeforeFirstPrompt(served);
       this.#io.log(`resumed thread ${threadId} via ${resume} as generation ${this.#gen?.sessionId}`);
@@ -1058,7 +1068,7 @@ export class ClaudeLhcSession {
     this.#io.log(summary);
     await this.#lhc.logging.write(this.#thread, { level: "info", message: summary }).catch(() => undefined);
 
-    const next = await this.#startProjectedGeneration();
+    const next = await this.#startProjectedGeneration(await this.#projectServedView());
     this.#autoCompactDue = false;
     this.#compactFloor = "unread";
     return { next, postTokens };
@@ -1105,28 +1115,51 @@ export class ClaudeLhcSession {
     }
   }
 
-  async #startProjectedGeneration(): Promise<Generation> {
+  async #reopenGeneration(current: string): Promise<Generation> {
+    const projection = await this.#projectServedView();
+    const transcript = nativeSessionPath({ sessionId: current, cwd: this.#cwd, env: this.#env });
+    const held = await matchTranscript(transcript, projection.entries);
+    if (held.matches)
+      return this.#adopt(
+        await this.#startGeneration(current, { resume: current }),
+        `generation ${current}: kept, its native transcript holds the ${held.messages} served messages`,
+      );
+    this.#io.log(`generation ${current}: not kept, ${held.reason}`);
+    return this.#startProjectedGeneration(projection);
+  }
+
+  async #projectServedView(): Promise<ServedProjection> {
     if (this.#gen !== null) this.#harvest(this.#gen.sessionId);
     const view = await this.#lhc.threadView.getSessionThreadView(this.#thread);
     if (!view.ok) throw new Error(`LHC view read failed: ${view.error.reason}`);
     const sessionId = randomUUID();
-    const cwd = this.#cwd;
     const entries = projectView(
       view.value,
       {
         sessionId,
-        cwd,
+        cwd: this.#cwd,
         version: this.#claudeCodeVersion,
         permissionMode: this.#permissionMode ?? "default",
         model: this.#model ?? FALLBACK_PROJECTION_MODEL,
       },
       { attachments: await this.#storedAttachments() },
     );
+    return { sessionId, entries, served: view.value.entries.length };
+  }
+
+  async #startProjectedGeneration({ sessionId, entries, served }: ServedProjection): Promise<Generation> {
+    const cwd = this.#cwd;
     const title = nativeLhcTitle(this.#threadId);
     const dest = entries.length === 0 ? null : await writeProjectedSession({ sessionId, cwd, entries, env: this.#env });
     if (dest !== null) await labelNativeSession(sessionId, title, cwd, this.#io);
     await bindSession(this.#threadId, sessionId, this.#home);
-    const next = await this.#startGeneration(sessionId, dest === null ? { sessionId, title } : { resume: sessionId });
+    return this.#adopt(
+      await this.#startGeneration(sessionId, dest === null ? { sessionId, title } : { resume: sessionId }),
+      `generation ${sessionId}: ${entries.length} projected lines from ${served} served entries ${dest === null ? "(fresh native session)" : `at ${dest}`}`,
+    );
+  }
+
+  #adopt(next: Generation, line: string): Generation {
     const old = this.#gen;
     this.#gen = next;
     if (old !== null) {
@@ -1134,9 +1167,7 @@ export class ClaudeLhcSession {
       for (const item of old.input.drain()) next.input.push(item);
       old.query.close();
     }
-    this.#io.log(
-      `generation ${sessionId}: ${entries.length} projected lines from ${view.value.entries.length} served entries ${dest === null ? "(fresh native session)" : `at ${dest}`}`,
-    );
+    this.#io.log(line);
     return next;
   }
 

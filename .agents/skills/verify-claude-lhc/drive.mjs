@@ -692,21 +692,20 @@ const drives = {
     const scratch = new Scratch("restart");
     try {
       const { sid2 } = await seedCompacted(scratch, evidenceDir);
-      const before = scratch.threads().length;
-      const s = new Sidecar(scratch, "restart");
-      s.send({ type: "start", options: baseOptions(scratch, { resume: sid2 }) });
-      await s.waitFor(() => s.logHas(`resumed thread`), "resumed-thread log line");
-      const gen3 = /as generation (\S+)/.exec(s.stderr.join("\n"))?.[1];
-      const code = await s.stop();
-      s.saveEvidence(evidenceDir);
-      assert(code === 0, `restart sidecar exited ${code}`);
-      assert(gen3 && gen3 !== sid2, "restart did not mint a new generation");
-      assert(s.logHas(`via ${sid2}`), "resume did not go through the gen2 alias");
-      assert(scratch.projectedFiles().some((f) => f.includes(gen3)), `no projected file for gen3 ${gen3}`);
-      const lines = readFileSync(join(scratch.claudeHome, "projects", scratch.projectedFiles().find((f) => f.includes(gen3))), "utf8").trim().split("\n").filter(Boolean).length;
-      assert(lines >= 1, `projected file for gen3 ${gen3} is empty`);
-      assert(scratch.threads().length === before, "restart created a second thread");
-      return `resumed via gen2 as gen3=${gen3.slice(0, 8)} projectedLines>=1(file lines=${lines}) threads=${before} exit=0`;
+      const before = { threads: scratch.threads().length, files: scratch.projectedFiles().length };
+      const first = await startAndStop(scratch, "restart-1", { resume: sid2 }, evidenceDir);
+      const second = await compactOnce(scratch, "restart-2", { resume: sid2 }, evidenceDir);
+      const third = await startAndStop(scratch, "restart-3", { resume: sid2 }, evidenceDir);
+      assert(first.gen === sid2 && second.gen === sid2, `a plain restart did not keep gen2 ${sid2}: it opened ${first.gen}, then ${second.gen}`);
+      assert(first.s.logHas(`generation ${sid2}: kept, its native transcript holds the`), "the first restart logged no kept line");
+      assert(second.compacted && second.compacted !== sid2, "the /compact between restarts did not mint a new generation");
+      assert(third.gen === second.compacted && third.s.logHas(`via ${sid2}`), `the restart after the /compact opened ${third.gen}, not the compacted ${second.compacted}`);
+      const files = scratch.projectedFiles().length;
+      assert(files === before.files + 1, `projected files went ${before.files} -> ${files}; only the /compact should write one`);
+      const lines = (scratch.projected(sid2) ?? "").trim().split("\n").filter(Boolean).length;
+      assert(lines >= 1, `projected file for gen2 ${sid2} is empty`);
+      assert(scratch.threads().length === before.threads, "restart created a second thread");
+      return `gen2=${sid2.slice(0, 8)} kept on 2 restarts (file lines=${lines}); /compact minted gen3=${second.compacted.slice(0, 8)}, kept on the next restart via gen2; projected files ${before.files}->${files} threads=${before.threads} exit=0`;
     } finally { scratch.cleanup(); }
   },
 
@@ -715,6 +714,7 @@ const drives = {
     try {
       const { sid1, sid2, seed } = await seedCompacted(scratch, evidenceDir);
       const thread = threadIdFrom(seed);
+      const files = scratch.projectedFiles().length;
       const s = new Sidecar(scratch, "resume-superseded-alias");
       s.send({ type: "start", options: baseOptions(scratch, { resume: sid1 }) });
       await s.waitFor(() => s.logHas("resumed thread"), "resumed-thread log line");
@@ -723,10 +723,10 @@ const drives = {
       s.saveEvidence(evidenceDir);
       assert(code === 0, `rollback-shaped sidecar exited ${code}`);
       assert(s.logHas(`resumed thread ${thread} via ${sid1}`), "old alias did not resolve to the same thread");
-      assert(genN && genN !== sid1 && genN !== sid2, "rollback-shaped start did not mint a fresh generation");
-      assert(scratch.projectedFiles().some((f) => f.includes(genN)), "no projected file for the new generation");
+      assert(genN === sid2 && s.logHas(`generation ${sid2}: kept,`), `rollback-shaped start opened ${genN}, not the current generation ${sid2}`);
+      assert(scratch.projectedFiles().length === files, `the resume wrote a projected file: ${scratch.projectedFiles().join(", ")}`);
       assert(scratch.threads().length === 1, "rollback-shaped start forked the store");
-      return `resume:gen1(${sid1.slice(0, 8)}) -> same thread ${thread} as fresh gen=${genN.slice(0, 8)} threads=1; OBSERVED: current served view, not gen1-era history`;
+      return `resume:gen1(${sid1.slice(0, 8)}) -> same thread ${thread} on its current gen2=${genN.slice(0, 8)} threads=1; OBSERVED: current served view, not gen1-era history`;
     } finally { scratch.cleanup(); }
   },
 
@@ -866,8 +866,9 @@ const drives = {
         assert(!text.includes("REMOVED-TURN"), `${label} projected file carries the removed turn`);
       }
       assert(!restarted.s.logHas("rollback to event"), "the plain restart rolled back again");
+      assert(restarted.gen === rolled.gen && viaOld.gen === rolled.gen, `the plain restarts did not keep the rollback's generation ${rolled.gen}: ${restarted.gen}, ${viaOld.gen}`);
       assert(scratch.threads().length === 1, "restart after rollback forked the store");
-      return `rollback gen=${rolled.gen.slice(0, 8)} -> restart gen=${restarted.gen.slice(0, 8)} and restart via gen1 both end at the anchor; threads=1`;
+      return `rollback gen=${rolled.gen.slice(0, 8)} -> restart and restart via gen1 both keep it and end at the anchor; threads=1`;
     } finally { scratch.cleanup(); }
   },
 
@@ -976,12 +977,12 @@ const drives = {
       narrow.send({ type: "start", options: baseOptions(scratch, { resume: gen1, model: "claude-sonnet-4-6" }) });
       await narrow.waitFor(() => narrow.logHas("resumed thread"), "200k resume log line");
       const order = ["served context", "[lhc compact:auto]", "resumed thread"].map((t) => narrow.stderr.findIndex((l) => l.includes(t)));
-      const gens = narrow.stderr.filter((l) => /^\[claude-lhc\] generation \S+: \d+ projected lines/.test(l));
+      const gens = narrow.stderr.filter((l) => /^\[claude-lhc\] generation \S+: (kept,|\d+ projected lines)/.test(l));
       assert((await narrow.stop()) === 0, "200k resume sidecar did not exit 0");
       narrow.saveEvidence(evidenceDir);
       assert(order[0] >= 0 && order[1] > order[0] && order[2] > order[1], `expected served context > compact > resumed in stderr, got indexes ${order.join(",")}`);
       assert(narrow.stderr[order[1]].includes("(target 80000)"), "the resume compact did not use the capped target");
-      assert(gens.length === 2, `expected the oversized projection and the compacted one, got ${gens.length} generation line(s)`);
+      assert(gens.length === 2 && gens[0].includes(": kept,"), `expected the kept oversized generation and the compacted one, got ${JSON.stringify(gens)}`);
       return `setModel 1M->200k queued a compact (${/served context (\d+)/.exec(queued)[1]} tokens >= 160000); resume onto 200k compacted before start returned, target 80000`;
     } finally { scratch.cleanup(); }
   },
@@ -1298,7 +1299,6 @@ const drives = {
       writeFileSync(join(evidenceDir, "fork-result.json"), `${JSON.stringify(forked, null, 2)}\n`);
       assert(forked.code === 0, `forkSession failed: ${forked.error ?? forked.stderr}`);
       const answers = {};
-      const forkGenerations = [forked.value.sessionId];
       const askIn = async (label, options) => {
         const s = new Sidecar(scratch, `ask-${label}`, { live: true });
         sidecars.push(s);
@@ -1310,14 +1310,16 @@ const drives = {
         answers[label] = String(turn.result.result ?? "");
         return s;
       };
-      forkGenerations.push(generationFrom(await askIn("fork", { resume: forked.value.sessionId })));
+      const reopened = generationFrom(await askIn("fork", { resume: forked.value.sessionId }));
       await askIn("source", { resume: gen1 });
-      const deleted = scratch.projectedFiles().filter((f) => forkGenerations.some((id) => f.includes(id)));
+      const deleted = scratch.projectedFiles().filter((f) => f.includes(forked.value.sessionId));
       for (const file of deleted) rmSync(join(scratch.claudeHome, "projects", file));
       writeFileSync(join(evidenceDir, "deleted-projections.json"), `${JSON.stringify(deleted, null, 2)}\n`);
-      assert(deleted.length === 2, `expected the fork's two projected files, found ${JSON.stringify(deleted)}`);
+      assert(reopened === forked.value.sessionId, `the fork's first reopen opened ${reopened}, not the fork's own ${forked.value.sessionId}`);
+      assert(deleted.length === 1, `expected the fork's one projected file, found ${JSON.stringify(deleted)}`);
       const head = forked.value.headMessageId;
       const atHead = await askIn("fork-at-head", { resume: forked.value.sessionId, resumeSessionAt: head });
+      assert(generationFrom(atHead) !== forked.value.sessionId, "resumeSessionAt after the fork's projection was deleted reused the deleted session id");
       writeFileSync(join(evidenceDir, "answers.json"), `${JSON.stringify(answers, null, 2)}\n`);
       assert(answers.fork.includes("KEEP-ALPHA") && !answers.fork.includes("REMOVED-BRAVO"), `the fork does not end at the first turn: ${answers.fork}`);
       assert(answers.source.includes("KEEP-ALPHA") && answers.source.includes("REMOVED-BRAVO"), `the source lost a word: ${answers.source}`);
@@ -1599,6 +1601,12 @@ const drives = {
       }
       const failed = [...report.stock, ...report.lhc, ...report.lhcAfterCompact].find((r) => r.subtype !== "success" || r.is_error);
       assert(failed === undefined, `${failed?.label} did not succeed: ${failed?.subtype}`);
+      const ids = (rows) => [...new Set(rows.map((r) => r.session_id))];
+      assert(ids(report.lhc).length <= 1, `an LHC resume with no compact between changed the session id: ${ids(report.lhc).join(" -> ")}`);
+      if (compact && report.lhc.length > 0) {
+        const after = ids(report.lhcAfterCompact);
+        assert(after.length === 1 && after[0] !== report.lhc[0]?.session_id, `the /compact did not mint one new session id that its resumes kept: ${report.lhc[0]?.session_id} -> ${after.join(" -> ")}`);
+      }
       const low = (rows) => rows.filter((r) => r.label.includes("-resume-") && !(r.cache_fraction >= 0.8));
       if (lastLhc !== undefined && resumes >= 2) {
         const [first, second] = [proxy.body("lhc-resume-1"), proxy.body("lhc-resume-2")];
@@ -1613,7 +1621,7 @@ const drives = {
       if (report.reminder !== undefined)
         assert(report.reminder.resume1Index >= 0 && report.reminder.resume2Index === report.reminder.resume1Index && report.reminder.sameText, `the historical environment reminder moved between LHC resumes: ${JSON.stringify(report.reminder)}`);
       const fractions = (rows) => rows.filter((r) => r.label.includes("-resume-")).map((r) => r.cache_fraction.toFixed(3)).join("/");
-      return `auth=${gate.auth} lines=${lines}; stock resumes ${fractions(report.stock) || "not run"}; LHC resumes ${fractions(report.lhc) || "not run"}${compact ? `, after /compact ${fractions(report.lhcAfterCompact)}` : ""}${report.reminder ? `; environment reminder held at messages[${report.reminder.resume1Index}]` : ""}`;
+      return `auth=${gate.auth} lines=${lines}; stock resumes ${fractions(report.stock) || "not run"}; LHC resumes ${fractions(report.lhc) || "not run"}${report.lhc.length > 0 ? ` on session ${ids(report.lhc)[0].slice(0, 8)}` : ""}${compact ? `, after /compact ${fractions(report.lhcAfterCompact)}` : ""}${report.reminder ? `; environment reminder held at messages[${report.reminder.resume1Index}]` : ""}`;
     } finally {
       for (const s of sidecars) if (s.exitCode === undefined) await s.stop();
       mkdirSync(evidenceDir, { recursive: true });
