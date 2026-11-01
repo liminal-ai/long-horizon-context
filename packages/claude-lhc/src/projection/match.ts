@@ -6,12 +6,6 @@ export type TranscriptMatch =
   | { readonly matches: true; readonly messages: number }
   | { readonly matches: false; readonly reason: string };
 
-/**
- * A native transcript still holds the served view when the messages on its chain name the same captured
- * messages, in the same order, as a fresh projection of that view. The CLI writes each message under the uuid
- * claude-lhc captured it by, and a projected line names its capture key in `lhcSource`. A summary band has no
- * message of its own, so it must carry the same text.
- */
 export async function matchTranscript(path: string, projected: readonly NativeEntry[]): Promise<TranscriptMatch> {
   const served = messageAnchors(projected);
   if (served.length === 0) return { matches: false, reason: "the served view is empty" };
@@ -52,8 +46,13 @@ function messageAnchor(line: NativeEntry): string | null {
   if (line["type"] === "user" && typeof content === "string" && SUMMARY_BAND.test(content)) return `band:${content}`;
   const source = line[PROJECTED_SOURCE_FIELD];
   if (typeof source !== "string" && isDanglingResult(content)) return null;
-  const key = typeof source === "string" ? source : messageKeyPrefix(String(line["uuid"]));
+  const key = typeof source === "string" ? source : captureKeyOfNativeLine(line);
   return anchorOf(key) ?? key;
+}
+
+// The CLI writes each message under the uuid it streamed, which claude-lhc captures it by.
+function captureKeyOfNativeLine(line: NativeEntry): string {
+  return messageKeyPrefix(String(line["uuid"]));
 }
 
 function isDanglingResult(content: unknown): boolean {

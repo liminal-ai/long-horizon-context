@@ -8,73 +8,70 @@ import { captureTurn } from "./support/seedThread.ts";
 
 const opened: Options[] = [];
 
-// Writes each prompt and reply to the native transcript under the uuid it streams, as the CLI does.
 vi.mock("@anthropic-ai/claude-agent-sdk", async (importOriginal) => {
   const real = await importOriginal<typeof import("@anthropic-ai/claude-agent-sdk")>();
   const { nativeSessionPath } = await import("../src/nativeSessionFile.ts");
-  return {
-    ...real,
-    renameSession: async () => {},
-    query: ({ prompt, options }: { prompt: AsyncIterable<SDKUserMessage>; options: Options }) => {
-      opened.push(options);
-      const sessionId = options.resume ?? options.sessionId ?? randomUUID();
-      const path = nativeSessionPath({ sessionId, cwd: options.cwd!, env: options.env ?? {} });
-      let parentUuid = existsSync(path)
-        ? (readFileSync(path, "utf8")
-            .trim()
-            .split("\n")
-            .map((line) => JSON.parse(line) as { uuid?: string })
-            .findLast((line) => typeof line.uuid === "string")?.uuid ?? null)
-        : null;
-      const write = (type: "user" | "assistant", uuid: string, content: unknown): void => {
-        mkdirSync(dirname(path), { recursive: true });
-        appendFileSync(
-          path,
-          `${JSON.stringify({ parentUuid, isSidechain: false, type, uuid, sessionId, message: { role: type, content } })}\n`,
-        );
-        parentUuid = uuid;
-      };
-      const out: SDKMessage[] = [];
-      let wake: (() => void) | null = null;
-      const push = (message: SDKMessage): void => {
-        out.push(message);
-        wake?.();
-      };
-      void (async () => {
-        for await (const user of prompt) {
-          const text = JSON.stringify(user.message.content);
-          write("user", user.uuid!, user.message.content);
-          const reply = randomUUID();
-          const content = [{ type: "text", text: `echo ${text}` }];
-          write("assistant", reply, content);
-          push({
-            type: "assistant",
-            uuid: reply,
-            session_id: sessionId,
-            parent_tool_use_id: null,
-            message: { id: `msg_${reply}`, model: "claude-sonnet-5", role: "assistant", content },
-          } as unknown as SDKMessage);
-          push({
-            type: "result",
-            subtype: "success",
-            is_error: false,
-            uuid: randomUUID(),
-            session_id: sessionId,
-          } as unknown as SDKMessage);
-        }
-      })();
-      return {
-        [Symbol.asyncIterator]: () => ({
-          next: async (): Promise<IteratorResult<SDKMessage>> => {
-            while (out.length === 0) await new Promise<void>((resolve) => (wake = resolve));
-            return { value: out.shift() as SDKMessage, done: false };
-          },
-        }),
-        getContextUsage: async () => ({ rawMaxTokens: 1_000_000, totalTokens: 0 }),
-        close: () => {},
-      };
-    },
+  const cliLikeQuery = ({ prompt, options }: { prompt: AsyncIterable<SDKUserMessage>; options: Options }) => {
+    opened.push(options);
+    const sessionId = options.resume ?? options.sessionId ?? randomUUID();
+    const path = nativeSessionPath({ sessionId, cwd: options.cwd!, env: options.env ?? {} });
+    let parentUuid = existsSync(path)
+      ? (readFileSync(path, "utf8")
+          .trim()
+          .split("\n")
+          .map((line) => JSON.parse(line) as { uuid?: string })
+          .filter((line) => typeof line.uuid === "string")
+          .at(-1)?.uuid ?? null)
+      : null;
+    const write = (type: "user" | "assistant", uuid: string, content: unknown): void => {
+      mkdirSync(dirname(path), { recursive: true });
+      appendFileSync(
+        path,
+        `${JSON.stringify({ parentUuid, isSidechain: false, type, uuid, sessionId, message: { role: type, content } })}\n`,
+      );
+      parentUuid = uuid;
+    };
+    const out: SDKMessage[] = [];
+    let wake: (() => void) | null = null;
+    const push = (message: SDKMessage): void => {
+      out.push(message);
+      wake?.();
+    };
+    void (async () => {
+      for await (const user of prompt) {
+        const text = JSON.stringify(user.message.content);
+        write("user", user.uuid!, user.message.content);
+        const reply = randomUUID();
+        const content = [{ type: "text", text: `echo ${text}` }];
+        write("assistant", reply, content);
+        push({
+          type: "assistant",
+          uuid: reply,
+          session_id: sessionId,
+          parent_tool_use_id: null,
+          message: { id: `msg_${reply}`, model: "claude-sonnet-5", role: "assistant", content },
+        } as unknown as SDKMessage);
+        push({
+          type: "result",
+          subtype: "success",
+          is_error: false,
+          uuid: randomUUID(),
+          session_id: sessionId,
+        } as unknown as SDKMessage);
+      }
+    })();
+    return {
+      [Symbol.asyncIterator]: () => ({
+        next: async (): Promise<IteratorResult<SDKMessage>> => {
+          while (out.length === 0) await new Promise<void>((resolve) => (wake = resolve));
+          return { value: out.shift() as SDKMessage, done: false };
+        },
+      }),
+      getContextUsage: async () => ({ rawMaxTokens: 1_000_000, totalTokens: 0 }),
+      close: () => {},
+    };
   };
+  return { ...real, renameSession: async () => {}, query: cliLikeQuery };
 });
 
 const { forkSession } = await import("../src/index.ts");
@@ -136,7 +133,7 @@ async function turn({ session, frames }: Opened, text: string): Promise<string> 
     session_id: "",
   });
   await vi.waitFor(() => expect(frames.filter((frame) => frame.type === "result")).toHaveLength(results + 1));
-  return frames.findLast((frame) => frame.type === "assistant")!.uuid!;
+  return frames.filter((frame) => frame.type === "assistant").at(-1)!.uuid!;
 }
 
 async function threadWithTurns(
