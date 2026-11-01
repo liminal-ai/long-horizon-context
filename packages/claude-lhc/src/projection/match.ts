@@ -22,7 +22,10 @@ export async function matchTranscript(path: string, projected: readonly NativeEn
     const code = (cause as NodeJS.ErrnoException).code;
     return {
       matches: false,
-      reason: code === "ENOENT" ? "it has no native transcript" : `its native transcript is unreadable (${code})`,
+      reason:
+        code === "ENOENT"
+          ? "it has no native transcript"
+          : `its native transcript is unreadable (${code ?? (cause as Error).message})`,
     };
   }
   const held = messageAnchors(leafChain(parseLines(body)));
