@@ -1299,7 +1299,6 @@ const drives = {
       writeFileSync(join(evidenceDir, "fork-result.json"), `${JSON.stringify(forked, null, 2)}\n`);
       assert(forked.code === 0, `forkSession failed: ${forked.error ?? forked.stderr}`);
       const answers = {};
-      const forkGenerations = [forked.value.sessionId];
       const askIn = async (label, options) => {
         const s = new Sidecar(scratch, `ask-${label}`, { live: true });
         sidecars.push(s);
@@ -1311,14 +1310,16 @@ const drives = {
         answers[label] = String(turn.result.result ?? "");
         return s;
       };
-      forkGenerations.push(generationFrom(await askIn("fork", { resume: forked.value.sessionId })));
+      const reopened = generationFrom(await askIn("fork", { resume: forked.value.sessionId }));
       await askIn("source", { resume: gen1 });
-      const deleted = scratch.projectedFiles().filter((f) => forkGenerations.some((id) => f.includes(id)));
+      const deleted = scratch.projectedFiles().filter((f) => f.includes(forked.value.sessionId));
       for (const file of deleted) rmSync(join(scratch.claudeHome, "projects", file));
       writeFileSync(join(evidenceDir, "deleted-projections.json"), `${JSON.stringify(deleted, null, 2)}\n`);
-      assert(deleted.length === 2, `expected the fork's two projected files, found ${JSON.stringify(deleted)}`);
+      assert(reopened === forked.value.sessionId, `the fork's first reopen opened ${reopened}, not the fork's own ${forked.value.sessionId}`);
+      assert(deleted.length === 1, `expected the fork's one projected file, found ${JSON.stringify(deleted)}`);
       const head = forked.value.headMessageId;
       const atHead = await askIn("fork-at-head", { resume: forked.value.sessionId, resumeSessionAt: head });
+      assert(generationFrom(atHead) !== forked.value.sessionId, "resumeSessionAt after the fork's projection was deleted reused the deleted session id");
       writeFileSync(join(evidenceDir, "answers.json"), `${JSON.stringify(answers, null, 2)}\n`);
       assert(answers.fork.includes("KEEP-ALPHA") && !answers.fork.includes("REMOVED-BRAVO"), `the fork does not end at the first turn: ${answers.fork}`);
       assert(answers.source.includes("KEEP-ALPHA") && answers.source.includes("REMOVED-BRAVO"), `the source lost a word: ${answers.source}`);
