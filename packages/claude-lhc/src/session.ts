@@ -47,7 +47,8 @@ import {
 } from "./compactPolicy.js";
 import { type ControlCall, parseControl, ReplayLedger } from "./controls.js";
 import { bindSession, createLhc, createThread, currentSession, resolveSession, threadRef } from "./lhcHome.js";
-import { writeProjectedSession } from "./nativeSessionFile.js";
+import { nativeSessionPath, writeProjectedSession } from "./nativeSessionFile.js";
+import { matchTranscript } from "./projection/match.js";
 import {
   type AttachmentsByAnchor,
   FALLBACK_CLAUDE_CODE_VERSION,
@@ -278,8 +279,9 @@ export class ClaudeLhcSession {
       this.#compactPolicy = { stored, window: null };
       await this.#settleOpenTurn("session restarted");
       if (anchor !== null) await this.#rollBack(anchor);
-      this.#harvest((await currentSession(resume, this.#home)) ?? resume);
-      await this.#startProjectedGeneration();
+      const current = (await currentSession(resume, this.#home)) ?? resume;
+      this.#harvest(current);
+      await this.#startProjectedGeneration(current);
       const served = this.#servedPastTrigger(await this.#windowRead);
       if (served !== null) await this.#compactBeforeFirstPrompt(served);
       this.#io.log(`resumed thread ${threadId} via ${resume} as generation ${this.#gen?.sessionId}`);
@@ -1105,7 +1107,10 @@ export class ClaudeLhcSession {
     }
   }
 
-  async #startProjectedGeneration(): Promise<Generation> {
+  // A reopen resumes the current generation under its own session id while its native transcript still holds
+  // the served view, as a stock resume does, so whatever keys on that id (an account-affine proxy, a host's
+  // task files) survives restarts and idle releases. A compact, a rollback or a lost transcript projects anew.
+  async #startProjectedGeneration(reopening: string | null = null): Promise<Generation> {
     if (this.#gen !== null) this.#harvest(this.#gen.sessionId);
     const view = await this.#lhc.threadView.getSessionThreadView(this.#thread);
     if (!view.ok) throw new Error(`LHC view read failed: ${view.error.reason}`);
@@ -1122,11 +1127,26 @@ export class ClaudeLhcSession {
       },
       { attachments: await this.#storedAttachments() },
     );
+    if (reopening !== null) {
+      const held = await matchTranscript(nativeSessionPath({ sessionId: reopening, cwd, env: this.#env }), entries);
+      if (held.matches)
+        return this.#adopt(
+          await this.#startGeneration(reopening, { resume: reopening }),
+          `generation ${reopening}: kept, its native transcript holds the ${held.messages} served messages`,
+        );
+      this.#io.log(`generation ${reopening}: not kept, ${held.reason}`);
+    }
     const title = nativeLhcTitle(this.#threadId);
     const dest = entries.length === 0 ? null : await writeProjectedSession({ sessionId, cwd, entries, env: this.#env });
     if (dest !== null) await labelNativeSession(sessionId, title, cwd, this.#io);
     await bindSession(this.#threadId, sessionId, this.#home);
-    const next = await this.#startGeneration(sessionId, dest === null ? { sessionId, title } : { resume: sessionId });
+    return this.#adopt(
+      await this.#startGeneration(sessionId, dest === null ? { sessionId, title } : { resume: sessionId }),
+      `generation ${sessionId}: ${entries.length} projected lines from ${view.value.entries.length} served entries ${dest === null ? "(fresh native session)" : `at ${dest}`}`,
+    );
+  }
+
+  #adopt(next: Generation, line: string): Generation {
     const old = this.#gen;
     this.#gen = next;
     if (old !== null) {
@@ -1134,9 +1154,7 @@ export class ClaudeLhcSession {
       for (const item of old.input.drain()) next.input.push(item);
       old.query.close();
     }
-    this.#io.log(
-      `generation ${sessionId}: ${entries.length} projected lines from ${view.value.entries.length} served entries ${dest === null ? "(fresh native session)" : `at ${dest}`}`,
-    );
+    this.#io.log(line);
     return next;
   }
 
