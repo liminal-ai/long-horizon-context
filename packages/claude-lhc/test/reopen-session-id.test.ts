@@ -4,7 +4,9 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { Options, SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { captureTurn } from "./support/seedThread.ts";
+import { mapPrompt, mapSdkMessage } from "../src/capture/mapper.ts";
+import { threadRef } from "../src/lhcHome.ts";
+import { captureTurn, seedLhc } from "./support/seedThread.ts";
 
 const opened: Options[] = [];
 
@@ -217,12 +219,55 @@ describe("a reopen keeps the current generation's session id", () => {
     await rolled.session.close();
 
     expect(rolled.generation).not.toBe(gen1);
-    expect(rolled.logs).toContain(
-      `generation ${gen1}: not kept, its native transcript differs from the served view at message 3 (4 held, 2 served)`,
-    );
     const projected = readFileSync(transcript(rolled.generation), "utf8");
     expect(projected).toContain("KEEP");
     expect(projected).not.toContain("REMOVED");
+  });
+
+  test("a rollback that cuts inside one captured message mints a new id without the cut block", async () => {
+    const { gen1, threadId } = await threadWithTurns(["ONE"]);
+    const reply = randomUUID();
+    const sent = await seedLhc().intakeStream.messageEvents(threadRef(threadId, home), [
+      ...mapPrompt(
+        { type: "user", message: { role: "user", content: "TWO" }, parent_tool_use_id: null, session_id: "" },
+        randomUUID(),
+        false,
+      ),
+      ...mapSdkMessage(
+        {
+          type: "assistant",
+          uuid: reply,
+          session_id: "",
+          parent_tool_use_id: null,
+          message: {
+            id: `msg_${reply}`,
+            model: "claude-sonnet-5",
+            role: "assistant",
+            content: [
+              { type: "text", text: "KEPT-BLOCK" },
+              { type: "text", text: "CUT-BLOCK" },
+            ],
+          },
+        } as unknown as SDKMessage,
+        undefined,
+      ).events,
+    ]);
+    expect(sent.ok).toBe(true);
+    const projected = await open({ resume: gen1 });
+    await projected.session.close();
+    const kept = readFileSync(transcript(projected.generation), "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { uuid: string; lhcSource?: string })
+      .find((line) => line.lhcSource === `claude-lhc:${reply}:0:assistant_text`)!;
+
+    const rolled = await open({ resume: projected.generation, resumeSessionAt: kept.uuid });
+    await rolled.session.close();
+
+    expect(rolled.generation).not.toBe(projected.generation);
+    const text = readFileSync(transcript(rolled.generation), "utf8");
+    expect(text).toContain("KEPT-BLOCK");
+    expect(text).not.toContain("CUT-BLOCK");
   });
 
   test("a fork mints a new id, and reopening the fork or its source keeps each one's own", async () => {

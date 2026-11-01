@@ -1602,7 +1602,7 @@ const drives = {
       assert(failed === undefined, `${failed?.label} did not succeed: ${failed?.subtype}`);
       const ids = (rows) => [...new Set(rows.map((r) => r.session_id))];
       assert(ids(report.lhc).length <= 1, `an LHC resume with no compact between changed the session id: ${ids(report.lhc).join(" -> ")}`);
-      if (compact) {
+      if (compact && report.lhc.length > 0) {
         const after = ids(report.lhcAfterCompact);
         assert(after.length === 1 && after[0] !== report.lhc[0]?.session_id, `the /compact did not mint one new session id that its resumes kept: ${report.lhc[0]?.session_id} -> ${after.join(" -> ")}`);
       }

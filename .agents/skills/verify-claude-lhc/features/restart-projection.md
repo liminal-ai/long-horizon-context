@@ -17,10 +17,12 @@
   projection would (`projection/match.ts`). The CLI writes each message
   under the uuid claude-lhc captured it by, and a projected line names its
   capture key in `lhcSource`. A summary band must carry the same text. A
-  compact, a host rollback that cut the tail, a missing or unreadable
-  transcript, or a message only one side holds (a crash between capture
-  and the CLI's write, a CLI line claude-lhc never captured) mints a new
-  id. A compact always mints one.
+  compact, a missing or unreadable transcript, or a message only one side
+  holds (a crash between capture and the CLI's write, a CLI line
+  claude-lhc never captured) mints a new id. A compact always mints one,
+  and so does every start with `resumeSessionAt`, because a rollback can
+  cut between blocks of one captured message, below what the match
+  compares.
 - Every native session id a thread has run under stays an alias; the
   latest is current. Restarting never forks the store.
 - A projected generation keeps the CLI's attachment lines: the

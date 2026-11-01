@@ -288,7 +288,8 @@ export class ClaudeLhcSession {
       if (anchor !== null) await this.#rollBack(anchor);
       const current = (await currentSession(resume, this.#home)) ?? resume;
       this.#harvest(current);
-      await this.#reopenGeneration(current);
+      if (anchor === null) await this.#reopenGeneration(current);
+      else await this.#startProjectedGeneration(await this.#projectServedView());
       const served = this.#servedPastTrigger(await this.#windowRead);
       if (served !== null) await this.#compactBeforeFirstPrompt(served);
       this.#io.log(`resumed thread ${threadId} via ${resume} as generation ${this.#gen?.sessionId}`);
