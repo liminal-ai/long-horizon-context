@@ -1,6 +1,6 @@
 {
   "name": "claude-lhc",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "description": "The Claude Agent SDK query() with LHC underneath: a sidecar records every message into an LHC thread and compacts from it.",
   "type": "module",
