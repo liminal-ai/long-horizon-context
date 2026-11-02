@@ -35,9 +35,9 @@
   reads the prompt cache. A message that only a summary band holds gets
   none of its attachments back.
 - `start{resume: <unknown id>}`: one `error` frame
-  (`no LHC thread holds the Claude session ...`), exit 1. The LHC home
-  directory is created, but no registry database, thread file, or
-  projected session is.
+  (`no LHC thread holds the Claude session ...`), exit 1. Nothing is
+  created: no LHC home directory, registry database, thread file, or
+  projected session.
 
 ## How to get to it (user POV)
 

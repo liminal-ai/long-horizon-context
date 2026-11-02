@@ -18,6 +18,7 @@ try {
 
   const missing = unwrap(await sdk.retrieval.getTurns({ filePath }, ["t999"]), "getTurns missing");
   if (missing.unserved.length !== 1) fail("getTurns t999 should be unserved, not served or silent");
+  if (missing.unserved[0].reason !== "not_found") fail(`getTurns t999 should be not_found, got ${JSON.stringify(missing.unserved[0])}`);
   console.log(`getTurns t999 unserved reason: ${missing.unserved[0].reason ?? JSON.stringify(missing.unserved[0])}`);
 
   console.log("verify-lhc retrieval: PASS");

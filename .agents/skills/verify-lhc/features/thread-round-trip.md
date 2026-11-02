@@ -18,11 +18,11 @@ A host opens a thread, records the conversation as it happens, and later asks lh
 node .agents/skills/verify-lhc/helpers/round-trip.mjs
 ```
 
-Pass line: `verify-lhc round-trip: PASS`. The drive seeds 6 closed turns, serves before compact, compacts, serves again, then runs `lhc thread health` through the CLI binary against the same home. `--keep` leaves the temp home for manual follow-up; `--home DIR` reuses a home you name.
+Pass line: `verify-lhc round-trip: PASS`. The drive seeds 6 closed turns, serves before compact, compacts, serves again, then runs `lhc thread health` through the CLI binary against the same home. `--keep` leaves the temp home for manual follow-up; `--home DIR` seeds into a directory you name, which must not already hold `threads/thread.sqlite` (a kept home fails with `path_exists`).
 
 ## Gotchas
 
 - Compact on a tiny thread installs a view with empty bands; that is a pass, not a no-op failure. Judge by the serve-after-compact content, not band counts.
 - `listTurns` includes the still-open turn after the last `turn_end`; closed seeded turns are `t1…t6`.
-- Manual mode does nothing until `work.drain` runs. Serving undrained intake gives fallback composition, which can look like missing smoothing.
+- Manual mode does nothing until `work.drain` runs. The serve methods render recorded message text either way; undrained intake shows up as fallback composition in turn renderings and compact bands, which can look like missing smoothing.
 - The CLI wants a home (`registry.sqlite` + `threads/`), not a bare thread file.

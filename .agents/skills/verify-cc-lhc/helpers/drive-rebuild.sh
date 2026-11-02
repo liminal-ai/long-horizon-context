@@ -39,6 +39,7 @@ if [ -n "$REBUILT" ]; then
   RRC="$(run_in_tmux rebuild-resume "$RLOG" \
     "$ENV node '$CC_LHC_BIN_JS' --lhc-no-inference --resume $NEW_SID -p 'continue: repeat the codeword'")" || RRC=124
   [ "$RRC" = "0" ] && pass "resume of rebuilt session exited 0" || fail "resume rc=$RRC (see rebuild-resume.log)"
+  grep -qx 'ok' "$RLOG" && pass "user-visible reply 'ok' after resume" || fail "resume printed no 'ok' reply (see rebuild-resume.log)"
   AFTER="$(wc -l <"$REBUILT")"
   [ "$AFTER" -gt "$BEFORE" ] && pass "rebuilt transcript continued ($BEFORE -> $AFTER lines)" \
     || fail "rebuilt transcript did not grow ($BEFORE -> $AFTER)"

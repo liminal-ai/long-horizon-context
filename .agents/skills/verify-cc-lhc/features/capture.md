@@ -17,7 +17,7 @@ that the thread, transcript, and capture summary exist afterward.
 - Run `cc-lhc -p "<prompt>" --session-id <uuid>` for a one-shot.
 - Run `cc-lhc --resume <uuid> -p "<prompt>"` to continue it.
 - Run `cc-lhc` interactively and hold a normal Claude conversation
-  (live drives only; needs throwaway-HOME Claude login).
+  (live drives only; needs throwaway-HOME Claude auth).
 
 ## Driving it with verify-cc-lhc helpers
 
@@ -33,14 +33,20 @@ Preconditions:
   `<ISO>/.claude/projects/*/<sid>.jsonl` contains `ALDER-7`,
   `.cc-lhc/cc-lhc.sqlite`, `registry.sqlite`, and a thread sqlite exist,
   and `wrapper.log` records `cc-lhc owns thread …`. Pass line:
-  `VERIFY-CC-LHC capture: PASS`.
+  `VERIFY-CC-LHC capture: PASS`. That proves launch, lease, transcript
+  and stores, not ingestion: the stand-in exits before the capture bind,
+  so the summary reads `lines=0 … thread=none` (seen on 2026-11-02).
+  Ingestion is proven by the interactive entry.
 - **Isolation outcome.** The same drive asserts no `<sid>.jsonl` exists
   under the operator's real `~/.claude/projects`.
 - **Interactive entry (live only).** In an isolated tmux session with a
-  throwaway-HOME Claude login, run the built wrapper with no `-p`, send
-  one prompt, wait for the reply in the pane (`tmux capture-pane -p`),
-  exit Claude, then grade the same outcome files. Without throwaway
-  login, report `SKIP: no throwaway-HOME Claude credentials`.
+  throwaway-HOME Claude auth, run the built wrapper with no `-p`, get
+  past the welcome panel and Claude's first-run prompts (see
+  [control-panel.md](./control-panel.md)), send one prompt, wait for the
+  reply in the pane (`tmux capture-pane -p`), exit Claude with `/exit`,
+  then grade the same outcome files plus an exit summary with `events=`
+  above 0 and a `thread=th_…`. Without throwaway auth, report
+  `SKIP: no throwaway-HOME Claude credentials`.
 
 ## Gotchas
 

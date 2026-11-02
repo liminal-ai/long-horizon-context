@@ -3,8 +3,10 @@
 Rebuild writes a thread's served view as a fresh Claude session rollout
 under a new session id, records the replayed-prefix lineage, and makes
 that session the thread's current one — so `--resume` continues the same
-work in a new Claude session. This is the machinery Smart Compact hands
-off through, minus the compaction decision itself.
+work in a new Claude session. Smart Compact writes its rebuilt session
+with the same writer, but reserves the lineage as not yet accepted and
+moves the current alias only after the handoff or the one-shot prompt
+succeeds; `rollout write` accepts and moves it before it returns.
 
 ## Sub-features
 
@@ -40,7 +42,8 @@ Preconditions:
   carry `"version":"2.1.226"` from that envelope, and the file contains
   `ALDER-7` (the served view was serialized). User-only:
   `--lhc-no-inference --resume <new-id> -p 'continue: repeat the
-  codeword'` exits 0; the stand-in's pane reply is the literal `ok`.
+  codeword'` exits 0 and its log (`rebuild-resume.log`) holds the
+  stand-in's reply, the literal line `ok`.
   Outcome: the rebuilt transcript grows and `wrapper.log` shows no
   `capture degraded`. Pass line: `VERIFY-CC-LHC rebuild: PASS`.
 - **Refusal entry.** Run `rollout write` with a non-UUID `--session-id`
@@ -53,11 +56,14 @@ Preconditions:
   rollout path. Always use a fresh UUID per drive.
 - `--token-family` is required; seeded drives use `claude-2026`, the
   family the wrapper logs as its provider fallback.
-- Without registered lineage the first resume refuses capture:
+- Without registered lineage, an interactive resume refuses capture:
   `wrapper.log` logs `capture degraded` with
-  `prefix_boundary:unknown_provenance` and nothing is ingested. The
-  drive's no-degradation outcome is the check that `rollout write`
-  registered the verified prefix — never drop it to make a run pass.
+  `prefix_boundary:unknown_provenance` and nothing is ingested. A `-p`
+  resume of a rebuilt file with no accepted lineage exits 2 before
+  capture starts, with guidance that capture is off
+  (`src/intake/unlinked-rebuild.ts`). The drive's exit-0 and
+  no-degradation outcomes are the check that `rollout write` registered
+  the verified prefix — never drop them to make a run pass.
 - A host rewind (the transcript shrinks) degrades capture with
   `file_shrink`. cc-lhc does not send the core `rollback` intake event;
   that event is covered by verify-lhc.

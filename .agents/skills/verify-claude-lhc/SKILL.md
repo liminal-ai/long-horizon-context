@@ -72,8 +72,9 @@ CLAUDE_CONFIG_DIR="$SCRATCH/claude-home" CLAUDE_LHC_NO_INFERENCE=1 \
 ```
 
 then write one `{"type":"start","options":{...}}` line. Options must carry
-`cwd`, `lhc: {home: "$SCRATCH/lhc", compact: {trigger, target}}` (target
-below the trigger; a resume may omit `compact`), and normally `model` +
+`lhc: {home: "$SCRATCH/lhc", compact: {trigger, target}}` (target
+below the trigger; a resume may omit `compact`), and normally `cwd`
+(default the sidecar's own cwd), `model` and
 `pathToClaudeCodeExecutable`.
 
 ## Doctor
@@ -154,9 +155,9 @@ Every drive above runs both halves; do not weaken a drive to one half.
 Not deterministic; `all` runs it only with `CLAUDE_LHC_LIVE=1`. The repo
 proof `packages/claude-lhc/scripts/standalone.ts` covers start → tool turn
 → `/compact` → deferred compact → restart-recall against the real model.
-In the deferred compact step it sends a prompt while the compact runs and
-waits for two `result` frames, the continued turn's and then the held
-prompt's own.
+In the deferred compact step it sends `/compact` during an open turn,
+then a prompt while the compact runs, and waits for two `result` frames,
+the `/compact`'s and then the held prompt's own.
 It inherits the caller's env, and `src/nativeSessionFile.ts` writes native
 session files and project memory under `CLAUDE_CONFIG_DIR`, else
 `~/.claude`. Run it only through the harness, which isolates it:
@@ -207,8 +208,10 @@ cause to rule out before a live FAIL counts as a regression.
 Method: after a compact mints gen2, start a new sidecar with
 `resume: <gen1>` — the superseded alias — instead of the current one.
 `session.ts` resolves **any** alias to its thread, closes an open turn
-that has messages, and resumes the thread's current generation, which
-still holds the current served view. The drive asserts the alias
+that has messages, and reopens the thread's current generation: it keeps
+that session id when its native transcript still holds the current
+served view (`#reopenGeneration`, `projection/match.ts`), and otherwise
+projects the view under a new id. The drive asserts the alias
 identity, the kept current generation, a single thread, and no new
 projected file; the served-view sentence in its PASS line is a reading
 of the code. A host rewind is a different

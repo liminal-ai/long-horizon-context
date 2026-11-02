@@ -9,8 +9,8 @@
 - The sidecar looks up every capture key under `claude-lhc:<uuid>:`
   (`listEventKeysByPrefix`), takes the largest event order, and appends
   the core `rollback` event before it projects (`src/rollbackAnchor.ts`,
-  `session.ts` resume arm). stderr logs `rollback to event <n> via <uuid>;
-  served tail <t> tokens`. The served view and the projected file then end
+  `session.ts` resume arm). stderr logs `rollback to event <n> via <uuid>`.
+  The served view and the projected file then end
   at that message.
 - `resumeSessionAt` never reaches the CLI. Projected lines carry fresh
   uuids, and the CLI fails a turn whose `resumeSessionAt` names no line in
@@ -117,7 +117,7 @@ through the KEEP assistant message and no projected file carries REMOVED.
 compacts, rolls back behind the compact point, sends `/compact`, and
 restarts. It passes when the rollback start compacted
 (`[lhc compact:auto]`) and none of the three projected files carries
-removed text.
+removed text or `KEEP-TURN answer 2`.
 
 `rollback-projected-anchor` compacts, then rolls back to the KEEP line of
 the compacted projection, a projected uuid with no capture key. It passes

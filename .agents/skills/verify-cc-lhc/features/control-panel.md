@@ -29,7 +29,7 @@ Preconditions:
 
 - Baseline preconditions in [README.md](./README.md) hold.
 - User-only entry needs only `--lhc-help`; panel entries need a live
-  interactive session (throwaway-HOME Claude login).
+  interactive session (throwaway-HOME Claude auth).
 
 - **Help-text entry (user-only, seeded).** Run `helpers/drive-help.sh`:
   `--lhc-help` must state the always-on Smart Compact policy with the
@@ -40,11 +40,17 @@ Preconditions:
   and `--lhc-min-runway-tokens` flags; the helper does not grade those. A
   user-only check gets nothing beyond this help text and the terminal.
 - **Live panel (user-only + outcome, live only).** In tmux, launch
-  `cc-lhc` interactively under the throwaway HOME; wait for Claude's
-  prompt via `tmux capture-pane -p`; send Ctrl-`]` with
-  `tmux send-keys -t <session> C-]`; type `/status` Enter; capture the
-  pane. Outcome: `wrapper.log` gains no degradation line and the pane
-  shows the status receipt. Without throwaway login: `SKIP:`.
+  `cc-lhc` interactively under the throwaway HOME. A fresh `CC_LHC_HOME`
+  opens the welcome panel by itself before Claude's prompt shows
+  (`src/wrapper/first-load.ts`). Its commands work right away: type
+  `/status`, then Enter, and capture the pane. Press Esc to reach Claude.
+  A fresh Claude config then shows the theme picker, the security notes
+  and the folder-trust prompt; answer each in the pane. After a settled
+  turn, open the panel with `tmux send-keys -t <session> C-]`, which
+  closes it again while it is open. The status receipt then shows
+  `Latest provider context: <n> tokens (provider-reported)` and the
+  thread id, and `/stats` shows `events=` above 0. Outcome: `wrapper.log`
+  gains no `cc-lhc capture degraded:` line. Without throwaway auth: `SKIP:`.
 - **Panel preview.** `node packages/cc-lhc/dist/bin.js preview`
   (package script `preview:panel`) renders panel states without a
   session; useful as a smoke check, not as panel proof. Run it under a
@@ -54,11 +60,19 @@ Preconditions:
 
 - Panel commands start with `/` and are lowercase; Tab completes.
   Drives must send the literal command text a user would type.
+- `/help` and `/details` open their own screen, where Enter returns to
+  the panel home instead of running typed text. Send Enter once to get
+  home before the next command.
+- `/bounds <target> <trigger>` applies for this wrapper run only and
+  survives a handoff. A pair that breaks a coherence rule answers
+  `rejected — nothing changed`. `/export` writes
+  `cc-lhc-rollout-<time>.txt` and `cc-lhc-threadview-<time>.txt` to the
+  session cwd.
 - Wrapper flags are only parsed before the first standalone `--`;
   `--lhc-*` after `--` is forwarded to Claude unchanged.
 - Ordinary Claude `--help`/`--version` are forwarded to Claude. Only
   `--lhc-help`/`--lhc-version` describe cc-lhc itself — a user-only
   check that reads `--help` is reading Claude's text, not the panel's.
 - The panel exists only while an interactive child runs in the PTY.
-  One-shot (`-p`) seats have no panel; do not report panel features
-  from a one-shot drive.
+  One-shot (`-p` or `--print`) seats have no panel; do not report panel
+  features from a one-shot drive.

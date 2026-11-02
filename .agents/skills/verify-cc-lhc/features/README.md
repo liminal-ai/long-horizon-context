@@ -38,7 +38,7 @@ matching feature file as the recipe. Harness: the helpers in
   check (stored state the user cannot see) for every drive.
 - Record the feature file and entry point with every artifact in
   `${VERIFY_CC_LHC_EVIDENCE:-<run>/proof}`.
-- A drive that cannot run (no live Claude login, seam stands down)
+- A drive that cannot run (no live Claude auth, seam stands down)
   reports `SKIP:` with the exact reason. Never report it as verified
   through a different path.
 
@@ -57,8 +57,8 @@ and `Gotchas`.
   fresh Claude session that continues the same work (`rollout write`,
   `--resume`, forward alias resolution).
 - [Smart Compact](./smart-compact.md) — automatic at the 700k trigger,
-  manual via the panel, and pre-launch on one-shot seats; spawn-first
-  handoff and carried background work.
+  manual via the panel, and pre-launch on one-shot seats; interactive
+  spawn-first handoff and carried background work.
 - [Control panel](./control-panel.md) — Ctrl-`]` panel: `/status`,
   `/stats`, `/bounds`, `/smart-compact`, `/export`, `/help`.
 

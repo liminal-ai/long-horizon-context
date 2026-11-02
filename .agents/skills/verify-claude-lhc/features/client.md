@@ -16,8 +16,10 @@
   once per `query()` and once per store operation, and never crosses the
   wire. Its `signal` aborts only when `close()` gives up waiting for the
   sidecar to exit on stdin EOF (5 seconds), together with the client's
-  own SIGTERM, as the Agent SDK's `spawnClaudeCodeProcess` signal does. An
-  operation's signal never aborts. The client reads the returned child's
+  own SIGTERM. The Agent SDK's `spawnClaudeCodeProcess` signal has the
+  same shape with a shorter grace (about 2 seconds). An operation's
+  signal never aborts. A `query()` whose `abortController` is already
+  aborted returns an ended iterator and never spawns. The client reads the returned child's
   stdio, `exit`, `close` and `error` exactly as it reads its own.
 - Every row of `CONTROLS` except `close` and `streamInput` is a method
   that sends a `req` frame and resolves with the `res` value. A failed
@@ -31,8 +33,10 @@
 - `hooks`, `onElicitation`, `sessionStore`, `sessionStoreFlush`,
   `spawnClaudeCodeProcess` and in-process MCP servers are dropped, each
   named on `stderr`.
-- `close()` closes the sidecar's stdin, drops unread messages, and kills
-  the sidecar if it is still running after 5 seconds. A string prompt, or
+- `close()` closes the sidecar's stdin, drops unread messages, sends
+  SIGTERM if the sidecar is still running after 5 seconds, and SIGKILL
+  after 10. Ending the async iterator early (`break`, `return`, `throw`)
+  calls `close()` too. A string prompt, or
   a prompt iterable that ends, sends an `end` frame. The sidecar exits
   once every prompt sent before it has its `result`, and the stream
   ends.

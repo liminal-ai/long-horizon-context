@@ -9,7 +9,7 @@
 
 ## How to get to it (user POV)
 
-A host such as claude-lhc sends its compact pair when it creates a thread, and reads the stored pair back on resume. The thread keeps the pair, so a resume or a fork uses the values the thread started with, not the host's current settings.
+A host such as claude-lhc sends its compact pair when it creates a thread, and reads the stored pair back on resume. The thread keeps the pair, so a resume or a fork uses the stored pair, not the pair the host sends on that start. Only `setCompactPolicy` changes it, and a thread with no stored pair takes the host's on resume.
 
 ## Driving it with the harness
 
