@@ -44,7 +44,9 @@ if [ "$RC" = "0" ] && grep -q "pre-launch Smart Compact rebuilt:" "$EVIDENCE_DIR
   finish smart-compact; exit $?
 fi
 
-REASON="$(grep -i 'stand.*down\|not.*ready\|degraded\|no persisted\|capture' "$EVIDENCE_DIR/smart-compact-wrapper.log" 2>/dev/null | tail -1)"
+[ "$FAILURES" -eq 0 ] || { finish smart-compact; exit 1; }
+REASON="$(grep 'pre-launch seam' "$EVIDENCE_DIR/smart-compact-wrapper.log" 2>/dev/null | tail -1)"
+[ -n "$REASON" ] || REASON="$(grep -i 'stand.*down\|not.*ready\|degraded\|no persisted\|capture' "$EVIDENCE_DIR/smart-compact-wrapper.log" 2>/dev/null | tail -1)"
 skip "Smart Compact seam did not fire on the stand-in seat (rc=$RC). Last wrapper.log signal: ${REASON:-none}. Live-Claude panel drive (/smart-compact) remains the proof path; see features/smart-compact.md Gotchas."
 echo "VERIFY-CC-LHC smart-compact: SKIP"
 exit "$SKIP_RC"

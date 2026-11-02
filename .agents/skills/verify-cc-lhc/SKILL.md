@@ -8,7 +8,8 @@ description: "Verify cc-lhc (the Claude Code wrapper in packages/cc-lhc) the way
 Surface: `cc-lhc`, the production Claude Code host in `packages/cc-lhc`. It
 wraps the closed `claude` CLI (PTY for interactive sessions, plain child for
 `-p` one-shots), captures Claude's rollout JSONL into an LHC thread, and
-rebuilds the session (Smart Compact) when the served view changes. A user
+rebuilds the session from the thread's compacted view (Smart Compact) when
+context pressure reaches the trigger or the user runs `/smart-compact`. A user
 touches the `cc-lhc` command, the forwarded Claude UI, and the Ctrl-`]`
 control panel. There is no server to keep alive: launch means build once,
 then start each drive in its own isolated tmux PTY session.
@@ -50,9 +51,11 @@ node packages/cc-lhc/dist/bin.js --lhc-version   # expect first line: cc-lhc 0.4
 
 Without the addon a launch exits 2 with `cannot establish process identity
 ... addon_unavailable` — expected fail-closed behavior, not a drive failure.
-Launch reaches a usable state from an empty data dir: `helpers/doctor.sh`
-and every drive create `$ISO_HOME/.cc-lhc` and `$ISO_HOME/.claude/projects`
-on first use (registry, lineage DB, thread store appear there). Ready means
+Launch reaches a usable state from an empty data dir. Each drive makes a
+throwaway HOME with `work/` and `.claude/`, and the first session launch
+creates `$ISO_HOME/.cc-lhc` (registry, lineage DB, thread store) and the
+`.claude/projects/<encoded cwd>/` transcript dir. `helpers/doctor.sh`
+only runs `--lhc-version` and creates neither. Ready means
 the wrapper owns a thread and the child answered, not merely that a process
 started. Teardown is in Cleanup below.
 
@@ -88,8 +91,10 @@ Seeded drives (each prints `VERIFY-CC-LHC <name>: PASS`):
 ```
 
 `drive-rebuild.sh` and `drive-smart-compact.sh` seed their precondition
-with `helpers/seed-thread.mjs` (an LHC thread with two settled turns,
-seeded the same way `test/commands/rollout-write.test.ts` does). Seeding
+with `helpers/seed-thread.mjs` (an LHC thread with two settled text-only
+turns through `messageEvents` and `drain`, as
+`test/commands/rollout-write.test.ts` does, minus that test's tool call and
+tool result, so neither drive writes tool lines). Seeding
 is a precondition, never proof; the drive itself is the real CLI surface.
 The rebuild drive passes `--envelope-from` a checked-in 2.1.226 rollout
 fixture and grades that the rebuilt lines carry its `version`.
@@ -97,11 +102,18 @@ fixture and grades that the rebuilt lines carry its `version`.
 Live-Claude drives (credentials required; not seeded): to prove a real
 interactive session, Smart Compact handoff, or the control panel, launch
 the built wrapper in tmux with `HOME`, `CC_LHC_HOME`, `CLAUDE_CONFIG_DIR`
-all under a fresh dir in the scratch root (see Evidence), complete Claude login **inside that throwaway
-config only**, then drive per [features/smart-compact.md](features/smart-compact.md)
-and [features/control-panel.md](features/control-panel.md). If throwaway
-login is unavailable, record the drive as skipped with that reason. Do
-not copy or read the operator's real Claude config to get credentials.
+all under a fresh dir in the scratch root (see Evidence), authenticate
+**inside that throwaway config only**, then drive per
+[features/smart-compact.md](features/smart-compact.md)
+and [features/control-panel.md](features/control-panel.md). Auth is either
+a Claude login inside the throwaway config, or env auth in the tmux shell:
+`iso_cmd_env` keeps the shell's `ANTHROPIC_*` variables, and the Claude
+child reads them. A live drive on 2026-11-02 ran on `ANTHROPIC_AUTH_TOKEN`
+with `ANTHROPIC_BASE_URL`. Keep the values out of the pane: write them to
+a mode-600 file under `$ISO_HOME`, and have the pane command source it and
+delete it before launching. With neither available, record the drive as
+skipped with that reason. Do not copy or read the operator's real Claude
+config to get credentials.
 
 ## Evidence
 
@@ -143,9 +155,12 @@ Proof standards:
 .agents/skills/verify-cc-lhc/helpers/cleanup.sh
 ```
 
-Kills only the tmux session the current helper started (tracked by exact
-session name, never by process-name pattern) and removes throwaway HOMEs
-recorded in `iso-homes.txt` in the evidence dir. It refuses any path that
+Removes the throwaway HOMEs recorded in `iso-homes.txt` in the evidence
+dir. Each drive kills its own tmux session by exact name when its command
+exits or times out, and again on the drive's exit; `cleanup.sh` runs in a
+new process and cannot see an earlier drive's session name. A tmux session
+you started by hand for a live drive is yours to kill by the name you gave
+it, never by pattern. It refuses any path that
 is not a `verify-cc-lhc-home-*` dir under the scratch root. Remove a HOME
 through this helper, never a raw `rm`. Evidence survives cleanup at the evidence
 dir above — confirm `results.txt` and the pane captures still exist after

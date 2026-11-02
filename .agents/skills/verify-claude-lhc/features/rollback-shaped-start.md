@@ -39,7 +39,9 @@ asserts alias identity, the kept current generation, one thread, no new
 projected file, and exit 0.
 The PASS line also prints `OBSERVED: current served view, not gen1-era
 history`. That sentence is a reading of `session.ts` (resume branch and
-`#startProjectedGeneration`, which match or project `getSessionThreadView`), not
+`#reopenGeneration`, which matches the current generation's transcript
+against `getSessionThreadView` and keeps it, or else hands to
+`#startProjectedGeneration`, which projects under a new id), not
 an assertion. The seed compacts an empty thread, so there is no
 pre-compact turn a resume could restore.
 
@@ -65,8 +67,10 @@ that rollback and keeps the uuid from the CLI; see
   **current** alias (`registerCurrentAlias`). A driver still holding gen2
   can also resume afterward — aliases accumulate, none is revoked by a
   rollback-shaped start.
-- Same empty-thread caveat as restart: the seeded form resumes through a
-  compacted (non-empty) thread. See
+- The seed has no user turn before its `/compact`, but the compact's
+  continuation marker gives the served view a message, so the keep path
+  can match. A thread with 0 served entries takes the
+  `(fresh native session)` path instead; see `resume-empty` in
   [restart-projection.md](restart-projection.md).
 - Whether the resumed generation *answers* from post-compact history is a
   live-model question (standalone-style recall), not asserted here.

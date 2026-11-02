@@ -3,8 +3,8 @@ import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { LHC_BIN, LHC_DIST, fail, loadSdk } from "./lib.mjs";
 
-const major = Number(process.versions.node.split(".")[0]);
-if (major < 24) fail(`node >=24 required, got ${process.versions.node}`);
+const [major, minor] = process.versions.node.split(".").map(Number);
+if (major < 24 || (major === 24 && minor < 3)) fail(`node >=24.3.0 required, got ${process.versions.node}`);
 console.log(`node ${process.version} ok`);
 
 if (!existsSync(LHC_DIST)) fail(`missing ${LHC_DIST}; run pnpm install --filter lhc && pnpm --filter lhc run build`);

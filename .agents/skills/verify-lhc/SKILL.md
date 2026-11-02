@@ -14,7 +14,7 @@ Surface facts (from the code, re-check if a drive breaks):
 - Deterministic inference: `createDeterministicInferenceCallbacks()` with `tokenFamily: "o200k"`, `mode: "manual"`. No network, no real model.
 - Serving is `threadView.getLlmRequestContext` / `getSessionThreadView`; compact is `threadView.compact`; retrieval is `retrieval.getTurns` / `getMessages` by `t…` / `m…` id.
 - The compact policy is `threads.getCompactPolicy` / `threads.setCompactPolicy`, two nullable columns on `thread_metadata` (thread schema 14). Opening a schema-13 file through the SDK or the CLI migrates it in place.
-- A host rollback is one `rollback` intake event with payload `{ keepThroughEventOrder }`. Every served view and the CLI export drop what was recorded after the anchor, except that the open turn survives as an empty turn; `messages.list({ includeDeleted: true })` still shows hidden messages as `deleted: true`.
+- A host rollback is one `rollback` intake event with payload `{ keepThroughEventOrder }`. Every served view and the CLI export drop what was recorded after the anchor. `turns.listTurns` and the export keep the open turn, empty when every member was hidden; `messages.list({ includeDeleted: true })` still shows hidden messages as `deleted: true`.
 
 ## Launch
 
@@ -30,7 +30,7 @@ Launch reaches a usable state from an empty data dir because every drive creates
 
 ## Doctor
 
-One read-only worth-driving check: node >= 24, `packages/lhc/dist/index.js` exists, `node packages/lhc/bin/lhc` prints the usage block, and the SDK exports `initLhc` + `createDeterministicInferenceCallbacks`.
+One read-only worth-driving check: node >= 24.3 (the `engines` floor of `packages/lhc`), `packages/lhc/dist/index.js` exists, `node packages/lhc/bin/lhc` prints the usage block, and the SDK exports `initLhc` + `createDeterministicInferenceCallbacks`.
 
 ```sh
 node .agents/skills/verify-lhc/helpers/doctor.mjs

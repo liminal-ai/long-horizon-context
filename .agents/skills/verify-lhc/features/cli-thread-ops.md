@@ -3,8 +3,8 @@
 ## Sub-features
 
 - `lhc thread health --home H --thread-id ID [--json]` — read-only derivation report: one line of `ready= pending= failed= blocked= repairable=` counts, or the full report with `--json`. A thread with failures still exits 0.
-- `lhc thread export --home H --thread-id ID [--out FILE]` — writes the kept history as one JSON object (`threadId`, `turns`) to stdout or `--out`. With `--out`, stdout is `<path> turns=<n>`.
-- Cross-home verbs: `copy` places a thread in another home, and `fork` runs copy, identity note, repair, compact, and bind in that order. Fork skips repair with `--no-repair`, compacts only when the two hosts use different providers (`--compact` forces it, `--no-compact` suppresses it), and binds the target host's alias. Targets are `cc-lhc` and `claude-lhc`; `hermes` is a source only.
+- `lhc thread export --home H --thread-id ID [--out FILE]` — writes the kept history as one JSON object (`threadId`, `exportedAt`, `turns`, `omitted`) to stdout or `--out`. With `--out`, stdout is `<path> turns=<n>`.
+- Cross-home verbs: `copy` places a thread in another home, and `fork` runs copy, identity note, repair, compact, and bind in that order. Fork skips repair with `--no-repair`, compacts only when the two hosts use different providers (`--compact` forces it, `--no-compact` suppresses it), and binds the target host's alias (`claude-code:<sid>` for `cc-lhc`, `t3code-lhc:<sid>` for `claude-lhc`). Targets are `cc-lhc` and `claude-lhc`, both provider `anthropic`, so a default fork between them does not compact; `hermes` is a source only. Fork needs `--session-id` even though the usage block shows it as optional: without it fork exits 2 with `invalid_thread_alias` before copying.
 - In-place verbs: `bind`, `note`, and `repair` update the thread already in `--home`. Full flags: run `node packages/lhc/bin/lhc` with no args.
 
 ## How to get to it (user POV)
@@ -29,4 +29,4 @@ Exit codes: 0 for a successful verb, which prints one stdout line. 2 for a refus
 
 - `--home` is the directory holding `registry.sqlite`, not the thread file and not `threads/`.
 - `note`, `repair`, and `fork` require `--token-family` with a known slug (listed in the usage block).
-- Only repair calls the model, as its own verb or inside `fork`, when it retries failed derivations. It needs a Claude binary from `--claude-bin`, `LHC_CLAUDE_BIN`, or `~/.local/bin/claude`. Fork's compact does not spawn Claude. Keep verify drives on health, export, copy, bind, and note.
+- Only repair calls the model, as its own verb or inside `fork`, when it retries failed derivations or drains work the copy requeued. It needs a Claude binary from `--claude-bin`, `LHC_CLAUDE_BIN`, or `~/.local/bin/claude`. Fork's compact does not spawn Claude. Keep verify drives on health, export, copy, bind, and note.

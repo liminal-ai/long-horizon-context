@@ -19,8 +19,9 @@
   holds the stock frames from Claude Code 2.1.312, and
   `packages/claude-lhc/test/manual-compact.test.ts` compares the sidecar's
   frames to them. LHC still mints a new session id at the boundary, where
-  stock keeps its own, and it sends no `init`, summary `user` frame or
-  `<local-command-stdout>` replay for the compact.
+  stock keeps its own, and it synthesizes no `init`, summary `user` frame
+  or `<local-command-stdout>` replay for the compact. The new
+  generation's own `system/init` is forwarded when its CLI emits one.
 - Compact policy: a new thread stores the start's `lhc.compact` pair on
   its `thread_metadata` row. A resume keeps the stored pair and logs
   `compact policy from thread: trigger <t> target <g>` when the host sent
@@ -31,22 +32,29 @@
   drops to 80% and the target to at most half of that, logged as
   `compact policy capped to window <w>: trigger <t> target <g>`. The
   stored row never changes. A failed read logs `context window read
-  failed` and keeps the pair.
+  failed: <message>`, and an unusable value logs `context window read
+  returned rawMaxTokens <v>, not a usable window`; both keep the pair.
 - Window shrink: the same read takes `getContextUsage().totalTokens`, the
   served context the CLI counts for the live generation. On a resume and
-  after a `setModel`, when that count is at or past the effective trigger,
+  after a `setModel`, a `setCompactPolicy`, or an `applyFlagSettings`
+  whose settings set `model`, when that count is at or past the effective
+  trigger,
   the sidecar logs `served context <n> tokens is at or past the compact
   trigger <t>; compacting before the next prompt`. A resume compacts
   before start returns, so an oversized projection never takes a prompt.
   A `setModel` queues an auto compact that runs when the next prompt
-  arrives, before that prompt reaches the CLI, or at the next safe tool
-  boundary when a turn is open. A later `setModel` whose window read
+  arrives, before that prompt reaches the CLI, at the next safe tool
+  boundary when a turn is open, or at that turn's `result`. A later
+  `setModel` whose window read
   succeeds decides the queue anew, and any finished compact clears it. No
   other window read compacts. A failed read leaves the decision to the
   turn-end and tool-boundary checks.
 - Auto compact (provider context at or above the effective trigger) at a
-  settled tool boundary: live only, covered by
-  `packages/claude-lhc/scripts/midturn.ts`. A `/compact` sent during an
+  settled tool boundary: live only. `prompt-order-live` drives an
+  automatic boundary; `packages/claude-lhc/scripts/midturn.ts` checks the
+  calibrated trigger, the single `context_compact_continue` turn and the
+  continuation marker, but no drive runs it, so a run of `drive.mjs`
+  does not cover those. A `/compact` sent during an
   open turn and the queued-prompt replay: live only, covered by
   `packages/claude-lhc/scripts/standalone.ts`. `midturn.ts` sets its
   calibrated pair with `threads.setCompactPolicy` before the resume,
@@ -61,7 +69,9 @@
 ## How to get to it (user POV)
 
 As the driver, send a `user` frame whose text is `/compact` while no turn
-is open. A sentence that only contains `/compact` is an ordinary prompt. You observe the status/boundary/result sequence above; the
+is open. Text that is `/compact`, or starts with `/compact `, is the
+command; a sentence that merely includes it (`please /compact`) is an
+ordinary prompt. You observe the status/boundary/result sequence above; the
 boundary's `session_id` is the session you are now talking to. Everything
 after it belongs to the new generation even though your thread (the LHC
 thread) never changed.
@@ -119,8 +129,8 @@ half: the resume logs `served context` and `[lhc compact:auto] ...
 (target 20000)` before `resumed thread`, and a restart onto the compacted
 generation logs neither. Outcome half: `getContextUsage` after the
 compact reads under the trigger. It is the one seeded compaction drive
-whose first reading after a compact sits under the trigger, as it does
-with production values.
+that reads `getContextUsage` after a compact and fails when that reading
+is still past the trigger, as it would be with production values.
 
 The seeded `compact` drive compacts an empty view (0 tokens, 0 bands content). It
 proves the boundary/projection/generation-swap plumbing deterministically;

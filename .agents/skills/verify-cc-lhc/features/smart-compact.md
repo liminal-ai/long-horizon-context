@@ -1,10 +1,11 @@
 # Smart Compact
 
 Smart Compact shrinks a thread toward the 120k target when measured
-context pressure crosses the 700k trigger, rebuilds Claude's session,
-and hands off spawn-first so a working session exists at every moment.
-It is always active and cannot be turned off. On a one-shot seat it runs
-before launch on the next invocation.
+context pressure crosses the 700k trigger, and rebuilds Claude's session.
+In an interactive session it hands off spawn-first, so a working session
+exists at every moment. It is always active and cannot be turned off. On
+a one-shot seat it runs before launch on the next invocation: it writes
+the rebuilt session, then launches Claude once on it.
 
 ## Sub-features
 
@@ -12,8 +13,12 @@ before launch on the next invocation.
   before launching Claude once on the rebuilt session.
 - `compact-manual-panel` — panel `/smart-compact` at a settled seam.
 - `compact-handoff` — interactive spawn-first swap to the rebuilt child.
-- `compact-carry` — background shells/workflows/monitors are carried;
-  input typed during compaction is dropped with a resend notice.
+- `compact-carry` — on an interactive compact, qualified background
+  work is carried: shells are adopted, workflows, monitors and agents are
+  reconstructed, scheduled wakeups are rearmed. An unverified or
+  unqualified item refuses that seam and the current session stays
+  (`src/continuity/snapshot.ts`). A one-shot pre-launch compact carries
+  nothing. Input typed during compaction is dropped with a resend notice.
 
 ## How to get to it (user POV)
 
@@ -40,23 +45,35 @@ Preconditions:
   `pre-launch Smart Compact rebuilt:`. The seeded codeword in the new
   transcript is a `NOTE:` when missing, not a failure. If the seam does
   not fire the drive exits 3 with `SKIP:` and the last `wrapper.log`
-  signal — that is a recorded gap, never a pass.
-- **Manual panel (live only).** With a throwaway-HOME Claude login,
-  launch interactively in tmux, settle a turn, press Ctrl-`]`, run
-  `/smart-compact`, and capture the panel receipt plus the new session
-  file as the outcome. Without throwaway login: `SKIP:` with reason.
-- **Carried work (live only).** Start a background shell in Claude,
-  compact, and grade that its result is delivered on the next prompt.
+  signal, the `pre-launch seam` line when there is one — that is a
+  recorded gap, never a pass. A failed precondition step exits 1, never 3.
+- **Manual panel (live only).** With throwaway-HOME Claude auth (see the
+  live section of [`../SKILL.md`](../SKILL.md)), launch interactively in
+  tmux and get past the welcome panel per
+  [control-panel.md](./control-panel.md), settle a turn, press Ctrl-`]`,
+  run `/smart-compact`, and capture the pane. The rebuilt session shows a
+  `[lhc compact:manual] rebuilt LHC view <n> (120k target)` runtime note.
+  Outcome: a new `<session id>.jsonl` under the throwaway
+  `.claude/projects`, and `wrapper.log` lines `cc-lhc handoff switch
+  (compact): <old> -> <new>` and `cc-lhc handoff success (compact)`.
+  Without throwaway auth: `SKIP:` with reason.
+- **Carried work (live only).** Ask Claude to start a background shell
+  (`sleep 25 && echo <marker>`), compact, wait, and send a prompt that
+  asks for its output. Grade the marker in Claude's answer and the
+  `wrapper.log` lines `cc-lhc continuity: 1 carried item(s) seeded` and
+  `1 carried result(s) delivered on a real prompt`.
 
 ## Gotchas
 
 - Seeded-drive reality: on 2026-10-28 the forced-bounds drive fired and
-  passed with a new transcript. The one-shot seam can still skip two
-  ways, and the SKIP branch exists for both; do not fake pressure by
-  editing transcripts.
+  passed with a new transcript, and again on 2026-11-02. The one-shot
+  seam can still skip, and the SKIP branch exists for that; do not fake
+  pressure by editing transcripts.
 - Capture that has not reached ready, or a transcript left mid-turn,
   skips Smart Compact for this launch by design — the prompt launches on
-  the resumed session and the *next* invocation compacts.
+  the resumed session and the *next* invocation compacts. A resume whose
+  session file is not on disk yet logs `has no persisted transcript yet;
+  launching directly` and skips the seam too.
 - A ready, settled seam whose pressure (provider total plus estimate)
   stays under the trigger logs `cc-lhc one-shot pre-launch seam:
   below_threshold` and does not rebuild. The stand-in reports

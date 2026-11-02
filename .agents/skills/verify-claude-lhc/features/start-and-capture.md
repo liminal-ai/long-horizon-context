@@ -51,6 +51,7 @@ section). Without `CLAUDE_LHC_LIVE=1` it prints SKIP.
 - A start-only drive proves thread/alias creation, not capture. Claiming
   capture from it would be hiding the live gap.
 - Missing compact settings or a lower bound at/above the trigger is a host
-  form error; drives pass `300000/180000` like the repo proof.
+  form error; drives pass `300000/180000`, and the repo proof
+  (`scripts/standalone.ts`) passes `700000/140000`.
 - The deterministic drives run `permissionMode: bypassPermissions`; the
   approval wire path is exercised live by standalone's default mode.

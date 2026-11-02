@@ -6,9 +6,11 @@
   `claude-lhc/client` entry (`src/client/index.ts`) export
   `forkSession`, `getSessionMessages` and `getSubagentMessages` with the
   Agent SDK's signatures. Each also takes `lhc: { home }`, the host's LHC
-  store, and an optional `env` and `pathToClaudeCodeExecutable`, which
-  replace the process env and `claude` on `PATH` for the Claude home,
-  summary workers and rollback lookups. From the package entry they run
+  store, and an optional `env` and `pathToClaudeCodeExecutable`. On
+  `forkSession` they replace the process env and `claude` on `PATH` for
+  the Claude home, summary workers and rollback lookups;
+  `getSubagentMessages` uses `env` only to find the subagent file, and
+  `getSessionMessages` ignores both. From the package entry they run
   in the host's process. From `claude-lhc/client` each runs in a
   short-lived sidecar (`lhc.spawn` or the default), which takes the
   operation's `CLAUDE_CONFIG_DIR`, `HOME` and `USERPROFILE` as its own.
@@ -18,16 +20,19 @@
   (`src/history.ts`, `inspectSession` in `src/lhcHome.ts`). A superseded
   id names the thread's current generation. A registry it cannot read,
   a store directory it cannot search, or a `home` that is a file rejects
-  the whole call with `LHC registry read failed: ...`. Only a missing
-  store answers `unknown`, and it creates no file.
+  the whole call with `LHC registry read failed: ...`. An id no thread
+  holds answers `unknown`, and so does every id against a missing store,
+  which creates no file.
 - `forkSession(sessionId, { lhc, dir?, upToMessageId?, title?, sessionStore? })`
   resolves any of the source thread's session ids, resolves
   `upToMessageId` with the host-rollback resolver (`src/rollbackAnchor.ts`)
   against the source thread's own project,
   copies the thread with core `copyThread`, appends a core `rollback` on
-  the copy, drains the derivation work the copy carries and the rollback
-  queued, projects the copy into a new session file
-  under `dir` (default the thread's cwd), and binds the new session id last
+  the copy when `upToMessageId` cuts before its last message, drains the
+  derivation work the copy carries and any rollback queued, projects the
+  copy into a new session file under the Claude home's project dir for
+  `dir` (default the thread's cwd, also stored as the copy's cwd), and
+  binds the new session id last
   (`src/fork.ts`). It returns `{ sessionId, headMessageId }`. The
   `headMessageId` is a cursor, `claude-lhc-cursor:<fork thread>:<capture
   key>`, that names the copied event behind the file's last line with an

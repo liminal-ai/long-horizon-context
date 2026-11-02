@@ -28,7 +28,8 @@
   live generation only.
 - Transport: `close` and `streamInput` are not controls. A client handles
   them on the sidecar's stdio (closing stdin, sending `user` frames). As a
-  `req` they answer `<method> is not a control`. The table covers every
+  `req` they answer `<method> is not a control: the client handles it on
+  the sidecar's stdio`. The table covers every
   `Query` method, so a new SDK method fails the typecheck until it gets a
   row.
 - Refuse: `rewindFiles`, `reinitialize` and `seedReadState` answer `res`
@@ -75,7 +76,11 @@ the new generation, and saves `transcript.jsonl`.
 ## Gotchas
 
 - Replay runs inside the compact swap, so swap time now includes one
-  control round trip per replayed slot. A replayed MCP server that is down
+  control round trip per replayed ledger entry. A settings slot can hold
+  two entries (an earlier call's surviving keys and the later call), so
+  one slot can cost two round trips. A replay that throws logs
+  `generation <id>: <method> not replayed: <message>` and the swap
+  continues. A replayed MCP server that is down
   makes the swap wait for the CLI's connect attempt, then logs
   `replayed MCP server(s) failed: <names>` and swaps anyway.
 - Replay state lives in the sidecar process. A restart (`start{resume}`)
