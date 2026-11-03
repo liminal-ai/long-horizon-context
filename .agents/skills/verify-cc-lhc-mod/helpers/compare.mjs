@@ -14,14 +14,40 @@ const rows = readFileSync(transcriptFile, "utf8")
   .filter((row) => typeof row.uuid === "string" && row.isSidechain !== true);
 
 const blocksOf = (content) => (typeof content === "string" ? [{ type: "text", text: content }] : Array.isArray(content) ? content : []);
+const textOf = (row) =>
+  blocksOf(row.message?.content)
+    .filter((block) => block.type === "text")
+    .map((block) => block.text)
+    .join("");
+
+// A command that prompts the model (a skill, a custom command) is recorded as
+// the prompt "/name args"; a built-in one is filed right after its caveat row.
+const COMMAND_NAME = /<command-name>([\s\S]*?)<\/command-name>/;
+const COMMAND_ARGS = /<command-args>([\s\S]*?)<\/command-args>/;
+const builtIn = new Set();
+let afterCaveat = false;
+for (const row of rows.filter((r) => r.type === "user")) {
+  if (afterCaveat && COMMAND_NAME.test(textOf(row))) builtIn.add(row.uuid);
+  afterCaveat = textOf(row).trimStart().startsWith("<local-command-caveat>");
+}
+const promptCommand = (row) => {
+  if (row.type !== "user" || builtIn.has(row.uuid)) return undefined;
+  const name = COMMAND_NAME.exec(textOf(row))?.[1]?.trim();
+  if (name === undefined) return undefined;
+  const args = COMMAND_ARGS.exec(textOf(row))?.[1]?.trim();
+  return args ? `${name} ${args}` : name;
+};
+
 const isPrompt = (row) =>
-  row.type === "user" &&
+  promptCommand(row) !== undefined ||
+  (row.type === "user" &&
   row.isMeta !== true &&
   row.isCompactSummary !== true &&
   row.origin?.kind !== "task-notification" &&
   blocksOf(row.message?.content).some(
-    (block) => block.type === "text" && !/^(\[Request interrupted|<command-|<local-command-)/.test(block.text.trimStart()),
-  );
+    (block) =>
+      block.type === "text" && !/^(\[Request interrupted|\[runtime note\]|<command-|<local-command-)/.test(block.text.trimStart()),
+  ));
 
 // The live branch: the parent chain from the last row (across a compaction's
 // logical parent), plus every side branch off it that holds no prompt, such
@@ -43,6 +69,11 @@ for (const uuid of [...live]) {
 
 const expected = [];
 for (const row of rows.filter((r) => live.has(r.uuid) && r.isCompactSummary !== true)) {
+  const command = promptCommand(row);
+  if (command !== undefined) {
+    expected.push(`prompt ${command}`);
+    continue;
+  }
   for (const block of blocksOf(row.message?.content)) {
     if (row.type === "assistant" && block.type === "text" && block.text !== "") expected.push(`text ${block.text}`);
     if (row.type === "assistant" && block.type === "tool_use") expected.push(`call ${block.id}`);
