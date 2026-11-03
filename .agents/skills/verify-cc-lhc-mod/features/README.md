@@ -278,6 +278,25 @@ DONE-55, and the installed rows after the last compact (the transcript rows
 following its `compact_boundary`) open with the person's request, with the
 notification as a `[runtime note]`.
 
+One step over the trigger: a fresh home whose fixtures are written with
+`fixtures.sh "$H" 250`, then the same launch and:
+
+```sh
+$V/helpers/say.sh "$S" "Remember this for later: the ticket is LH-4412. Reply with just OK."
+$V/helpers/say.sh "$S" "Read f1.txt, f2.txt, f3.txt, f4.txt, f5.txt and f6.txt in parallel: all six Read calls in one response, each file whole. Then give me the last word of each file, one per line."
+$V/helpers/wait.sh "$H" 'compact auto mid-turn' 240
+$V/helpers/say.sh "$S" "Which of those last words comes first alphabetically? Reply with just the word."
+```
+
+Pass when the first compaction logs `compact auto mid-turn view N` with N
+plus the fixed context at or over 60000 and no `fell back`. The answers must
+be whiskey, echo, romeo, xray, tango, kilo, then echo. The next seam must log
+a small `mid-turn view` and `post-compact context ... ok`. The transcript must
+have no `isCompactSummary` row, the debug log no `source=compact` request, and
+`compare.mjs` must pass. Before this host installed such a view, the first
+compaction logged `fell back to native ... would not get below the 60k
+trigger` and Claude Code's summary ran.
+
 ## Resume after a compaction
 
 ```sh

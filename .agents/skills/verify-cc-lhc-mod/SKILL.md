@@ -171,11 +171,13 @@ Facts from the code. Read them before driving:
   not at all; in that case the next bind's recovery claims them by receipt. `precompute` is
   skipped and subagent compactions pass through. `/compact <text>` records a
   `[/compact instructions, recorded only: ...]` note and a transcript notice.
-  A view that cannot help is not installed: when the view's tokens plus the
-  fixed context (the engine breakdown's `used` rows other than `Messages`,
-  logged as `fixed context N`, sent with `/compact`) reach the trigger, the
-  sidecar answers native before it begins a receipt, so a receipt only ever
-  exists for an installed view, and the hook falls back as below.
+  A settled view that cannot help is not installed: when the view's tokens
+  plus the fixed context (the engine breakdown's `used` rows other than
+  `Messages`, logged as `fixed context N`, sent with `/compact`) reach the
+  trigger, the sidecar answers native before it begins a receipt, so a
+  receipt only ever exists for an installed view, and the hook falls back as
+  below. A mid-turn view is installed even over the trigger: any compaction
+  keeps the open step whole, and the next seam compacts it as history.
   Any failure (sidecar unreachable, outbox not drained, core refusal) logs
   `compact <trigger> fell back to native after <ms>ms: <reason>`, shows `LHC could not
   compact (...)`, sets the status line to the fallback, and returns
@@ -195,7 +197,8 @@ Facts from the code. Read them before driving:
   own estimate (`breakdown.totalTokens`) and logs `post-compact context N
   trigger T target X ok|inadequate`; above 75 percent of the trigger it also
   shows a transcript notice, since Claude Code stops a turn after three
-  refills within three turns.
+  refills within three turns. A mid-turn view over the trigger skips this
+  check.
 - Panel (`mod/hooks/panel.tsx`, `commands.ts`, `state.ts`, `src/panel.ts`):
   `/lhc` opens pane `lhc` (focused; inline above the prompt, docked as a
   sidebar under `/tui fullscreen` from 110 columns). It draws from one `$.state`
@@ -216,7 +219,7 @@ Facts from the code. Read them before driving:
   summary. A fallback is recorded only when Claude Code's summary ran. Prune posts `/compact` with `op:
   "prune"`: core `threadView.prune` moves the visibility boundary and the
   view is installed with no core compact. It carries the same `guard` as a
-  compaction, checked in the same place: a pruned view that would not get below
+  compaction, checked in the same place: a settled pruned view that would not get below
   the trigger with the fixed context is refused before any receipt is begun.
   Nothing to shorten answers `unchanged` and the hook skips, keeping the
   install receipt (`✓ Nothing to prune`); a refusal or failure shows `✗ LHC
@@ -309,7 +312,7 @@ validate`, and that the scratch root sits outside any repo. Pass line:
 | `helpers/perf.sh [runs]` | Interleaved launches with and without the plugin, launch-to-prompt-box time and sidecar RSS |
 | `helpers/compare.mjs <export.json> <transcript.jsonl> [<source transcript.jsonl>...]` | Diffs a thread export against the transcript's live branch. For a fork, pass the source's transcript (oldest source first) so the rows the copied thread inherits count: prompts, tool calls, tool results, assistant text. Rows an LHC install appends after a boundary (labeled bands and notes, messages already seen) are skipped. So are Claude Code's own `<synthetic>` messages, such as the refill breaker's, which capture never records. Pass line `compare: PASS` |
 | `helpers/synth-transcript.mjs <work dir> <turns> [lines]` | Writes a resumable Claude Code transcript for `<work dir>` (one Read per turn, about 3.9k tokens each; 77 turns is about 300k) and prints its session id, for the compaction cost drive |
-| `helpers/fixtures.sh <home>` | Writes the compaction drives' inputs into `<home>/work`: `f1.txt` to `f6.txt` (about 8k tokens each, last line `last word: whiskey`, `echo`, `romeo`, `xray`, `tango`, `kilo`) and `pic.png`, a red square |
+| `helpers/fixtures.sh <home> [lines]` | Writes the compaction drives' inputs into `<home>/work`: `f1.txt` to `f6.txt` (300 lines by default, about 8k tokens each; 250 lines measured about 10k each, last line `last word: whiskey`, `echo`, `romeo`, `xray`, `tango`, `kilo`) and `pic.png`, a red square |
 | `helpers/derive-perf.sh [runs]` | The same ten-turn interactive session on each model lane, interleaved: turn time, time to drain after the last turn, sidecar RSS and peak, `thread health` |
 | `helpers/capture-perf.sh [runs]` | The same headless 40-call session with and without the plugin, interleaved: wall time, the append hook's p95 own time, commit lag p95 |
 | `helpers/shot.mjs png <session> <out.png>` | Screenshots the session's tmux screen with its colors (capture-pane to HTML, headless Chrome) |

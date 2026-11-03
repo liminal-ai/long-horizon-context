@@ -23,7 +23,7 @@ export type CompactOp = "compact" | "prune";
  * `guard` is the auto-compact trigger and what Claude Code counts beside the
  * conversation, when its breakdown names both: a view that does not get below
  * the trigger with that fixed context is answered native, before any install
- * receipt exists for it.
+ * receipt exists for it. Only settled compactions take the guard.
  */
 export type CompactRequest = {
   sessionId: string;
