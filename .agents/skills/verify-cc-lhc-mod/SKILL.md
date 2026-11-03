@@ -51,8 +51,9 @@ Facts from the code. Read them before driving:
   Claude Code files right after a `<local-command-caveat>` row, is a
   `runtime_note`; any other command (a skill, a plugin or custom command,
   typed or by `claude -p`) prompts the model and is a `user_prompt` that
-  starts a turn. Its caveat, its output and a
-  skill's expanded body are dropped, live and recovered. A rollback never keeps a row past
+  starts a turn. Its caveat, its output and the
+  hidden expanded body that follows a prompt command (a skill's or a custom
+  command's) are dropped, live and recovered. A rollback never keeps a row past
   the first abandoned one. Recovery also restores the turn state the
   transcript shows: a prompt opens a turn, each model response (one message
   id) is a step with its tool results, and a turn's duration row settles it,

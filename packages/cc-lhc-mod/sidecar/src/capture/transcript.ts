@@ -108,7 +108,8 @@ export class TranscriptTail {
               (line.type === "user" &&
                 line.origin === undefined &&
                 line.parentUuid !== null &&
-                this.compactionRows.has(line.parentUuid));
+                this.compactionRows.has(line.parentUuid) &&
+                COMMAND_PREFIXES.some((prefix) => textOf(line.message?.content).trimStart().startsWith(prefix)));
             if (isCompactionRow) this.compactionRows.add(line.uuid);
             const row = rowOf(line);
             if (row !== undefined) {

@@ -121,3 +121,21 @@ for (const secondCompact of [false, true])
       h.cleanup();
     }
   });
+
+it("keeps a legacy origin-less prompt typed right after a native compaction", async () => {
+  const h = harness();
+  try {
+    const s = new Script();
+    s.toolTurn("a", "legacy before", "a");
+    s.nativeCompaction();
+    s.toolTurn("b", "LEGACY_AFTER_COMPACT", "b");
+    for (const line of s.lines) delete line.origin;
+    writeTranscript(h, s.lines);
+    const r = await recorder(h);
+
+    expect((await messages(r)).some((m) => m.includes("user_prompt LEGACY_AFTER_COMPACT"))).toBe(true);
+    r.release();
+  } finally {
+    h.cleanup();
+  }
+});

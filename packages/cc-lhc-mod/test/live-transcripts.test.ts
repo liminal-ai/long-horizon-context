@@ -155,3 +155,18 @@ it("maps live claude -p command rows, which all arrive unclassified, the same wa
   ]);
   expect(kinds("print-model-command-transcript.jsonl")).toEqual(["runtime_note /model sonnet"]);
 });
+
+it("recovers typed, pasted and custom-command input as prompts and built-in commands as notes, across a /compact", async () => {
+  const recorded = await recovered("commands-and-compact-transcript.jsonl");
+  const of = (kind: string) =>
+    recorded.filter((m) => m.includes(kind)).map((m) => m.slice(m.indexOf(kind) + kind.length + 1));
+
+  expect(of("user_prompt").map((text) => text.split(":")[0])).toEqual([
+    "R4_TYPED_CLEAN",
+    "/r4-echo",
+    "R4_PASTED",
+    "/r4-echo",
+  ]);
+  expect(of("runtime_note")).toEqual(["/clear", "/model", "/compact"]);
+  expect(recorded.some((m) => m.includes("printf R4_SKILL"))).toBe(false);
+});

@@ -22,7 +22,7 @@ export type Entry = CaptureEntry | Settle;
  * Where the open turn stands, and whether the last user row was a local
  * command's caveat, which Claude Code writes just before a built-in command.
  */
-export type TurnState = { isOpen: boolean; step: number | undefined; afterCaveat?: boolean };
+export type TurnState = { isOpen: boolean; step: number | undefined; afterCaveat?: boolean; afterCommand?: boolean };
 
 export const SETTLED: TurnState = { isOpen: false, step: undefined };
 
@@ -56,16 +56,15 @@ const COMMAND_NAME = /<command-name>([\s\S]*?)<\/command-name>/;
 const COMMAND_ARGS = /<command-args>([\s\S]*?)<\/command-args>/;
 
 /**
- * Rows a slash command writes around itself: the caveat, its output, and a
- * skill's expanded body. The command row alone is kept, as one short note.
+ * Rows a built-in slash command writes around itself: the caveat and its
+ * output. The command row alone is kept.
  */
 const isCommandNoise = (row: Row): boolean => {
   const text = joinedText(row.message.content).trimStart();
   return (
     text.startsWith("<local-command-caveat>") ||
     text.startsWith("<local-command-stdout>") ||
-    text.startsWith("<local-command-stderr>") ||
-    (row.message.isMeta === true && text.startsWith("Base directory for this skill:"))
+    text.startsWith("<local-command-stderr>")
   );
 };
 
@@ -103,6 +102,8 @@ const isCaveat = (row: Row): boolean => joinedText(row.message.content).trimStar
 export const isUserPrompt = (row: Row, afterCaveat = false): boolean =>
   slashCommand(row) === undefined ? row.door === "prompt" && !isTaskNotification(row) : !afterCaveat;
 
+const isPromptCommand = (row: Row, afterCaveat = false): boolean => slashCommand(row) !== undefined && !afterCaveat;
+
 /** The caveat flag after a row: set by a caveat, cleared by any other user row. */
 export const caveatAfter = (row: Row, afterCaveat = false): boolean =>
   row.message.type === "user" ? isCaveat(row) : afterCaveat;
@@ -137,6 +138,8 @@ function prompt(row: Row, isSteer: boolean): MessageEventInput[] {
 
 function mapRow(row: Row, state: TurnState): MessageEventInput[] {
   if (!isRecorded(row)) return [];
+  // A prompt command's expanded body (a skill's or custom command's text) follows it as a hidden row.
+  if (state.afterCommand === true && row.message.isMeta === true) return [];
   if (isUserPrompt(row, state.afterCaveat)) return prompt(row, state.isOpen);
   const command = slashCommand(row);
   if (command !== undefined) return [textEvent(HARNESS, "runtime_note", command, "system", kindlessTextKey(row))];
@@ -162,10 +165,14 @@ export function mapEntries(
     switch (entry.kind) {
       case "row":
         events.push(...mapRow(entry, state));
-        state = { ...state, afterCaveat: caveatAfter(entry, state.afterCaveat) };
+        state = {
+          ...state,
+          afterCaveat: caveatAfter(entry, state.afterCaveat),
+          afterCommand: entry.message.type === "user" ? isPromptCommand(entry, state.afterCaveat) : state.afterCommand === true,
+        };
         break;
       case "turn-start":
-        state = { isOpen: true, step: undefined };
+        state = { ...state, isOpen: true, step: undefined };
         break;
       case "step":
         state = { ...state, step: entry.index };
