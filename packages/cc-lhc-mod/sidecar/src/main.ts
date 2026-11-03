@@ -70,8 +70,7 @@ async function createLhc(lane: InferenceLane): Promise<{ lhc: Lhc; bridge?: Brid
   return { lhc, ...(bridge === undefined ? {} : { bridge }) };
 }
 
-const parent = process.ppid;
-const { server } = createSidecarServer({ ...(await createLhc(lane)), home: values.home, ownerPid: parent, log });
+const { server } = createSidecarServer({ ...(await createLhc(lane)), home: values.home, ownerPid: process.ppid, log });
 const stop = (why: string): void => {
   // The lease stays: it belongs to the Claude process, which outlives a reloaded sidecar and is reclaimed once dead.
   log(`exit ${why}`);
@@ -79,8 +78,10 @@ const stop = (why: string): void => {
   process.exit(0);
 };
 for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"] as const) process.on(signal, () => stop(signal));
-// Claude Code kills the sidecar when the module unloads; a killed Claude cannot, so leave when orphaned.
-setInterval(() => process.ppid !== parent && stop("orphaned"), 5000).unref();
+// Claude Code kills the sidecar when the module unloads; a killed Claude cannot, and one dying can spawn a sidecar
+// that is reparented before it starts. Only the spawning Claude reads stdout, so a write that fails means it is gone.
+process.stdout.on("error", () => stop("orphaned"));
+setInterval(() => process.stdout.write("\n"), 5000).unref();
 
 server.listen(socket, () => {
   log(`listening ${socket} pid ${process.pid}`);
