@@ -312,23 +312,43 @@ following its `compact_boundary`) open with the person's request, with the
 notification as a `[runtime note]`.
 
 One step over the trigger: a fresh home whose fixtures are written with
-`fixtures.sh "$H" 250`, then the same launch and:
+`fixtures.sh "$H" 350`, then the same launch and:
 
 ```sh
 $V/helpers/say.sh "$S" "Remember this for later: the ticket is LH-4412. Reply with just OK."
-$V/helpers/say.sh "$S" "Read f1.txt, f2.txt, f3.txt, f4.txt, f5.txt and f6.txt in parallel: all six Read calls in one response, each file whole. Then give me the last word of each file, one per line."
+$V/helpers/say.sh "$S" "Read pic.png, f1.txt, f2.txt, f3.txt, f4.txt, f5.txt and f6.txt in parallel: all seven Read calls in one response, each file whole. Then name the color of pic.png and give me the last word of each text file, one per line."
 $V/helpers/wait.sh "$H" 'compact auto mid-turn' 240
 $V/helpers/say.sh "$S" "Which of those last words comes first alphabetically? Reply with just the word."
+jq -s -c -f $V/helpers/installed-rows.jq <transcript>   # per boundary: placeholders, images, thinking
 ```
 
+Claude Code checks the context once the seven results are in. At 350 lines
+it counts that step over the trigger (`autocompact: ... level=compact`), so
+the compaction lands while the step is open. The mid-turn view keeps the step
+whole and is installed although it is over the trigger: view 87983 plus fixed
+context 20286 in both runs with the image, and 85142 or 85151 plus 20286 in
+three six-file runs. The mod logs no `post-compact` line for that view, and
+measures about 110k at the next seam; the window is forced to 100k, and the
+model's real one is 1M. At the next seam the step is history: a view of about
+2400 to 3300 and `post-compact context ... ok`. At 250 lines Claude Code's
+count sits near the trigger. Two of four runs logged `level=warn` there, sent
+the step uncompacted and compacted only after the reply, so their first view was
+about 2400 and nothing over the trigger was installed.
+
 Pass when the first compaction logs `compact auto mid-turn view N` with N
-plus the fixed context at or over 60000 and no `fell back`. The answers must
-be whiskey, echo, romeo, xray, tango, kilo, then echo. The next seam must log
-a small `mid-turn view` and `post-compact context ... ok`. The transcript must
-have no `isCompactSummary` row, the debug log no `source=compact` request, and
-`compare.mjs` must pass. Before this host installed such a view, the first
-compaction logged `fell back to native ... would not get below the 60k
-trigger` and Claude Code's summary ran.
+plus the logged `fixed context` at or over 60000, no `fell back`, and no
+`post-compact` line before the next compaction. That next compaction logs a
+view below the target and `post-compact context ... ok`. The answers must be
+red, whiskey, echo, romeo, xray, tango, kilo, then echo. The first boundary's
+installed rows must hold one `[image omitted by LHC: m<id>]` and no image or
+`thinking` block. The transcript must have no `isCompactSummary` row, the
+debug log no `source=compact` request, and `compare.mjs` must pass. A first
+view below the trigger means Claude Code compacted after the reply: the case
+was not reached, so rerun it. The model may re-read the files after the second
+seam, which installs another view over the trigger; the pass holds. Before
+this host installed such a view, the first compaction logged `fell back to
+native ... would not get below the 60k trigger` and Claude Code's summary
+ran.
 
 ## Resume after a compaction
 
@@ -340,9 +360,11 @@ $V/helpers/say.sh "$S" "Use get_messages to fetch m1, then tell me the ticket id
 
 Pass when the first request after the resume (the next assistant row's
 `message.usage`, input plus cache tokens) is about the post-compact context,
-not the whole history, the installed rows carry no `thinking` block and hold
-`[image omitted by LHC: m<id>]` where the image was, and the answer names
-LH-4412.
+not the whole history, `jq -s -c -f $V/helpers/installed-rows.jq <transcript>`
+gives `thinking` 0 and `images` 0 for every boundary, and the answer names
+LH-4412. This drive's image is compacted into history before any view
+installs it, so its rows hold no placeholder. The one-step-over drive checks
+the placeholder.
 
 ## Compaction fallback
 
