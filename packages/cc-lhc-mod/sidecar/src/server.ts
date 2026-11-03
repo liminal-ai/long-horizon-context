@@ -1,7 +1,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { RETRIEVAL_MAX_IDS, type RetrievalOp, runRetrieval } from "claude-adapter";
 import type { Lhc } from "lhc";
-import type { CaptureEntry, CaptureReply } from "../../src/capture.ts";
+import type { BindAnswer, CaptureEntry, CaptureReply } from "../../src/capture.ts";
 import type { CompactAnswer, CompactRequest, RetrieveAnswer, RetrieveRequest } from "../../src/compact.ts";
 import type { BridgeOutcome, BridgeRequest, BridgeResult } from "../../src/inference.ts";
 import { answerCompact } from "./compact.ts";
@@ -76,15 +76,18 @@ function parseResult(body: unknown): BridgeResult {
 
 function recorderFor(state: SidecarState, sessionId: string): Recorder | string {
   if (state.binding?.sessionId !== sessionId) return `the sidecar is bound to ${state.binding?.sessionId ?? "no session"}`;
+  if (state.recording?.kind === "awaiting-fork") return "the fork is copied at its first prompt";
   if (state.recording?.kind !== "recording") return state.recording?.notice ?? "the session is not recorded";
   return state.recording.recorder;
 }
 
-function describe(recording: Recording | null): unknown {
-  if (recording === null) return null;
-  return recording.kind === "recording"
-    ? { kind: "recording", threadId: recording.recorder.thread.threadId }
-    : recording;
+/** What the mod shows for a recording: the thread and how the session came to it, or why nothing is recorded. */
+function describe(recording: Recording | null): BindAnswer {
+  if (recording === null) return {};
+  if (recording.kind === "refused") return { notice: recording.notice };
+  if (recording.kind === "awaiting-fork") return {};
+  const { recorder, how, notice } = recording;
+  return { threadId: recorder.thread.threadId, how, ...(notice === undefined ? {} : { notice }) };
 }
 
 export function stopRecording(state: SidecarState): void {
@@ -97,7 +100,7 @@ const routes: Record<string, Route> = {
     pid: process.pid,
     binding: state.binding,
     policy: state.policy,
-    recording: describe(state.recording),
+    recording: state.recording === null ? null : { kind: state.recording.kind, ...describe(state.recording) },
   }),
   "POST /bind": async (body, state, deps): Promise<unknown> => {
     const binding = parseBinding(body);
@@ -116,8 +119,9 @@ const routes: Record<string, Route> = {
     state.binding = binding;
     deps.log(`bound session ${binding.sessionId} transcript ${binding.transcriptPath} source ${binding.source}`);
     if (recording.kind === "refused") deps.log(`not recording: ${recording.notice}`);
-    else void deps.lhc.work.drain(recording.recorder.thread);
-    return { ...binding, ...(recording.kind === "refused" ? { notice: recording.notice } : {}) };
+    if (recording.kind === "awaiting-fork") deps.log(`fork ${binding.sessionId} waits for its first row`);
+    if (recording.kind === "recording") void deps.lhc.work.drain(recording.recorder.thread);
+    return { ...binding, ...describe(recording) };
   },
   "POST /policy": (body, state, deps) => {
     state.policy = parsePolicy(body);
@@ -129,12 +133,19 @@ const routes: Record<string, Route> = {
     const sessionId = state.binding?.sessionId;
     const foreign = entries.find((entry) => entry.sessionId !== sessionId);
     if (foreign !== undefined) throw new Error(`entries for session ${foreign.sessionId}, bound to ${sessionId}`);
-    if (state.recording === null) throw new Error("no recording is open");
-    if (state.recording.kind !== "recording" || entries.length === 0) return { recorded: 0 };
+    if (state.recording === null || state.binding === null) throw new Error("no recording is open");
+    // A typed-ahead queue row never reaches the transcript, so it cannot show the fork point.
+    const firstRow = entries.flatMap((entry) => (entry.kind === "row" && entry.door !== "queue" ? [entry.uuid] : []))[0];
+    let opened: BindAnswer = {};
+    if (state.recording.kind === "awaiting-fork" && firstRow !== undefined) {
+      state.recording = await openRecording(deps, state.binding, firstRow);
+      opened = describe(state.recording);
+    }
+    if (state.recording.kind !== "recording" || entries.length === 0) return { recorded: 0, ...opened };
     const recorded = await state.recording.recorder.capture(entries);
     const lag = Math.max(...entries.map((entry) => Date.now() - entry.at));
     deps.log(`captured ${entries.length} entries recorded ${recorded} events lag ${lag}ms`);
-    return { recorded };
+    return { recorded, ...opened };
   },
   "POST /compact": async (body, state, deps): Promise<CompactAnswer> => {
     const request = parseCompact(body);

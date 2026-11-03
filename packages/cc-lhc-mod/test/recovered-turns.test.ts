@@ -128,7 +128,7 @@ for (const via of ["typed", "print"] as const) {
     } as never;
     writeTranscript(h, script.lines);
     const recording = await record(h, "resume");
-    if (recording.kind !== "recording") throw new Error(recording.notice);
+    if (recording.kind !== "recording") throw new Error(JSON.stringify(recording));
     const r = recording.recorder;
     expect(r.isTurnOpen).toBe(false);
     const next = new Script();

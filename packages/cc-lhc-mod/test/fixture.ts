@@ -326,11 +326,11 @@ export async function record(h: Harness, source = "startup", ownerPid = process.
 /** A recorder bound as the mod binds after a sidecar restart in the same Claude process. */
 export async function recorder(h: Harness): Promise<Recorder> {
   const recording = await record(h, "restart");
-  if (recording.kind !== "recording") throw new Error(recording.notice);
+  if (recording.kind !== "recording") throw new Error(JSON.stringify(recording));
   return recording.recorder;
 }
 
-export async function messages(r: Recorder): Promise<string[]> {
+export async function messages(r: Pick<Recorder, "thread">): Promise<string[]> {
   const history = await threads.exportHistory(r.thread);
   if (!history.ok) throw new Error(history.error.reason);
   return history.value.turns.flatMap((turn) =>

@@ -1,17 +1,33 @@
 #!/usr/bin/env node
 import { readFileSync } from "node:fs";
 
-const [exportFile, transcriptFile] = process.argv.slice(2);
+const [exportFile, transcriptFile, ...ancestorFiles] = process.argv.slice(2);
 if (exportFile === undefined || transcriptFile === undefined) {
-  console.error("usage: compare.mjs <export.json> <transcript.jsonl>");
+  console.error("usage: compare.mjs <export.json> <transcript.jsonl> [<source transcript.jsonl>...]");
   process.exit(2);
 }
 
-const rows = readFileSync(transcriptFile, "utf8")
-  .split("\n")
-  .filter((line) => line.trim() !== "")
-  .map((line) => JSON.parse(line))
-  .filter((row) => typeof row.uuid === "string" && row.isSidechain !== true);
+const rowsOf = (file) =>
+  readFileSync(file, "utf8")
+    .split("\n")
+    .filter((line) => line.trim() !== "")
+    .map((line) => JSON.parse(line))
+    .filter((row) => typeof row.uuid === "string" && row.isSidechain !== true);
+
+// A fork's thread is a copy of its source's, which can hold rows a compacted
+// fork transcript no longer carries: each source, oldest first, adds its rows
+// up to the last one the fork's transcript shares with it.
+const own = rowsOf(transcriptFile);
+const ownIds = new Set(own.map((row) => row.uuid));
+const inherited = [];
+for (const file of ancestorFiles) {
+  const source = rowsOf(file);
+  const end = source.findLastIndex((row) => ownIds.has(row.uuid));
+  for (const row of source.slice(0, end + 1)) {
+    if (!ownIds.has(row.uuid) && !inherited.some((r) => r.uuid === row.uuid)) inherited.push(row);
+  }
+}
+const rows = [...inherited, ...own];
 
 const blocksOf = (content) => (typeof content === "string" ? [{ type: "text", text: content }] : Array.isArray(content) ? content : []);
 const textOf = (row) =>

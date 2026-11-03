@@ -54,7 +54,7 @@ async function sidecar(name: string, clock?: () => Date): Promise<Sidecar> {
     transcriptPath: join(home, `${SESSION}.jsonl`),
     source: "startup",
   });
-  if (recording.kind !== "recording") throw new Error(recording.notice);
+  if (recording.kind !== "recording") throw new Error(JSON.stringify(recording));
   const { server } = createSidecarServer(deps);
   const socketPath = join(home, `${name}.sock`);
   await new Promise<void>((resolve) => server.listen(socketPath, resolve));

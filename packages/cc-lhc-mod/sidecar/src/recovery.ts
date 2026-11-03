@@ -16,6 +16,11 @@ function readCursor(home: string, sessionId: string): number {
   }
 }
 
+export function writeCursor(home: string, sessionId: string, offset: number): void {
+  mkdirSync(join(home, "cursors"), { recursive: true });
+  writeFileSync(cursorPath(home, sessionId), JSON.stringify({ offset }));
+}
+
 export async function recoverTranscript(input: {
   home: string;
   sessionId: string;
@@ -23,10 +28,15 @@ export async function recoverTranscript(input: {
   capture: (entries: Entry[]) => Promise<number>;
   isInstalled: (uuid: string) => boolean;
   claimInstalled: (rows: Row[]) => void;
+  /** Stop after this row: a fork recovers its source's rows first, then its own. */
+  through?: string;
 }): Promise<Recovered> {
   const cursor = readCursor(input.home, input.sessionId);
   const tail = new TranscriptTail(input.transcriptPath);
-  const lines = tail.read();
+  const all = tail.read();
+  const stop = input.through === undefined ? -1 : all.findIndex(({ line }) => line.uuid === input.through);
+  const lines = stop === -1 ? all : all.slice(0, stop + 1);
+  const offset = lines.at(-1)?.end ?? cursor;
   // A row on a branch a rewind left yields no entry, not even its turn's markers.
   const abandoned = new Set([...tail.abandoned().values()].flat());
   // A native compaction's command rows stay out; its summary is recorded as live capture would label it.
@@ -39,7 +49,6 @@ export async function recoverTranscript(input: {
   // A row an install receipt claimed, behind the cursor or from an earlier compact, opens no turn either.
   const skip = (uuid: string): boolean => isCommandRow(uuid) || abandoned.has(uuid) || input.isInstalled(uuid);
   const recorded = await input.capture(entriesOf(lines, skip, cursor));
-  mkdirSync(join(input.home, "cursors"), { recursive: true });
-  writeFileSync(cursorPath(input.home, input.sessionId), JSON.stringify({ offset: tail.offset }));
-  return { scanned: lines.filter(({ end }) => end > cursor).length, recorded, offset: tail.offset };
+  writeCursor(input.home, input.sessionId, stop === -1 ? tail.offset : offset);
+  return { scanned: lines.filter(({ end }) => end > cursor).length, recorded, offset: stop === -1 ? tail.offset : offset };
 }

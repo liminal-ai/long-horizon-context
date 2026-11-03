@@ -1,6 +1,6 @@
 ---
 name: verify-cc-lhc-mod
-description: "Verify cc-lhc-mod (packages/cc-lhc-mod, the Claude Code mod plus per-process Node sidecar for LHC) the way a user runs it: plain claude with --plugin-dir in an isolated tmux session, a throwaway LHC home and a pinned Claude Code version. Use when proving the mod's sidecar, session binding, settings and compact trigger, reload, capture into the LHC thread (rows, recovery, lease, rewind), compaction answered with the LHC view (mid-turn, manual, fallback, resume, install receipts), derivations on the session's own model client or the Agent SDK worker, get_turns and get_messages retrieval, or the seam check on a new Claude Code release."
+description: "Verify cc-lhc-mod (packages/cc-lhc-mod, the Claude Code mod plus per-process Node sidecar for LHC) the way a user runs it: plain claude with --plugin-dir in an isolated tmux session, a throwaway LHC home and a pinned Claude Code version. Use when proving the mod's sidecar, session binding, settings and compact trigger, reload, capture into the LHC thread (rows, recovery, lease, rewind), compaction answered with the LHC view (mid-turn, manual, fallback, resume, install receipts), /clear, /resume, --continue and --fork-session threads, older-host thread adoption, derivations on the session's own model client or the Agent SDK worker, get_turns and get_messages retrieval, or the seam check on a new Claude Code release."
 ---
 
 # Verify cc-lhc-mod
@@ -22,8 +22,7 @@ Facts from the code. Read them before driving:
   One load id per module load, so a hot reload starts a new pair. Capture
   adds `registry.sqlite` and `threads/` (core), `owners/<thread id>.json` (the
   lease, holding the Claude process pid) and `cursors/<session id>.json` (the
-  committed transcript offset). `forks/<session id>` marks a refused fork,
-  which stays refused across a sidecar restart and a reload. Compaction adds
+  committed transcript offset). Compaction adds
   `receipts/<session id>.json`, the last install receipt.
 - Capture (`mod/hooks/capture.ts`, `mod/hooks/sidecar.ts`,
   `sidecar/src/capture/`): the mod puts every main-loop `session.append` row,
@@ -73,8 +72,7 @@ Facts from the code. Read them before driving:
   person's prompt is abandoned: recovery never records it, and a new prompt
   whose path back to the nearest recorded row passes one writes core
   `rollback`. A branch without a prompt (parallel tool calls) is live. A
-  rewind reaches back to a compact boundary but not past it. A fork is refused for the session's life
-  (`forks/<session id>`).
+  rewind reaches back to a compact boundary but not past it.
 - Lease: a second live Claude process on the same thread is refused with a
   notice in the transcript. The lease outlives a sidecar that exits under a
   live Claude process (a reload, a kill); a dead owner's lease is taken over
@@ -104,7 +102,39 @@ Facts from the code. Read them before driving:
 - Binding: `classic.SessionStart` (startup, clear, resume, fork, and
   `compact` after each compaction) posts `/bind`. A reload re-runs `session.start` only, so the mod keeps the binding
   in `$.state` and rebinds with source `reload`. The sidecar answers
-  `GET /health` with its binding and policy.
+  `GET /health` with its binding, policy and recording (`threadId`, `how`).
+  A fork's rebind (restart or reload) keeps source `fork` until the mod sees
+  the fork's thread, so a sidecar that never saw its first row still copies the
+  source; after that it rebinds as `restart`, so a turn still running keeps going.
+  Nothing waits for `session.end`: `/exit` kills the sidecar first, and each
+  capture batch is committed before the sidecar answers it.
+- Threads (`sidecar/src/bind.ts`): a bind answers the thread and how the
+  session came to it, and the mod pins `LHC thread <id> (<how>)` as its
+  status line. A session whose alias is known keeps its thread (`resumed`:
+  `/resume`, `--continue`, `--resume`, a reload). An unknown one gets a new
+  thread (`new`: startup, `/clear`, whose new session id has no alias). A
+  thread with `compact_continuation_boundary` rows, which only older hosts
+  write, is not adopted: the session records to a new thread (`replaced`)
+  under its own alias `cc-lhc-mod:<session id>`, with a notice naming both
+  threads, and keeps it. A fork (`--fork-session`) records nothing until its
+  first captured row: its transcript, written then, holds the source's rows
+  with their uuids. The fork point is the nearest ancestor of that row a
+  sibling transcript holds: Claude Code can write its own rows between the
+  copied prefix and the first captured row (a synthetic reply to a turn the
+  source left open, a task notification). The source is the sibling holding the
+  nearest such ancestor, one that still ends there winning a tie; an older
+  session a fork of a fork also descends from holds only a farther one. The fork takes the source's install receipt before anything else, so
+  the source's installed view never becomes record. When the source still ends
+  at the fork point, its thread is copied with core `copyThread` (`forked`);
+  a turn the source's process left open is copied too. The fork's recovery
+  stops before its first captured row, then ends that turn as aborted
+  (interrupted), as a startup or resume does; live capture brings the fork's
+  own rows, so its first prompt opens a turn of its own. Otherwise, or with no recorded
+  source or no fork point,
+  the fork records to a new thread (`new`) with a notice. Either way recovery
+  reads the fork's transcript from its start: the copy's idempotency keys skip
+  what the source recorded, rows it missed are recorded, and abandoned branches
+  stay out.
 - Settings (`src/settings.ts`): `userConfig` fields `lowerBound` (140000),
   `upperBound` (800000), `compactPercent` (90). The window is the compact
   window (`breakdown.rawMaxTokens`, which `CLAUDE_CODE_AUTO_COMPACT_WINDOW`
@@ -212,7 +242,7 @@ validate`, and that the scratch root sits outside any repo. Pass line:
 | `helpers/wait.sh <home> <regex> [timeout]` | Waits for a line in the home's mod, sidecar or debug logs |
 | `helpers/stop.sh <session> [pane file]` | Saves the pane, sends `/exit`, kills that exact tmux session |
 | `helpers/perf.sh [runs]` | Interleaved launches with and without the plugin, launch-to-prompt-box time and sidecar RSS |
-| `helpers/compare.mjs <export.json> <transcript.jsonl>` | Diffs a thread export against the transcript's live branch: prompts, tool calls, tool results, assistant text. Rows an LHC install appends after a boundary (labeled bands and notes, messages already seen) are skipped. So are Claude Code's own `<synthetic>` messages, such as the refill breaker's, which capture never records. Pass line `compare: PASS` |
+| `helpers/compare.mjs <export.json> <transcript.jsonl> [<source transcript.jsonl>...]` | Diffs a thread export against the transcript's live branch. For a fork, pass the source's transcript (oldest source first) so the rows the copied thread inherits count: prompts, tool calls, tool results, assistant text. Rows an LHC install appends after a boundary (labeled bands and notes, messages already seen) are skipped. So are Claude Code's own `<synthetic>` messages, such as the refill breaker's, which capture never records. Pass line `compare: PASS` |
 | `helpers/synth-transcript.mjs <work dir> <turns> [lines]` | Writes a resumable Claude Code transcript for `<work dir>` (one Read per turn, about 3.9k tokens each; 77 turns is about 300k) and prints its session id, for the compaction cost drive |
 | `helpers/fixtures.sh <home>` | Writes the compaction drives' inputs into `<home>/work`: `f1.txt` to `f6.txt` (about 8k tokens each, last line `last word: whiskey`, `echo`, `romeo`, `xray`, `tango`, `kilo`) and `pic.png`, a red square |
 | `helpers/derive-perf.sh [runs]` | The same ten-turn interactive session on each model lane, interleaved: turn time, time to drain after the last turn, sidecar RSS and peak, `thread health` |

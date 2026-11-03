@@ -100,12 +100,6 @@ describe("capture", () => {
     expect((await record(h, "restart")).kind).toBe("recording");
   });
 
-  it("refuses a forked session until fork is supported, across a sidecar restart and a mod reload", async () => {
-    expect(await record(h, "fork")).toMatchObject({ kind: "refused", notice: expect.stringContaining("forked") });
-    expect(await record(h, "restart")).toMatchObject({ kind: "refused", notice: expect.stringContaining("forked") });
-    expect(await record(h, "reload")).toMatchObject({ kind: "refused", notice: expect.stringContaining("forked") });
-  });
-
   it("records a task notification delivered mid-turn as a runtime note, live and recovered alike", async () => {
     const notification =
       "<task-notification>\n<task-id>b2iz2kpm0</task-id>\n<status>completed</status>\n</task-notification>";
