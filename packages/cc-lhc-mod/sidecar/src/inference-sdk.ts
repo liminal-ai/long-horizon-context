@@ -18,9 +18,6 @@ export function createSdkModelCall(claudeBin: string): ModelCall {
   const waiters: Array<() => void> = [];
 
   return async (input): Promise<ModelCallResult> => {
-    if (input.provider !== SDK_PROVIDER) {
-      return { ok: false, kind: "invalid_request", message: `unsupported inference provider "${input.provider}"` };
-    }
     if (running >= MAX_CONCURRENCY) await new Promise<void>((resolve) => waiters.push(resolve));
     running += 1;
     const { systemPrompt, user } = summaryWorkerRequest(input.messages);

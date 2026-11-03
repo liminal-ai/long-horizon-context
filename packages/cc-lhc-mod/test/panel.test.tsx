@@ -17,7 +17,8 @@ function engine($: Engine, on: On, { compact = VIEW, prune = NOTHING_TO_PRUNE, i
   const envSets: string[] = [];
   const configSets: Array<{ key: string; value: unknown }> = [];
   const toasts: string[] = [];
-  const policies = (): Array<Record<string, unknown>> => posts.filter((post) => post.path === "/policy").map((post) => post.body);
+  const applied: Array<Record<string, number>> = [];
+  const policies = (): Array<Record<string, number>> => applied;
   const settled = async (count: number): Promise<void> => {
     await clock.settle();
     expect(policies()).toHaveLength(count);
@@ -29,7 +30,11 @@ function engine($: Engine, on: On, { compact = VIEW, prune = NOTHING_TO_PRUNE, i
     return { value: {} };
   });
   on("fs.write", () => ({ value: undefined }));
-  on("ui.log", () => ({ value: undefined }));
+  on("ui.log", (_, e) => {
+    const line = / window (\d+) trigger (\d+) target (\d+) pct /.exec(e.text);
+    if (line !== null) applied.push({ window: Number(line[1]), trigger: Number(line[2]), target: Number(line[3]) });
+    return { value: undefined };
+  });
   on("ui.status", () => ({ value: undefined }));
   on("ui.toast", (_, e) => {
     toasts.push(e.text);

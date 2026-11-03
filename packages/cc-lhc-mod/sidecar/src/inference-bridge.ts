@@ -52,9 +52,6 @@ export function createBridge(coreTimeoutMs: number, log: (line: string) => void)
   const calls = new Map<string, Call>();
   return {
     call: (input) => {
-      if (input.provider !== BRIDGE_PROVIDER) {
-        return Promise.resolve({ ok: false, kind: "invalid_request", message: `unsupported inference provider "${input.provider}"` });
-      }
       const { systemPrompt, user } = summaryWorkerRequest(input.messages);
       const effort = effortOf(input.thinking);
       const id = randomUUID();

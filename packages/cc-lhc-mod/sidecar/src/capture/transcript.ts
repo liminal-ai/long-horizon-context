@@ -29,14 +29,13 @@ export class TranscriptTail {
   readonly compactionRows = new Set<string>();
   readonly #logicalParents = new Map<string, string>();
   #afterCaveat = false;
-  #offset: number;
+  #offset = 0;
   #pending = Buffer.alloc(0);
 
   readonly path: string;
 
-  constructor(path: string, offset = 0) {
+  constructor(path: string) {
     this.path = path;
-    this.#offset = offset;
   }
 
   get offset(): number {

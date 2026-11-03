@@ -2,6 +2,8 @@ import type { On, SessionContextBreakdown } from "claude-code";
 import { type Engine, expect, test } from "claude-code/testing";
 
 const HOME = "/lhc-test-home";
+/** The mod log line applySettings writes once the override is set and the panel has the policy. */
+const APPLIED = / window \d+ trigger \d+ target \d+ pct /;
 
 type Post = { path: string; body: unknown; socketPath: string | undefined };
 
@@ -21,12 +23,12 @@ function engine(on: On, window: number, answers: Record<string, string> = {}) {
   const statuses: Array<string | undefined> = [];
   const notices: string[] = [];
   const envSets: Array<{ name: string; value: string | undefined }> = [];
-  const policyWaiters = new Map<number, () => void>();
-  const sawPolicy = (count: number): void => policyWaiters.get(count)?.();
-  const policyPosted = (count = 1): Promise<void> =>
+  let applies = 0;
+  const applyWaiters = new Map<number, () => void>();
+  const settingsApplied = (count = 1): Promise<void> =>
     new Promise((resolve) => {
-      if (posts.filter((post) => post.path === "/policy").length >= count) resolve();
-      else policyWaiters.set(count, resolve);
+      if (applies >= count) resolve();
+      else applyWaiters.set(count, resolve);
     });
 
   on("env.get", (_, e) => ({ value: e.name === "LHC_HOME" ? HOME : undefined }));
@@ -37,6 +39,8 @@ function engine(on: On, window: number, answers: Record<string, string> = {}) {
   on("fs.write", () => ({ value: undefined }));
   on("ui.log", (_, e) => {
     if (e.to !== "debug") notices.push(e.text);
+    if (APPLIED.test(e.text)) applyWaiters.get(++applies)?.();
+    if (e.text === "sidecar exited") sidecarExited();
     return { value: undefined };
   });
   let statusShown: () => void = () => {};
@@ -49,11 +53,7 @@ function engine(on: On, window: number, answers: Record<string, string> = {}) {
     return { value: undefined };
   });
   on("session.id", () => ({ value: "session-1" }));
-  let model = "claude-sonnet-5-5";
-  const switchModel = (next: string): void => {
-    model = next;
-  };
-  on("session.model", () => ({ value: model }));
+  on("session.model", () => ({ value: "claude-sonnet-5-5" }));
   on("session.usage", () => ({
     value: {
       startedAt: 0,
@@ -61,6 +61,10 @@ function engine(on: On, window: number, answers: Record<string, string> = {}) {
       rateLimits: [],
     },
   }));
+  let sidecarExited: () => void = () => {};
+  const exited = new Promise<void>((resolve) => {
+    sidecarExited = resolve;
+  });
   let killFirstChild: () => void = () => {};
   const firstChildKilled = new Promise<void>((resolve) => {
     killFirstChild = resolve;
@@ -87,24 +91,43 @@ function engine(on: On, window: number, answers: Record<string, string> = {}) {
       if (capturedEntries() >= count) resolve();
       else captureWaiters.push({ count, resolve });
     });
+  const bindWaiters: Array<{ count: number; resolve: () => void }> = [];
+  const binds = (): number => posts.filter((post) => post.path === "/bind").length;
+  const bound = (count: number): Promise<void> =>
+    new Promise((resolve) => {
+      if (binds() >= count) resolve();
+      else bindWaiters.push({ count, resolve });
+    });
   on("http.fetch", async (_, e) => {
     const path = new URL(e.url).pathname;
     if (path === "/capture") await captureOpen;
     posts.push({ path, body: JSON.parse(e.init?.body ?? "null"), socketPath: e.init?.socketPath });
     for (const waiter of captureWaiters) if (capturedEntries() >= waiter.count) waiter.resolve();
-    if (path === "/policy") sawPolicy(posts.filter((post) => post.path === "/policy").length);
+    for (const waiter of bindWaiters) if (binds() >= waiter.count) waiter.resolve();
     return { value: { status: 200, ok: true, headers: {}, text: answers[path] ?? "{}" } };
   });
   on("classic.SessionStart", () => ({}));
 
-  return { posts, envSets, policyPosted, killFirstChild, switchModel, openCapture, captured, statuses, shown, notices };
+  return {
+    posts,
+    envSets,
+    settingsApplied,
+    killFirstChild,
+    exited,
+    openCapture,
+    captured,
+    bound,
+    statuses,
+    shown,
+    notices,
+  };
 }
 
 test("bind posts the session id and transcript path to the sidecar socket", async ($, on) => {
-  const { posts, policyPosted } = engine(on, 1_000_000);
+  const { posts, settingsApplied } = engine(on, 1_000_000);
 
   await $.classic.SessionStart({ source: "startup", session_id: "session-1", transcript_path: "/t/session-1.jsonl" });
-  await policyPosted();
+  await settingsApplied();
 
   const bind = posts.find((post) => post.path === "/bind");
   expect(bind?.body).toEqual({ sessionId: "session-1", transcriptPath: "/t/session-1.jsonl", source: "startup" });
@@ -113,10 +136,10 @@ test("bind posts the session id and transcript path to the sidecar socket", asyn
 
 test("a bind shows the thread the session records to, and why it is not the one it had", async ($, on) => {
   const answer = { threadId: "th_new", how: "replaced", notice: "LHC thread th_old is not adopted." };
-  const { statuses, notices, policyPosted } = engine(on, 1_000_000, { "/bind": JSON.stringify(answer) });
+  const { statuses, notices, settingsApplied } = engine(on, 1_000_000, { "/bind": JSON.stringify(answer) });
 
   await $.classic.SessionStart({ source: "resume", session_id: "session-1", transcript_path: "/t/session-1.jsonl" });
-  await policyPosted();
+  await settingsApplied();
 
   expect(statuses).toEqual(["thread th_new (replaced)"]);
   expect(notices).toEqual(["LHC thread th_old is not adopted."]);
@@ -137,48 +160,41 @@ test("a fork shows its copied thread once its first rows are captured", async ($
 });
 
 test("applySettings sets the override for a 1M window", async ($, on) => {
-  const { posts, envSets, policyPosted } = engine(on, 1_000_000);
+  const { envSets, settingsApplied } = engine(on, 1_000_000);
 
   await $.classic.SessionStart({ source: "startup", session_id: "session-1", transcript_path: "/t/session-1.jsonl" });
-  await policyPosted();
+  await settingsApplied();
 
   expect(envSets).toEqual([{ name: "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE", value: "81.63265306122449" }]);
-  expect(posts.find((post) => post.path === "/policy")?.body).toEqual({
-    window: 1_000_000,
-    trigger: 800_000,
-    target: 140_000,
-  });
 });
 
 test(
   "applySettings follows the compact window and the user's settings",
   { options: { compactPercent: 40, lowerBound: 20_000 } },
   async ($, on) => {
-    const { envSets, policyPosted } = engine(on, 100_000);
+    const { envSets, settingsApplied } = engine(on, 100_000);
 
     await $.classic.SessionStart({ source: "startup", session_id: "session-1", transcript_path: "/t/session-1.jsonl" });
-    await policyPosted();
+    await settingsApplied();
 
     expect(envSets).toEqual([{ name: "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE", value: "50" }]);
   },
 );
 
 test("a replacement sidecar gets the session's binding before anything else", async ($, on) => {
-  const { posts, policyPosted, killFirstChild, switchModel, openCapture } = engine(on, 1_000_000);
+  const { posts, settingsApplied, killFirstChild, exited, openCapture, bound } = engine(on, 1_000_000);
   on("turn.start", (_, e) => ({ turnId: e.turnId }));
   openCapture();
 
   await $.classic.SessionStart({ source: "startup", session_id: "session-1", transcript_path: "/t/session-1.jsonl" });
-  await policyPosted();
+  await settingsApplied();
   killFirstChild();
-  switchModel("claude-opus-5-5");
-  await $.turn.start({ text: "next prompt", turnId: "turn-2" });
-  await policyPosted(2);
+  await exited;
+  await promptRow($, "row-2");
+  await bound(2);
 
-  const afterRestart = posts
-    .slice(posts.findIndex((post) => post.path === "/policy") + 1)
-    .filter((post) => post.path !== "/capture");
-  expect(afterRestart.map((post) => post.path)).toEqual(["/bind", "/policy"]);
+  const afterRestart = posts.slice(posts.findIndex((post) => post.path === "/bind") + 1);
+  expect(afterRestart.map((post) => post.path)[0]).toBe("/bind");
   expect(afterRestart[0]?.body).toEqual({
     sessionId: "session-1",
     transcriptPath: "/t/session-1.jsonl",
@@ -187,16 +203,16 @@ test("a replacement sidecar gets the session's binding before anything else", as
 });
 
 test("a replacement sidecar is rebound as a fork, so it still copies the source", async ($, on) => {
-  const { posts, policyPosted, killFirstChild, switchModel, openCapture } = engine(on, 1_000_000);
+  const { posts, settingsApplied, killFirstChild, exited, openCapture, bound } = engine(on, 1_000_000);
   on("turn.start", (_, e) => ({ turnId: e.turnId }));
   openCapture();
 
   await $.classic.SessionStart({ source: "fork", session_id: "session-1", transcript_path: "/t/session-1.jsonl" });
-  await policyPosted();
+  await settingsApplied();
   killFirstChild();
-  switchModel("claude-opus-5-5");
-  await $.turn.start({ text: "first prompt", turnId: "turn-1" });
-  await policyPosted(2);
+  await exited;
+  await promptRow($, "row-1");
+  await bound(2);
 
   expect(posts.filter((post) => post.path === "/bind").map((post) => (post.body as Body).source)).toEqual([
     "fork",
@@ -205,7 +221,7 @@ test("a replacement sidecar is rebound as a fork, so it still copies the source"
 });
 
 test("a fork whose thread is open is rebound as a plain restart, so its running turn survives", async ($, on) => {
-  const { posts, policyPosted, killFirstChild, switchModel, openCapture, shown } = engine(on, 1_000_000, {
+  const { posts, settingsApplied, killFirstChild, exited, openCapture, bound, shown } = engine(on, 1_000_000, {
     "/capture": JSON.stringify({ recorded: 1, threadId: "th_fork", how: "forked" }),
   });
   on("turn.start", (_, e) => ({ turnId: e.turnId }));
@@ -217,14 +233,14 @@ test("a fork whose thread is open is rebound as a plain restart, so its running 
   openCapture();
 
   await $.classic.SessionStart({ source: "fork", session_id: "session-1", transcript_path: "/t/session-1.jsonl" });
-  await policyPosted();
+  await settingsApplied();
   const prompt = { type: "user" as const, role: "user" as const, content: [{ type: "text" as const, text: "hi" }] };
   await $.session.append({ message: prompt, door: "prompt", origin: { kind: "composer" }, uuid: "row-1" });
   await shown;
   killFirstChild();
-  switchModel("claude-opus-5-5");
-  await $.turn.start({ text: "hi", turnId: "turn-1" });
-  await policyPosted(2);
+  await exited;
+  await promptRow($, "row-2");
+  await bound(2);
 
   expect(posts.filter((post) => post.path === "/bind").map((post) => (post.body as Body).source)).toEqual([
     "fork",
@@ -235,11 +251,11 @@ test("a fork whose thread is open is rebound as a plain restart, so its running 
 });
 
 test("a command a plugin runs opens no turn, so the person's next prompt opens its own", async ($, on) => {
-  const { posts, policyPosted, openCapture, captured } = engine(on, 1_000_000);
+  const { posts, settingsApplied, openCapture, captured } = engine(on, 1_000_000);
   on("turn.start", (_, e) => ({ turnId: e.turnId }));
 
   await $.classic.SessionStart({ source: "startup", session_id: "session-1", transcript_path: "/t/session-1.jsonl" });
-  await policyPosted();
+  await settingsApplied();
   const text = (value: string) => ({
     type: "user" as const,
     role: "user" as const,
@@ -274,12 +290,12 @@ test("a command a plugin runs opens no turn, so the person's next prompt opens i
 });
 
 test("capture hooks queue rows and turn steps in order and never wait on the sidecar", async ($, on) => {
-  const { posts, policyPosted, openCapture, captured } = engine(on, 1_000_000);
+  const { posts, settingsApplied, openCapture, captured } = engine(on, 1_000_000);
   on("turn.start", (_, e) => ({ turnId: e.turnId }));
   on("turn.complete", () => ({ text: "" }));
 
   await $.classic.SessionStart({ source: "startup", session_id: "session-1", transcript_path: "/t/session-1.jsonl" });
-  await policyPosted();
+  await settingsApplied();
   const prompt = { type: "user" as const, role: "user" as const, content: [{ type: "text" as const, text: "hi" }] };
   await $.session.append({ message: prompt, door: "prompt", origin: { kind: "composer" }, uuid: "row-1" });
   await $.turn.start({ text: "hi", turnId: "turn-1" });
@@ -307,32 +323,30 @@ test("capture hooks queue rows and turn steps in order and never wait on the sid
 });
 
 test("a new session's bind reaches the sidecar before any of that session's rows", async ($, on) => {
-  const { posts, policyPosted, openCapture, captured } = engine(on, 1_000_000);
+  const { posts, settingsApplied, openCapture, captured } = engine(on, 1_000_000);
   on("turn.start", (_, e) => ({ turnId: e.turnId }));
 
   await $.classic.SessionStart({ source: "startup", session_id: "session-1", transcript_path: "/t/session-1.jsonl" });
-  await policyPosted();
+  await settingsApplied();
   await promptRow($, "turn-1");
   await $.classic.SessionStart({ source: "clear", session_id: "session-2", transcript_path: "/t/session-2.jsonl" });
   await promptRow($, "turn-2");
   openCapture();
   await captured(2);
 
-  const order = posts
-    .filter((post) => post.path !== "/policy")
-    .map((post) =>
-      post.path === "/bind"
-        ? `bind ${(post.body as { sessionId: string }).sessionId}`
-        : `capture ${(post.body as { entries: Array<{ sessionId: string }> }).entries.map((entry) => entry.sessionId).join(",")}`,
-    );
+  const order = posts.map((post) =>
+    post.path === "/bind"
+      ? `bind ${(post.body as { sessionId: string }).sessionId}`
+      : `capture ${(post.body as { entries: Array<{ sessionId: string }> }).entries.map((entry) => entry.sessionId).join(",")}`,
+  );
   expect(order).toEqual(["bind session-1", "capture session-1", "bind session-2", "capture session-2"]);
 });
 
 test("an old-session flush queued behind a capture cannot pass the new session's bind", async ($, on) => {
-  const { posts, policyPosted, openCapture, captured } = engine(on, 1_000_000);
+  const { posts, settingsApplied, openCapture, captured } = engine(on, 1_000_000);
   on("turn.start", (_, e) => ({ turnId: e.turnId }));
   await $.classic.SessionStart({ source: "startup", session_id: "session-1", transcript_path: "/t/session-1.jsonl" });
-  await policyPosted();
+  await settingsApplied();
   await promptRow($, "turn-1");
   await $.session.append({
     message: { type: "assistant", role: "assistant", content: [{ type: "text", text: "old extra" }] },
@@ -344,14 +358,12 @@ test("an old-session flush queued behind a capture cannot pass the new session's
   await promptRow($, "turn-2");
   openCapture();
   await captured(3);
-  await policyPosted(2);
-  const order = posts
-    .filter((p) => p.path !== "/policy")
-    .map((p) =>
-      p.path === "/bind"
-        ? `bind ${(p.body as { sessionId: string }).sessionId}`
-        : `capture ${(p.body as { entries: Array<{ sessionId: string }> }).entries.map((e) => e.sessionId).join(",")}`,
-    );
+  await settingsApplied(2);
+  const order = posts.map((p) =>
+    p.path === "/bind"
+      ? `bind ${(p.body as { sessionId: string }).sessionId}`
+      : `capture ${(p.body as { entries: Array<{ sessionId: string }> }).entries.map((e) => e.sessionId).join(",")}`,
+  );
   expect(order).toEqual([
     "bind session-1",
     "capture session-1",
@@ -384,7 +396,12 @@ function faultEngine(on: On, opts: { rejectRestart?: boolean; captures400?: numb
   on("env.set", () => ({ value: {} }));
   on("fs.write", () => ({ value: undefined }));
   const notices: string[] = [];
+  let applies = 0;
   on("ui.log", (_, e) => {
+    if (APPLIED.test(e.text)) {
+      applies++;
+      signal();
+    }
     if (JSON.stringify(e).includes("sidecar exited")) {
       exits++;
       signal();
@@ -457,13 +474,14 @@ function faultEngine(on: On, opts: { rejectRestart?: boolean; captures400?: numb
       await until(() => exits > n);
     },
     attempts: () => attempts,
+    applies: () => applies,
   };
 }
 
 test("round2: capture 400 retains the same entries and retries before clear and resume binds", async ($, on) => {
   const f = faultEngine(on, { captures400: 1 });
   await $.classic.SessionStart({ source: "startup", session_id: "session-1", transcript_path: "/t/1" });
-  await f.until(() => f.requests.some((r) => r.path === "/policy"));
+  await f.until(() => f.applies() > 0);
   await promptRow($, "old");
   await f.until(() => f.attempts() === 1);
   await $.classic.SessionStart({ source: "clear", session_id: "session-2", transcript_path: "/t/2" });
@@ -479,7 +497,7 @@ test("round2: capture 400 retains the same entries and retries before clear and 
 test("round2: replacement during pending old capture rebinds old session before clear and resume", async ($, on) => {
   const f = faultEngine(on, { captures400: 1 });
   await $.classic.SessionStart({ source: "startup", session_id: "session-1", transcript_path: "/t/1" });
-  await f.until(() => f.requests.some((r) => r.path === "/policy"));
+  await f.until(() => f.applies() > 0);
   await promptRow($, "old");
   await f.until(() => f.attempts() === 1);
   await $.classic.SessionStart({ source: "clear", session_id: "session-2", transcript_path: "/t/2" });
@@ -503,7 +521,7 @@ test("round2: a rejected replacement bind must be retried before any capture is 
   const f = faultEngine(on, { rejectRestart: true });
   f.releaseCapture();
   await $.classic.SessionStart({ source: "startup", session_id: "session-1", transcript_path: "/t/1" });
-  await f.until(() => f.requests.some((r) => r.path === "/policy"));
+  await f.until(() => f.applies() > 0);
   await f.kill();
   await promptRow($, "after-death");
   await f.until(() => f.requests.filter((r) => r.path === "/capture").length >= 3 || f.accepted.length === 1);
@@ -514,7 +532,7 @@ test("round2: a rejected replacement bind must be retried before any capture is 
 test("round2: replacement replays last sent bind while a different clear bind is pending", async ($, on) => {
   const f = faultEngine(on, { captures400: 1 });
   await $.classic.SessionStart({ source: "startup", session_id: "session-1", transcript_path: "/t/1" });
-  await f.until(() => f.requests.some((r) => r.path === "/policy"));
+  await f.until(() => f.applies() > 0);
   await promptRow($, "old");
   await f.until(() => f.attempts() === 1);
   await $.classic.SessionStart({ source: "clear", session_id: "session-2", transcript_path: "/t/2" });
@@ -544,13 +562,13 @@ test("capture stops with one visible notice after repeated failed sends", async 
 });
 
 test("turn markers name the turn by the row that opened it, and a turn with none sends no markers", async ($, on) => {
-  const { posts, policyPosted, openCapture, captured } = engine(on, 1_000_000);
+  const { posts, settingsApplied, openCapture, captured } = engine(on, 1_000_000);
   on("turn.start", (_, e) => ({ turnId: e.turnId }));
   on("turn.complete", () => ({ text: "" }));
   openCapture();
 
   await $.classic.SessionStart({ source: "startup", session_id: "session-1", transcript_path: "/t/session-1.jsonl" });
-  await policyPosted();
+  await settingsApplied();
   const prompt = { type: "user" as const, role: "user" as const, content: [{ type: "text" as const, text: "hi" }] };
   await $.session.append({ message: prompt, door: "prompt", origin: { kind: "composer" }, uuid: "prompt-row" });
   await $.turn.start({ text: "hi", turnId: "engine-turn" });

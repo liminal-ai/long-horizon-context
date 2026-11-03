@@ -182,7 +182,7 @@ async function fork(deps: Deps, binding: Binding, firstRow: string): Promise<Ope
   const found = sourceOf(deps.home, binding.transcriptPath, ancestors);
   if (found === undefined) return fresh(`no transcript holds the rows before row ${firstRow}`, before);
   const receipt = new Receipts(deps.home, found.sessionId).current;
-  if (receipt !== undefined) new Receipts(deps.home, binding.sessionId).persist({ ...receipt, sessionId: binding.sessionId });
+  if (receipt !== undefined) new Receipts(deps.home, binding.sessionId).persist(receipt);
   if (!found.isAtTip) return fresh(`source session ${found.sessionId} went on past the fork point`, before);
   const registryPath = registryOf(deps.home);
   const source = await threadOf(deps.lhc, registryPath, found.sessionId);
