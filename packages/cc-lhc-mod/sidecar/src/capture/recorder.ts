@@ -91,15 +91,15 @@ export class Recorder {
       home: this.deps.home,
       sessionId: this.binding.sessionId,
       transcriptPath: this.binding.transcriptPath,
-      capture: (rows) => {
-        this.#parents.read();
-        const abandoned = new Set([...this.#parents.abandoned().values()].flat());
-        return this.capture(rows.filter((row) => row.kind !== "row" || !abandoned.has(row.uuid)));
-      },
+      capture: (rows) => this.capture(rows),
     });
   }
 
-  async capture(entries: readonly CaptureEntry[]): Promise<number> {
+  async capture(all: readonly CaptureEntry[]): Promise<number> {
+    // Rows on a branch a rewind left are never recorded, whether live, replayed from the mod's outbox, or recovered.
+    this.#parents.read();
+    const abandoned = new Set([...this.#parents.abandoned().values()].flat());
+    const entries = all.filter((entry) => entry.kind !== "row" || !abandoned.has(entry.uuid));
     const before = this.#state;
     let recorded = 0;
     let pending: MessageEventInput[] = [];

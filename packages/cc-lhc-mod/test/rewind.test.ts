@@ -12,6 +12,7 @@ it("rolls back to the last recorded row before the rewound prompt", async () => 
   script.toolTurn("turn-1", "first", "toolu_a");
   const anchor = script.lines.at(-1)?.uuid ?? "";
   script.toolTurn("turn-2", "second", "toolu_b");
+  const [linesBefore, entriesBefore] = [script.lines.length, script.entries.length];
   script.rewindTo(anchor);
   const third = script.prompt("third");
   script.turnStart("turn-3");
@@ -19,9 +20,11 @@ it("rolls back to the last recorded row before the rewound prompt", async () => 
   script.answer({ type: "text", text: "done turn-3" });
   script.turnEnd("turn-3");
   const r = await recorder(h);
+  writeTranscript(h, script.lines.slice(0, linesBefore));
+  await r.capture(script.entries.slice(0, entriesBefore));
   writeTranscript(h, script.lines);
 
-  await r.capture(script.entries);
+  await r.capture(script.entries.slice(entriesBefore));
 
   expect(await messages(r)).toEqual([
     "t1 user_prompt first",
@@ -58,13 +61,14 @@ it("rolls back a rewind that only recovery sees, after a restart", async () => {
   script.toolTurn("turn-1", "first", "toolu_a");
   const anchor = script.lines.at(-1)?.uuid ?? "";
   script.toolTurn("turn-2", "second", "toolu_b");
-  const live = script.entries.length;
+  const [linesBefore, live] = [script.lines.length, script.entries.length];
   script.rewindTo(anchor);
   script.prompt("third");
   const first = await recorder(h);
-  writeTranscript(h, script.lines);
+  writeTranscript(h, script.lines.slice(0, linesBefore));
   await first.capture(script.entries.slice(0, live));
   first.release();
+  writeTranscript(h, script.lines);
 
   const restarted = await recorder(h);
 
@@ -97,15 +101,16 @@ it("rolls back a rewind whose new prompt only recovery records, though its answe
   script.toolTurn("turn-1", "first", "toolu_a");
   const anchor = script.lines.at(-1)?.uuid ?? "";
   script.toolTurn("turn-2", "discarded", "toolu_b");
-  const original = script.entries.length;
+  const [linesBefore, original] = [script.lines.length, script.entries.length];
   script.rewindTo(anchor);
   const prompt = script.prompt("replacement");
   script.turnStart("turn-3");
   script.answer({ type: "text", text: "replacement answer" });
   script.turnEnd("turn-3");
   const live = await recorder(h);
-  writeTranscript(h, script.lines);
+  writeTranscript(h, script.lines.slice(0, linesBefore));
   await live.capture(script.entries.slice(0, original));
+  writeTranscript(h, script.lines);
   await live.capture(script.entries.slice(original).filter((entry) => entry.kind !== "row" || entry.uuid !== prompt));
   live.release();
 

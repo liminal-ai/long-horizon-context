@@ -124,7 +124,7 @@ it("round2: accepted recovery-only rewind hides later live rows and replay canno
   s.toolTurn("a", "first", "a");
   const anchor = s.lines.at(-1)!.uuid;
   s.toolTurn("b", "discarded", "b");
-  const n = s.entries.length;
+  const [linesBefore, n] = [s.lines.length, s.entries.length];
   s.rewindTo(anchor);
   const p = s.prompt("missed replacement");
   s.turnStart("c");
@@ -132,8 +132,9 @@ it("round2: accepted recovery-only rewind hides later live rows and replay canno
   s.turnEnd("c");
   s.toolTurn("d", "later live prompt", "d");
   const r = await recorder(h);
-  writeTranscript(h, s.lines);
+  writeTranscript(h, s.lines.slice(0, linesBefore));
   await r.capture(s.entries.slice(0, n));
+  writeTranscript(h, s.lines);
   await r.capture(s.entries.slice(n).filter((e) => e.kind !== "row" || e.uuid !== p));
   r.release();
   const next = await recorder(h);
@@ -248,18 +249,40 @@ it("recovery rolls back a rewind made before the latest compaction", async () =>
   s.toolTurn("a", "first", "a");
   const anchor = s.lines.at(-1)?.uuid ?? "";
   s.toolTurn("b", "discarded", "b");
-  const discarded = s.entries.length;
+  const [linesBefore, discarded] = [s.lines.length, s.entries.length];
   s.rewindTo(anchor);
   s.toolTurn("c", "replacement", "c");
   s.nativeCompaction();
   s.toolTurn("d", "after compact", "d");
   const r = await recorder(h);
-  writeTranscript(h, s.lines);
+  writeTranscript(h, s.lines.slice(0, linesBefore));
   await r.capture(s.entries.slice(0, discarded));
   r.release();
+  writeTranscript(h, s.lines);
 
   const next = await recorder(h);
 
   expect((await human(next)).map((x) => x.split("user_prompt ")[1])).toEqual(["first", "replacement", "after compact"]);
   expect(await rollbacks(next)).toHaveLength(1);
+});
+
+it("a replayed outbox cannot record a turn that a rewind discarded while the sidecar was down", async () => {
+  const s = new Script();
+  s.toolTurn("a", "first", "a");
+  const anchor = s.lines.at(-1)?.uuid ?? "";
+  const kept = s.entries.length;
+  s.toolTurn("b", "discarded", "b");
+  const outbox = s.entries.slice(kept);
+  s.rewindTo(anchor);
+  s.toolTurn("c", "replacement", "c");
+  const r = await recorder(h);
+  writeTranscript(h, s.lines);
+  await r.capture(s.entries.slice(0, kept));
+  r.release();
+
+  const next = await recorder(h);
+  await next.capture(outbox);
+
+  expect((await human(next)).map((x) => x.split("user_prompt ")[1])).toEqual(["first", "replacement"]);
+  expect((await messages(next)).some((x) => x.includes("discarded"))).toBe(false);
 });
