@@ -42,7 +42,11 @@ Facts from the code. Read them before driving:
   command mode) is a `runtime_note` holding its `<task-notification>` element;
   any other `queued_command` is the person's steer.
 - Recovery and rewind: at each bind the sidecar records transcript rows past
-  the committed cursor through the same path as live rows. A branch off the
+  the committed cursor through the same path as live rows, making the
+  decisions live capture makes: a user row with no `origin` (the `/compact`
+  line) is a note, and the summary and command rows a native compaction
+  writes, which no hook sees, are dropped. A rollback never keeps a row past
+  the first abandoned one. A branch off the
   transcript's active chain (from its last row by parent) that holds a
   person's prompt is abandoned: recovery never records it, and a new prompt
   whose path back to the nearest recorded row passes one writes core
