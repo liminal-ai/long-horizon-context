@@ -1,5 +1,6 @@
 import type { EngineInterface } from "claude-code";
 import { modLogPath, socketPath } from "../../src/paths.ts";
+import type { CaptureEntry } from "../../src/capture.ts";
 import type { Binding } from "../types";
 
 const LOAD_ID = Math.random().toString(36).slice(2, 10);
@@ -7,6 +8,12 @@ const LOAD_ID = Math.random().toString(36).slice(2, 10);
 let sidecar: Promise<string> | undefined;
 let sidecarStarts = 0;
 let boundSessionId: string | undefined;
+let sentBinding: Binding | undefined;
+const outbox: Array<CaptureEntry | { kind: "bind"; binding: Binding }> = [];
+let isFlushQueued = false;
+let isRetryArmed = false;
+const MAX_BATCH = 200;
+const RETRY_MS = 2000;
 let queue: Promise<unknown> = Promise.resolve();
 const logLines: string[] = [];
 let logWrite: Promise<unknown> = Promise.resolve();
@@ -63,16 +70,14 @@ export function startSidecar($: EngineInterface): Promise<string> {
 }
 
 async function rebind($: EngineInterface, socket: string): Promise<void> {
-  const { value: binding } = await $.state.get({ plugin: "lhc", key: "binding" });
-  if (binding === undefined || binding.sessionId !== boundSessionId) return;
-  const replayed = { ...binding, source: "restart" };
+  if (sentBinding === undefined) return;
   await $.http.fetch("http://sidecar/bind", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify(replayed),
+    body: JSON.stringify({ ...sentBinding, source: "restart" }),
     socketPath: socket,
   });
-  log($, `bind session ${binding.sessionId} source restart`);
+  log($, `bind session ${sentBinding.sessionId} source restart`);
 }
 
 export async function post($: EngineInterface, path: string, body: unknown): Promise<unknown> {
@@ -86,12 +91,56 @@ export async function post($: EngineInterface, path: string, body: unknown): Pro
   return JSON.parse(response.text);
 }
 
+/**
+ * Binds and captured entries leave in one ordered outbox. A bind is a barrier:
+ * entries behind it go only after it, and an entry leaves only once the
+ * sidecar has answered for it.
+ */
 export function bind($: EngineInterface, binding: Binding): void {
   boundSessionId = binding.sessionId;
-  runInBackground($, "bind", async () => {
-    await $.state.set({ plugin: "lhc", key: "binding" }, binding);
-    const { notice } = (await post($, "/bind", binding)) as { notice?: string };
-    log($, `bind session ${binding.sessionId} source ${binding.source}`);
-    if (notice !== undefined) $.ui.log(notice);
+  outbox.push({ kind: "bind", binding });
+  flush($);
+}
+
+export function enqueue($: EngineInterface, entry: CaptureEntry): void {
+  outbox.push(entry);
+  flush($);
+}
+
+async function sendBind($: EngineInterface, binding: Binding): Promise<void> {
+  await $.state.set({ plugin: "lhc", key: "binding" }, binding);
+  const { notice } = (await post($, "/bind", binding)) as { notice?: string };
+  sentBinding = binding;
+  log($, `bind session ${binding.sessionId} source ${binding.source}`);
+  if (notice !== undefined) $.ui.log(notice);
+}
+
+function flush($: EngineInterface): void {
+  if (isFlushQueued) return;
+  isFlushQueued = true;
+  runInBackground($, "outbox", async () => {
+    isFlushQueued = false;
+    try {
+      for (let head = outbox[0]; head !== undefined; head = outbox[0]) {
+        if (head.kind === "bind") {
+          await sendBind($, head.binding);
+          outbox.shift();
+          continue;
+        }
+        const barrier = outbox.findIndex((item) => item.kind === "bind");
+        const batch = outbox.slice(0, Math.min(MAX_BATCH, barrier === -1 ? outbox.length : barrier)) as CaptureEntry[];
+        await post($, "/capture", { entries: batch });
+        outbox.splice(0, batch.length);
+      }
+    } catch (error) {
+      if (!isRetryArmed) {
+        isRetryArmed = true;
+        void $.clock.sleep(RETRY_MS).then(() => {
+          isRetryArmed = false;
+          flush($);
+        });
+      }
+      throw error;
+    }
   });
 }

@@ -190,3 +190,36 @@ test("a new session's bind reaches the sidecar before any of that session's rows
     );
   expect(order).toEqual(["bind session-1", "capture session-1", "bind session-2", "capture session-2"]);
 });
+
+test("an old-session flush queued behind a capture cannot pass the new session's bind", async ($, on) => {
+  const { posts, policyPosted, openCapture, captured } = engine(on, 1_000_000);
+  on("turn.start", (_, e) => ({ turnId: e.turnId }));
+  await $.classic.SessionStart({ source: "startup", session_id: "session-1", transcript_path: "/t/session-1.jsonl" });
+  await policyPosted();
+  await $.turn.start({ text: "first", turnId: "turn-1" });
+  await $.session.append({
+    message: { type: "assistant", role: "assistant", content: [{ type: "text", text: "old extra" }] },
+    door: "response",
+    origin: { kind: "model", model: "claude-opus-5-5" },
+    uuid: "old-extra",
+  });
+  await $.classic.SessionStart({ source: "clear", session_id: "session-2", transcript_path: "/t/session-2.jsonl" });
+  await $.turn.start({ text: "new", turnId: "turn-2" });
+  openCapture();
+  await captured(3);
+  await policyPosted(2);
+  const order = posts
+    .filter((p) => p.path !== "/policy")
+    .map((p) =>
+      p.path === "/bind"
+        ? `bind ${(p.body as { sessionId: string }).sessionId}`
+        : `capture ${(p.body as { entries: Array<{ sessionId: string }> }).entries.map((e) => e.sessionId).join(",")}`,
+    );
+  expect(order).toEqual([
+    "bind session-1",
+    "capture session-1",
+    "capture session-1",
+    "bind session-2",
+    "capture session-2",
+  ]);
+});

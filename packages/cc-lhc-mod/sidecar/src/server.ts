@@ -77,11 +77,12 @@ const routes: Record<string, Route> = {
   "POST /capture": async (body, state, deps): Promise<CaptureReply> => {
     const entries = parseEntries(body);
     const sessionId = state.binding?.sessionId;
-    const own = entries.filter((entry) => entry.sessionId === sessionId);
-    if (state.recording?.kind !== "recording" || own.length === 0) return { recorded: 0 };
-    const recorded = await state.recording.recorder.capture(own);
-    const lag = Math.max(...own.map((entry) => Date.now() - entry.at));
-    deps.log(`captured ${own.length} entries recorded ${recorded} events lag ${lag}ms`);
+    const foreign = entries.find((entry) => entry.sessionId !== sessionId);
+    if (foreign !== undefined) throw new Error(`entries for session ${foreign.sessionId}, bound to ${sessionId}`);
+    if (state.recording?.kind !== "recording" || entries.length === 0) return { recorded: 0 };
+    const recorded = await state.recording.recorder.capture(entries);
+    const lag = Math.max(...entries.map((entry) => Date.now() - entry.at));
+    deps.log(`captured ${entries.length} entries recorded ${recorded} events lag ${lag}ms`);
     return { recorded };
   },
 };

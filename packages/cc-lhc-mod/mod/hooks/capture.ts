@@ -1,50 +1,15 @@
 import type { EngineInterface, On } from "claude-code";
 import type { CaptureEntry, CapturedMessage } from "../../src/capture.ts";
-import { boundSession, log, post, runInBackground } from "./sidecar.ts";
+import { boundSession, enqueue, log } from "./sidecar.ts";
 
 type Captured = { [K in CaptureEntry["kind"]]: Omit<Extract<CaptureEntry, { kind: K }>, "sessionId" | "at"> }[CaptureEntry["kind"]];
 
-const MAX_BATCH = 200;
-const RETRY_MS = 2000;
-
-const outbox: CaptureEntry[] = [];
-let isFlushQueued = false;
-let isRetryArmed = false;
 let hookMs: number[] = [];
-
-function flush($: EngineInterface): void {
-  if (isFlushQueued) return;
-  isFlushQueued = true;
-  runInBackground($, "capture", async () => {
-    isFlushQueued = false;
-    try {
-      const sessionId = outbox[0]?.sessionId;
-      while (outbox[0] !== undefined && outbox[0].sessionId === sessionId) {
-        const end = outbox.findIndex((entry) => entry.sessionId !== sessionId);
-        const batch = outbox.slice(0, Math.min(MAX_BATCH, end === -1 ? outbox.length : end));
-        await post($, "/capture", { entries: batch });
-        outbox.splice(0, batch.length);
-      }
-      // A later session's entries wait for its bind, which is already queued behind this flush.
-      if (outbox.length > 0) flush($);
-    } catch (error) {
-      if (!isRetryArmed) {
-        isRetryArmed = true;
-        void $.clock.sleep(RETRY_MS).then(() => {
-          isRetryArmed = false;
-          flush($);
-        });
-      }
-      throw error;
-    }
-  });
-}
 
 function push($: EngineInterface, entry: Captured): void {
   const sessionId = boundSession();
   if (sessionId === undefined) return;
-  outbox.push({ ...entry, sessionId, at: Date.now() } as CaptureEntry);
-  flush($);
+  enqueue($, { ...entry, sessionId, at: Date.now() } as CaptureEntry);
 }
 
 export function captureTurnStart($: EngineInterface, turnId: string): void {
