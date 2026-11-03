@@ -1,6 +1,6 @@
 # Host: cc-lhc-mod
 
-Last verified against code: 2026-11-03, Claude Code 2.1.317, main at `6161801`. Precedence when facts disagree: code, then the package README (`packages/cc-lhc-mod/README.md`), then this document.
+Last verified against code: 2026-11-03, Claude Code 2.1.317, main at `b15857f`. Precedence when facts disagree: code, then the package README (`packages/cc-lhc-mod/README.md`), then this document.
 
 This document builds on the vocabulary in [01-core-concepts.md](01-core-concepts.md) and [02-domain-design.md](02-domain-design.md). Record, event, derivation, view, band, compact point, visibility boundary, impression, and retrieval keep their SDK meanings here.
 
@@ -25,7 +25,7 @@ flowchart LR
 
 The mod (`mod/hooks/`, bundled to `dist/plugin/hooks/register.js`) runs in Claude Code's mod sandbox, which has no Node. It holds no durable state. It turns engine events into sidecar calls and draws the panel and the status line. `register.ts` wires the hooks.
 
-The sidecar (`sidecar/src/`, bundled to `dist/plugin/sidecar/main.js`) is Node 24. The mod starts it with `node` from `PATH` when the module loads (`mod/hooks/sidecar.ts`), and Claude Code kills it with the module. It listens on `<LHC home>/run/<load id>.sock` in a mode 0700 directory. It owns capture, recovery, the compact policy, the projector, retrieval, and the thread lease.
+The sidecar (`sidecar/src/`, bundled to `dist/plugin/sidecar/main.js`) is Node 24. The mod starts it with `node` from `PATH` when the module loads (`mod/hooks/sidecar.ts`), and Claude Code kills it with the module. It listens on `<LHC home>/run/<load id>.sock` in a mode 0700 directory. It owns capture, recovery, the projector, retrieval, and the thread lease. The mod owns the compact policy and sends the target and the guard with each `/compact`, so the sidecar holds no policy of its own.
 
 Pure logic that both sides use is in `src/`: settings, the context estimate, panel state, and paths. The block mapping, retrieval budgets, and the `<recalled-history>` envelope come from `packages/claude-adapter`, which claude-lhc shares.
 
@@ -56,6 +56,8 @@ A fallback logs `compact <trigger> fell back to native after <ms>ms: <reason>`, 
 
 At the next main-loop step, the mod reads Claude Code's own estimate and logs `post-compact context N trigger T target X ok|inadequate`. Above 75 percent of the trigger it also shows a transcript notice. Claude Code stops a turn after three refills within three turns, so a view that cannot get far enough below the trigger is visible before that happens.
 
+The status line is empty most of the time (`statusLine` in `src/panel.ts`). After an LHC compaction it reads `lhc: <before> → <after>`, such as `lhc: 47k → 22k`, until a turn that began after the compaction ends. After a fallback it reads `lhc: fell back to Claude Code's summary` until the next LHC compaction succeeds. There is no pressure line, because Claude Code's own `N% until auto-compact` already counts toward the LHC trigger. Claude Code puts `⚠` in front of a plugin's status line.
+
 The LHC panel's **prune** posts `/compact` with `op: "prune"`. Core `threadView.prune` moves the visibility boundary, and the view is installed with no core compact.
 
 ## Retrieval
@@ -70,9 +72,9 @@ The `inferenceWorker` setting picks the derivation lane when the sidecar starts.
 
 ## Lifecycle
 
-`classic.SessionStart` posts `/bind` for `startup`, `clear`, `resume`, `fork`, and `compact` (`sidecar/src/bind.ts`). A hot reload re-runs only `session.start`, so the mod keeps its binding in `$.state` and rebinds with source `reload`. A killed sidecar is started again on the next post and rebinds with source `restart`. Nothing waits for `session.end`, because `/exit` kills the sidecar first. Each capture batch is committed before the sidecar answers it, so an exit loses nothing that was acknowledged.
+`classic.SessionStart` posts `/bind` for `startup`, `clear`, `resume`, `fork`, and `compact` (`sidecar/src/bind.ts`). A hot reload re-runs only `session.start`, so the mod keeps its binding in `$.state` and rebinds with source `reload`. A crashed or killed sidecar is started again on the next capture or compaction, and it rebinds with source `restart`. Nothing waits for `session.end`, because `/exit` kills the sidecar first. Each capture batch is committed before the sidecar answers it, so an exit loses nothing that was acknowledged.
 
-A bind answers the thread and how the session came to it. The status line shows it as `thread <id> (<how>)`:
+A bind answers the thread and how the session came to it. `/lhc status` shows it as `thread <id> (<how>)`:
 
 - `resumed`. A known alias keeps its thread: `/resume`, `--continue`, `--resume`, and a reload.
 - `new`. An unknown session gets a new thread: startup, and `/clear`, whose new session id has no alias.
