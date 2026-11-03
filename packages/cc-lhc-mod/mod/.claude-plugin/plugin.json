@@ -1,0 +1,26 @@
+{
+  "name": "lhc",
+  "version": "0.0.0",
+  "description": "Long Horizon Context for Claude Code: records the session into an LHC thread and answers compaction with the LHC view.",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "lowerBound": {
+      "type": "number",
+      "title": "Compact target (tokens)",
+      "description": "Context left after a compaction, capped at 40% of the model's window.",
+      "default": 140000
+    },
+    "upperBound": {
+      "type": "number",
+      "title": "Compact trigger cap (tokens)",
+      "description": "Compaction starts at no more than this many tokens.",
+      "default": 800000
+    },
+    "compactPercent": {
+      "type": "number",
+      "title": "Compact at percent of window",
+      "description": "Compaction starts at this percentage of the model's window, if lower than the cap.",
+      "default": 90
+    }
+  }
+}
