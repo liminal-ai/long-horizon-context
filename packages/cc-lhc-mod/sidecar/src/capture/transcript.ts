@@ -169,7 +169,14 @@ function doorOf(line: TranscriptLine): string | undefined {
   const text = textOf(content).trimStart();
   if (COMMAND_PREFIXES.some((prefix) => text.startsWith(prefix))) return "command";
   // A native /compact files its own line as plain text, by the note door.
-  if (line.isMeta === true || text.startsWith("[Request interrupted") || /^\/compact(\s|$)/.test(text)) return "note";
+  if (
+    line.isMeta === true ||
+    text.startsWith("[Request interrupted") ||
+    text.startsWith("[runtime note]") ||
+    /^\/compact(\s|$)/.test(text)
+  ) {
+    return "note";
+  }
   return "prompt";
 }
 

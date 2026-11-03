@@ -170,3 +170,21 @@ it("recovers typed, pasted and custom-command input as prompts and built-in comm
   expect(of("runtime_note")).toEqual(["/clear", "/model", "/compact"]);
   expect(recorded.some((m) => m.includes("printf R4_SKILL"))).toBe(false);
 });
+
+it("records one note per typed /compact, though Claude Code also files a /compact command row after it", async () => {
+  const lines = fixture("compact-fallback-transcript.jsonl");
+  const typed = lines.filter((line) => text(line) === "/compact").length;
+
+  const notes = (await recovered("compact-fallback-transcript.jsonl")).filter((m) =>
+    m.endsWith("runtime_note /compact"),
+  );
+
+  expect(typed).toBe(2);
+  expect(notes).toHaveLength(typed);
+});
+
+it("recovers a plugin's [runtime note] row as a note, as live capture records it", async () => {
+  const recorded = await recovered("compact-fallback-transcript.jsonl");
+
+  expect(recorded.filter((m) => m.includes("[runtime note]"))).toEqual(["t2 runtime_note [runtime note] /compact"]);
+});

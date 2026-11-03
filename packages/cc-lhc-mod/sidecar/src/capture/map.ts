@@ -142,6 +142,8 @@ function mapRow(row: Row, state: TurnState): MessageEventInput[] {
   if (state.afterCommand === true && row.message.isMeta === true) return [];
   if (isUserPrompt(row, state.afterCaveat)) return prompt(row, state.isOpen);
   const command = slashCommand(row);
+  // A typed /compact files its own plain line, recorded as the note; its later command row would be a second.
+  if (command === "/compact" || command?.startsWith("/compact ")) return [];
   if (command !== undefined) return [textEvent(HARNESS, "runtime_note", command, "system", kindlessTextKey(row))];
   if (row.message.name === "queued_command" && !isTaskNotification(row)) return prompt(row, true);
   switch (row.door) {
