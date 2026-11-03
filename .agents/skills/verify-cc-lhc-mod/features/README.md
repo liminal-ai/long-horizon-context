@@ -45,7 +45,7 @@ Pass when the sidecar logs one `bound session <id> transcript <path> source
 
 ## Session threads
 
-Each session id records to one thread, shown in the status line as `thread
+Each session id records to one thread, shown by `/lhc status` as `thread
 <id> (<how>)`. The sidecar log says `recording session <id> thread
 <thread> (<how>)`.
 
@@ -81,7 +81,7 @@ Adoption. Point a session's alias at a thread with a
 inserting a row into a copy with `sqlite3`), then `--resume` it. Pass when the
 pane shows `LHC thread <old> has <n> forced compact boundaries from an older
 host and is not adopted. This session records to new thread <new>.`, the
-status line names `<new> (replaced)`, `<new>` holds the session's transcript,
+`/lhc status` names `<new> (replaced)`, `<new>` holds the session's transcript,
 and `<old>` is unchanged. A later `--resume` binds `<new> (resumed)`.
 
 ## Reload
@@ -257,7 +257,7 @@ $V/helpers/launch.sh "$S" "$H" -- --model sonnet --resume <id>   # a later bind:
 ```
 
 Pass when the mod logs `compact auto mid-turn view ...` per crossing with no
-`fell back`, the pane's status line reads `compacted ... (mid-turn)`, the
+`fell back`, the pane's status line reads `lhc: <before> → <view>`, the
 answers are whiskey, echo, romeo, xray, tango, kilo, the debug log has no
 `source=compact` request, the receipt's claimed count equals its expected
 count after the resume bind (`jq '[.claimed, .expected] | map(length)'
@@ -400,8 +400,8 @@ node $V/helpers/shot.mjs png "$S" panel.png
 Pass when the pane shows a context figure against the trigger with a bar
 and a percent, `None since Claude Code started.` (the pane's state lives with the Claude process, so a restart such as `/tui fullscreen` clears it) or the last compaction, derivation
 counts, the three settings, `Compacts at <trigger>, back to <target> ·
-<window> window`, and the three buttons, and the status line reads `lhc:
-context <n> of <trigger> (<pct>%) · thread <id> (<how>)`. Under `/tui
+<window> window`, and the three buttons, and the status line is empty (it shows
+only a compaction result or a fallback). Under `/tui
 fullscreen` the same pane docks at the right. With
 `VERIFY_ENV=CLAUDE_CODE_AUTO_COMPACT_WINDOW=200000` the pane says
 `Compacts at 167k, back to 80k · 200k window` and `Clamped: a 200k window
@@ -409,7 +409,7 @@ leaves room for 167k at most.`
 
 Settings. Focus the pane with `/lhc` (or `ctrl+x tab`), Tab to a field,
 `C-u`, type a value such as `600k`, Enter; or `/lhc bounds 150k 700k 85`.
-Pass when the pane and the status line show the new trigger at once, the mod
+Pass when the pane and `/lhc status` show the new trigger at once, the mod
 log has `panel window W trigger T target X pct P` and then a `start` line
 with the same numbers (the write reloads the plugin), `<H>/claude/settings.json`
 holds `pluginConfigs["lhc@inline"].options`, and `~/.claude/settings.json`

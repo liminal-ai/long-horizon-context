@@ -98,27 +98,32 @@ export function parseLhcArgs(args: string): LhcCommand {
 export const pressureOf = (state: PanelState): number | undefined =>
   state.context === null || state.policy === null ? undefined : state.context / state.policy.trigger;
 
-function compactSummary(last: LastCompact): string {
+function compactSummary(last: Extract<LastCompact, { by: "lhc" }>): string {
   const verb = last.op === "prune" ? "pruned" : "compacted";
-  if (last.by === "native") return `last compaction fell back to Claude Code's summary`;
   const from = last.before === undefined ? "" : `${kilo(last.before)} `;
   return `${verb} ${from}to ${kilo(last.after)} (${last.isMidTurn ? "mid-turn" : "settled"})`;
 }
 
-export function statusLine(state: PanelState): string | undefined {
+export function statusLine(state: PanelState, lastTurnStartedAt: number): string | undefined {
+  const last = state.lastCompact;
+  if (last?.by === "native") return "fell back to Claude Code's summary";
+  if (last === null || last.at <= lastTurnStartedAt) return undefined;
+  return last.before === undefined ? `compacted to ${kilo(last.after)}` : `${kilo(last.before)} → ${kilo(last.after)}`;
+}
+
+function contextLine(state: PanelState): string | undefined {
   const parts: string[] = [];
   const pressure = pressureOf(state);
   if (pressure !== undefined && state.context !== null && state.policy !== null) {
-    parts.push(`context ${kilo(state.context)} of ${kilo(state.policy.trigger)} (${Math.round(pressure * 100)}%)`);
+    parts.push(`Context ${kilo(state.context)} of ${kilo(state.policy.trigger)} (${Math.round(pressure * 100)}%)`);
   }
   if (state.thread !== null) parts.push(`thread ${state.thread.id} (${state.thread.how})`);
-  if (state.lastCompact !== null) parts.push(compactSummary(state.lastCompact));
-  return parts.length === 0 ? undefined : parts.join(" · ");
+  return parts.length === 0 ? undefined : `${parts.join(", ")}.`;
 }
 
 export function statusReport(state: PanelState, now: number): string {
   const { policy, settings, lastCompact, derivations } = state;
-  const lines = [statusLine(state) ?? "No session is bound to an LHC thread yet."];
+  const lines = [contextLine(state) ?? "No session is bound to an LHC thread yet."];
   if (policy !== null) {
     const clamp = policy.isClamped
       ? `, clamped: a ${kilo(policy.window)} window allows at most ${kilo(policy.trigger)}`
