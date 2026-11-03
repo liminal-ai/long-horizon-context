@@ -69,21 +69,41 @@ describe("what the status line and /lhc status say", () => {
     derivations: { ready: 41, pending: 2, failed: 0, blocked: 0 },
   };
 
-  it("leads with pressure against the trigger, then the thread and the last compaction", () => {
-    expect(statusLine(state)).toBe(
-      "context 412k of 800k (52%) · thread th_1 (new) · compacted 812k to 138k (mid-turn)",
-    );
-    expect(statusLine({ ...EMPTY_PANEL, thread: { id: "th_1", how: "new" } })).toBe("thread th_1 (new)");
-    expect(statusLine(EMPTY_PANEL)).toBeUndefined();
+  it("stays quiet with no compaction news, however full the context", () => {
+    expect(statusLine({ ...state, lastCompact: null, context: 790_000 }, 0)).toBeUndefined();
+    expect(statusLine(state, 0)).toBeUndefined();
+    expect(statusLine(EMPTY_PANEL, 0)).toBeUndefined();
   });
 
-  it("names a fallback to Claude Code's summary", () => {
+  it("shows an LHC compaction until a turn that began after it ends", () => {
+    const compacted = { ...state, lastCompact: { ...state.lastCompact, at: 5_000 } } as PanelState;
+    expect(statusLine(compacted, 4_000)).toBe("812k → 138k");
+    expect(statusLine(compacted, 6_000)).toBeUndefined();
+  });
+
+  it("warns of a fallback to Claude Code's summary until the next LHC compaction", () => {
     const fellBack: PanelState = {
       ...state,
-      lastCompact: { at: 0, op: "compact", trigger: "auto", by: "native", reason: "sidecar down" },
+      context: null,
+      lastCompact: { at: 5_000, op: "compact", trigger: "auto", by: "native", reason: "sidecar down" },
     };
-    expect(statusLine(fellBack)).toContain("last compaction fell back to Claude Code's summary");
-    expect(statusReport(fellBack, 0)).toContain("LHC fell back to Claude Code's summary (sidecar down)");
+    expect(statusLine(fellBack, 4_000)).toBe("fell back to Claude Code's summary");
+    expect(statusLine({ ...fellBack, context: 100_000 }, 9_000)).toBe("fell back to Claude Code's summary");
+    expect(statusLine({ ...fellBack, lastCompact: { ...state.lastCompact, at: 10_000 } } as PanelState, 9_000)).toBe(
+      "812k → 138k",
+    );
+    expect(statusReport(fellBack, 5_000)).toContain("LHC fell back to Claude Code's summary (sidecar down)");
+  });
+
+  it("keeps the context and the thread in /lhc status", () => {
+    expect(statusReport(state, 120_000).split("\n")).toEqual([
+      "Context 412k of 800k (52%), thread th_1 (new).",
+      "Compacts at 800k back to 140k (window 1M).",
+      "Settings: lower bound 140k, upper bound 800k, 90% of the window.",
+      "Last compact 2m ago (auto): compacted 812k to 138k (mid-turn).",
+      "Derivations: 41 ready, 2 pending, 0 failed, 0 blocked.",
+    ]);
+    expect(statusReport(EMPTY_PANEL, 0)).toBe("No session is bound to an LHC thread yet.");
   });
 
   it("says when a 200k window clamps the trigger to 167k", () => {

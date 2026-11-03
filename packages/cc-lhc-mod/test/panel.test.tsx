@@ -17,6 +17,7 @@ function engine($: Engine, on: On, { compact = VIEW, prune = NOTHING_TO_PRUNE, i
   const envSets: string[] = [];
   const configSets: Array<{ key: string; value: unknown }> = [];
   const toasts: string[] = [];
+  const statuses: Array<string | undefined> = [];
   const applied: Array<Record<string, number>> = [];
   const policies = (): Array<Record<string, number>> => applied;
   const settled = async (count: number): Promise<void> => {
@@ -35,7 +36,11 @@ function engine($: Engine, on: On, { compact = VIEW, prune = NOTHING_TO_PRUNE, i
     if (line !== null) applied.push({ window: Number(line[1]), trigger: Number(line[2]), target: Number(line[3]) });
     return { value: undefined };
   });
-  on("ui.status", () => ({ value: undefined }));
+  on("ui.status", (_, e) => {
+    statuses.push(e.text);
+    return { value: undefined };
+  });
+  on("turn.complete", () => ({ text: "" }));
   on("ui.toast", (_, e) => {
     toasts.push(e.text);
     return { value: undefined };
@@ -106,7 +111,7 @@ function engine($: Engine, on: On, { compact = VIEW, prune = NOTHING_TO_PRUNE, i
   on("session.compact", () => ({ skip: "Not enough messages to compact." }));
 
   const compactOps = (): unknown[] => posts.filter((post) => post.path === "/compact").map((post) => post.body.op);
-  return { posts, answered, envSets, configSets, toasts, policies, settled, clock, installs, compactOps, setContext };
+  return { posts, answered, envSets, configSets, toasts, statuses, policies, settled, clock, installs, compactOps, setContext };
 }
 
 const typed = { origin: { kind: "composer" }, presentation: { isFullscreen: false, columns: 120 } } as const;
@@ -201,7 +206,7 @@ test("/lhc subcommands answer from the prompt", async ($, on) => {
   await settled(1);
 
   const status = (await $.command.run(lhc("status"))).text ?? "";
-  expect(status).toContain("context 300k of 800k (38%) · thread th_panel (new)");
+  expect(status).toContain("Context 300k of 800k (38%), thread th_panel (new).");
   expect(status).toContain("Derivations: 7 ready, 2 pending, 1 failed, 0 blocked.");
   expect((await $.command.run(lhc("compact"))).text).toBe("LHC compacts once this command ends.");
   await clock.advance(1);
@@ -215,6 +220,28 @@ test("/lhc subcommands answer from the prompt", async ($, on) => {
   expect(policies().at(-1)).toEqual({ window: WINDOW, trigger: 700_000, target: 150_000 });
   expect(configSets).toHaveLength(3);
   expect((await $.command.run(lhc("bounds 1"))).text).toMatch(/^Usage: \/lhc/);
+});
+
+test("the status line is quiet until a compaction, and names it until a later turn ends", async ($, on) => {
+  const { statuses, settled, setContext, clock } = engine($, on);
+  const turnEnded = (durationMs: number) =>
+    $.turn.complete({ turnId: "turn-1", reason: "answer", answer: "", durationMs, isAborted: false });
+  await $.classic.SessionStart({ source: "startup", session_id: "session-1", transcript_path: "/t/session-1.jsonl" });
+  await settled(1);
+  await $.command.run(lhc("status"));
+  expect(statuses).toEqual([]);
+
+  setContext(600_000);
+  await $.command.run(lhc("status"));
+  expect(statuses).toEqual([]);
+
+  await $.command.run(lhc("compact"));
+  await clock.advance(1);
+  expect(statuses.at(-1)).toBe("600k → 135k");
+  await turnEnded(60_000);
+  expect(statuses.at(-1)).toBe("600k → 135k");
+  await turnEnded(0);
+  expect(statuses.at(-1)).toBeUndefined();
 });
 
 test("turning off auto-compact warns that LHC stops compacting", async ($, on) => {
@@ -317,9 +344,9 @@ test("a refresh reads the context Claude Code counts now, not the last figure th
   const { settled, setContext } = engine($, on);
   await $.classic.SessionStart({ source: "startup", session_id: "session-1", transcript_path: "/t/session-1.jsonl" });
   await settled(1);
-  expect((await $.command.run(lhc("status"))).text).toContain("context 300k of 800k (38%)");
+  expect((await $.command.run(lhc("status"))).text).toContain("Context 300k of 800k (38%)");
   setContext(460_000);
-  expect((await $.command.run(lhc("status"))).text).toContain("context 460k of 800k (57%)");
+  expect((await $.command.run(lhc("status"))).text).toContain("Context 460k of 800k (57%)");
 });
 
 test("Prune sends the same no-reduction guard as a compaction, and a refused prune shows as not pruned", async ($, on) => {

@@ -3,6 +3,7 @@ import type { CaptureEntry, CapturedMessage } from "../../src/capture.ts";
 import type { TurnNames } from "../types";
 import { measureAppend } from "./measure.ts";
 import { boundSession, enqueue, log } from "./sidecar.ts";
+import { endTurn } from "./state.ts";
 
 type Captured = { [K in CaptureEntry["kind"]]: Omit<Extract<CaptureEntry, { kind: K }>, "sessionId" | "at"> }[CaptureEntry["kind"]];
 
@@ -90,6 +91,7 @@ export function registerCapture(on: On): void {
       const p95 = sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.95))] ?? 0;
       log($, `capture hook rows ${sorted.length} p95 ${p95.toFixed(3)}ms max ${(sorted.at(-1) ?? 0).toFixed(3)}ms`);
       hookMs = [];
+      await endTurn($, e.durationMs);
     }
     return next(e);
   });

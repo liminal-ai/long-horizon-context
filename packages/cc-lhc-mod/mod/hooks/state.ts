@@ -7,6 +7,15 @@ const SHAPE = "panel-1";
 const MAX_WRITES = 5;
 
 let shownStatus: string | undefined;
+let lastTurnStartedAt = Date.now();
+
+function pinStatus($: EngineInterface, state: PanelState): void {
+  const line = statusLine(state, lastTurnStartedAt);
+  if (line !== shownStatus) {
+    shownStatus = line;
+    $.ui.status(line);
+  }
+}
 
 async function held($: EngineInterface): Promise<{ state: PanelState; version: number }> {
   const { value, version } = await $.state.get(PANEL);
@@ -19,17 +28,18 @@ export async function publishBestEffort($: EngineInterface, patch: Partial<Panel
       const { state, version } = await held($);
       const next = { ...state, ...patch };
       if (!(await $.state.set(PANEL, { shape: SHAPE, value: next }, { ifVersion: version })).isSet) continue;
-      const line = statusLine(next);
-      if (line !== shownStatus) {
-        shownStatus = line;
-        $.ui.status(line);
-      }
+      pinStatus($, next);
       return;
     }
     throw new Error(`another write won ${MAX_WRITES} times`);
   } catch (error) {
     $.ui.log(`LHC panel state not saved: ${String(error)}`, { to: "debug" });
   }
+}
+
+export async function endTurn($: EngineInterface, durationMs: number): Promise<void> {
+  lastTurnStartedAt = Date.now() - durationMs;
+  pinStatus($, await readPanel($));
 }
 
 export async function readPanel($: EngineInterface): Promise<PanelState> {

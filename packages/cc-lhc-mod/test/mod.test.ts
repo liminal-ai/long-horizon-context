@@ -43,13 +43,8 @@ function engine(on: On, window: number, answers: Record<string, string> = {}) {
     if (e.text === "sidecar exited") sidecarExited();
     return { value: undefined };
   });
-  let statusShown: () => void = () => {};
-  const shown = new Promise<void>((resolve) => {
-    statusShown = resolve;
-  });
   on("ui.status", (_, e) => {
     statuses.push(e.text);
-    statusShown();
     return { value: undefined };
   });
   on("session.id", () => ({ value: "session-1" }));
@@ -118,7 +113,6 @@ function engine(on: On, window: number, answers: Record<string, string> = {}) {
     captured,
     bound,
     statuses,
-    shown,
     notices,
   };
 }
@@ -134,29 +128,48 @@ test("bind posts the session id and transcript path to the sidecar socket", asyn
   expect(bind?.socketPath).toMatch(/^\/lhc-test-home\/run\/[a-z0-9]+\.sock$/);
 });
 
-test("a bind shows the thread the session records to, and why it is not the one it had", async ($, on) => {
+const HEALTH = JSON.stringify({ derivations: { ready: 0, pending: 0, failed: 0, blocked: 0 } });
+const lhcStatus = {
+  command: "lhc",
+  args: "status",
+  origin: { kind: "composer" },
+  presentation: { isFullscreen: false, columns: 120 },
+} as const;
+
+async function threadLine($: Engine): Promise<string> {
+  for (;;) {
+    const [line = ""] = ((await $.command.run(lhcStatus)).text ?? "").split("\n");
+    if (/thread \S+ \(/.test(line)) return line;
+  }
+}
+
+test("a bind names the thread the session records to, and why it is not the one it had", async ($, on) => {
   const answer = { threadId: "th_new", how: "replaced", notice: "LHC thread th_old is not adopted." };
-  const { statuses, notices, settingsApplied } = engine(on, 1_000_000, { "/bind": JSON.stringify(answer) });
+  const { statuses, notices, settingsApplied } = engine(on, 1_000_000, {
+    "/bind": JSON.stringify(answer),
+    "/health": HEALTH,
+  });
 
   await $.classic.SessionStart({ source: "resume", session_id: "session-1", transcript_path: "/t/session-1.jsonl" });
   await settingsApplied();
 
-  expect(statuses).toEqual(["thread th_new (replaced)"]);
+  expect(await threadLine($)).toBe("thread th_new (replaced).");
+  expect(statuses).toEqual([]);
   expect(notices).toEqual(["LHC thread th_old is not adopted."]);
 });
 
 test("a fork shows its copied thread once its first rows are captured", async ($, on) => {
-  const { statuses, shown, openCapture } = engine(on, 1_000_000, {
+  const { openCapture } = engine(on, 1_000_000, {
     "/capture": JSON.stringify({ recorded: 4, threadId: "th_fork", how: "forked" }),
+    "/health": HEALTH,
   });
 
   await $.classic.SessionStart({ source: "fork", session_id: "session-1", transcript_path: "/t/session-1.jsonl" });
   openCapture();
   const prompt = { type: "user" as const, role: "user" as const, content: [{ type: "text" as const, text: "hi" }] };
   await $.session.append({ message: prompt, door: "prompt", origin: { kind: "composer" }, uuid: "row-1" });
-  await shown;
 
-  expect(statuses).toEqual(["thread th_fork (forked)"]);
+  expect(await threadLine($)).toBe("thread th_fork (forked).");
 });
 
 test("applySettings sets the override for a 1M window", async ($, on) => {
@@ -221,13 +234,19 @@ test("a replacement sidecar is rebound as a fork, so it still copies the source"
 });
 
 test("a fork whose thread is open is rebound as a plain restart, so its running turn survives", async ($, on) => {
-  const { posts, settingsApplied, killFirstChild, exited, openCapture, bound, shown } = engine(on, 1_000_000, {
+  const { posts, settingsApplied, killFirstChild, exited, openCapture, bound } = engine(on, 1_000_000, {
     "/capture": JSON.stringify({ recorded: 1, threadId: "th_fork", how: "forked" }),
   });
   on("turn.start", (_, e) => ({ turnId: e.turnId }));
   const stored: unknown[] = [];
+  let storeRestart: () => void = () => {};
+  const restartStored = new Promise<void>((resolve) => {
+    storeRestart = resolve;
+  });
   on("state.set", (_, e) => {
-    stored.push((e as { value?: unknown }).value);
+    const value = (e as { value?: unknown }).value;
+    stored.push(value);
+    if ((value as { source?: unknown }).source === "restart") storeRestart();
     return { value: { isSet: true, version: stored.length } };
   });
   openCapture();
@@ -236,7 +255,7 @@ test("a fork whose thread is open is rebound as a plain restart, so its running 
   await settingsApplied();
   const prompt = { type: "user" as const, role: "user" as const, content: [{ type: "text" as const, text: "hi" }] };
   await $.session.append({ message: prompt, door: "prompt", origin: { kind: "composer" }, uuid: "row-1" });
-  await shown;
+  await restartStored;
   killFirstChild();
   await exited;
   await promptRow($, "row-2");
