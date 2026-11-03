@@ -1,15 +1,18 @@
 import type { EngineInterface, On, SessionCompactInput } from "claude-code";
-import { type CompactAnswer, isReductionInadequate, isViewUseless } from "../../src/compact.ts";
+import { type CompactAnswer, isReductionInadequate, kilo } from "../../src/compact.ts";
 import type { CompactPolicy } from "../../src/settings.ts";
 import { contextMeasure, lastCheckMeasure, measureCompacted } from "./measure.ts";
 import { currentPolicy } from "./policy.ts";
 import { boundSession, drainOutbox, log, post } from "./sidecar.ts";
 
-const kilo = (tokens: number): string => (tokens < 1000 ? `${tokens}` : `${Math.round(tokens / 1000)}k`);
-
 let isPressureCheckDue = false;
 
-async function askForView($: EngineInterface, e: SessionCompactInput, policy: CompactPolicy): Promise<CompactAnswer> {
+async function askForView(
+  $: EngineInterface,
+  e: SessionCompactInput,
+  policy: CompactPolicy,
+  fixed: number | undefined,
+): Promise<CompactAnswer> {
   const sessionId = boundSession();
   if (sessionId === undefined) return { kind: "native", reason: "no session is bound" };
   try {
@@ -18,6 +21,7 @@ async function askForView($: EngineInterface, e: SessionCompactInput, policy: Co
       sessionId,
       trigger: e.trigger,
       target: policy.target,
+      ...(fixed === undefined ? {} : { guard: { trigger: policy.trigger, fixed } }),
     })) as CompactAnswer;
   } catch (error) {
     return { kind: "native", reason: String(error) };
@@ -63,14 +67,7 @@ export function registerCompact(on: On): void {
       log($, `compact auto dispatch context ${contextMeasure() ?? "unknown"} last check ${lastCheckMeasure() ?? "unknown"} trigger ${policy.trigger}`);
     }
     measureCompacted();
-    const overhead = await fixedContext($);
-    let answer = await askForView($, e, policy);
-    if (answer.kind === "view" && overhead !== undefined && isViewUseless(answer.viewTokens, overhead, policy.trigger)) {
-      answer = {
-        kind: "native",
-        reason: `its view of ${kilo(answer.viewTokens)} plus ${kilo(overhead)} of fixed context would not get below the ${kilo(policy.trigger)} trigger`,
-      };
-    }
+    const answer = await askForView($, e, policy, await fixedContext($));
     const took = Date.now() - started;
     if (answer.kind === "native") {
       log($, `compact ${e.trigger} fell back to native after ${took}ms: ${answer.reason}`);

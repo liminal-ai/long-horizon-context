@@ -1,3 +1,4 @@
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { INSTRUCTIONS_LABEL } from "../sidecar/src/capture/map.ts";
@@ -28,6 +29,34 @@ describe("the compact route", () => {
     expect(json.kind).toBe("view");
     expect(json.isMidTurn).toBe(false);
     expect((json.messages as Array<{ text: string }>).map((m) => m.text)).toContain("first");
+  });
+
+  it("leaves no receipt for a view the guard refuses, so recovery has nothing stale to match", async () => {
+    const script = new Script();
+    script.toolTurn("turn-1", "first", "toolu_a");
+    writeTranscript(h, script.lines);
+    await s.call("/bind", { sessionId: SESSION, transcriptPath: h.transcript, source: "startup" });
+    await s.call("/capture", { entries: script.entries });
+    const guard = { trigger: 10_000, fixed: 10_000 };
+
+    const { json } = await s.call("/compact", { sessionId: SESSION, trigger: "manual", target: 10_000, guard });
+
+    expect(json.kind).toBe("native");
+    expect(json.reason).toMatch(/would not get below the 10k trigger/);
+    const path = join(h.home, "receipts", `${SESSION}.json`);
+    const expected = existsSync(path)
+      ? (JSON.parse(readFileSync(path, "utf8")) as { expected: string[] }).expected
+      : [];
+    expect(expected).toEqual([]);
+
+    const accepted = await s.call("/compact", {
+      sessionId: SESSION,
+      trigger: "manual",
+      target: 10_000,
+      guard: { ...guard, fixed: 0 },
+    });
+    expect(accepted.json.kind).toBe("view");
+    expect((JSON.parse(readFileSync(path, "utf8")) as { expected: string[] }).expected).not.toEqual([]);
   });
 
   it("answers native for a session it is not bound to", async () => {

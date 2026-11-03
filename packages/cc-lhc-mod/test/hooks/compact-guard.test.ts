@@ -57,27 +57,19 @@ function setup(fixed: number, trigger = 800000, target = 140000, view = 140000) 
   const next = vi.fn(async () => ({ native: true }));
   return { handler, engine, next };
 }
-it.each([18000, 24000, 30000])("1M defaults accept helpful 140k view with %i fixed context", async (fixed) => {
+it.each([18000, 24000, 30000])("sends the trigger and %i of fixed context for the sidecar's guard", async (fixed) => {
   const h = setup(fixed);
   const r = await h.handler(h.engine, { trigger: "auto" }, h.next);
   expect(r.tokensAfter).toBe(140000);
-  expect(h.next).not.toHaveBeenCalled();
+  expect(calls.post.mock.calls[0]?.[2]).toMatchObject({ guard: { trigger: 800000, fixed } });
   expect(calls.log.mock.calls.some((x) => x[1] === `fixed context ${fixed}`)).toBe(true);
 });
-it("the guard falls back when the view plus fixed context reaches trigger", async () => {
-  const h = setup(24000, 800000, 140000, 776000);
+it("a guard refusal from the sidecar falls back to native", async () => {
+  const h = setup(24000);
+  calls.post.mockResolvedValue({
+    kind: "native",
+    reason: "its view of 776k plus 24k of fixed context would not get below the 800k trigger",
+  });
   expect(await h.handler(h.engine, { trigger: "auto" }, h.next)).toEqual({ native: true });
   expect(h.next).toHaveBeenCalledOnce();
-});
-it("refusal never latches: the next helpful view is accepted", async () => {
-  const h = setup(30000, 60000, 12000, 35000);
-  for (let i = 0; i < 3; i++) expect(await h.handler(h.engine, { trigger: "auto" }, h.next)).toEqual({ native: true });
-  calls.post.mockResolvedValue({
-    kind: "view",
-    messages: [{ role: "user", text: "smaller view", toolUses: [] }],
-    isMidTurn: false,
-    viewTokens: 12000,
-  });
-  expect((await h.handler(h.engine, { trigger: "auto" }, h.next)).tokensAfter).toBe(12000);
-  expect(h.next).toHaveBeenCalledTimes(3);
 });

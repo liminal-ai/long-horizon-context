@@ -1,5 +1,5 @@
 import type { CompactReceipt, OpResult } from "lhc";
-import type { CompactAnswer, CompactRequest } from "../../src/compact.ts";
+import { type CompactAnswer, type CompactRequest, isViewUseless, kilo } from "../../src/compact.ts";
 import type { Recorder } from "./capture/recorder.ts";
 import { projectView } from "./projector.ts";
 import { fingerprintOf } from "./receipts.ts";
@@ -32,8 +32,16 @@ export async function answerCompact(
   if (!view.ok) return { kind: "native", reason: `view read failed: ${view.error.reason}` };
   const messages = projectView(view.value);
   if (messages.length === 0) return { kind: "native", reason: "the LHC view is empty" };
-  recorder.receipts.begin({ sessionId: request.sessionId, cursor: recovered.offset, expected: messages.map(fingerprintOf) });
   const receipt = compacted.value;
+  const { guard } = request;
+  if (guard !== undefined && isViewUseless(receipt.totalTokens, guard.fixed, guard.trigger)) {
+    return {
+      kind: "native",
+      reason: `its view of ${kilo(receipt.totalTokens)} plus ${kilo(guard.fixed)} of fixed context would not get below the ${kilo(guard.trigger)} trigger`,
+    };
+  }
+  // Only a view the mod installs gets a receipt: recovery matches rows against it.
+  recorder.receipts.begin({ sessionId: request.sessionId, cursor: recovered.offset, expected: messages.map(fingerprintOf) });
   log(
     `compact ${request.trigger} ${isMidTurn ? "mid-turn" : "settled"} view ${receipt.totalTokens} tokens (target ${target}) ` +
       `messages ${messages.length} compact point ${receipt.compactPoint} degraded ${receipt.degraded.length} gaps ${receipt.gaps.length} ` +

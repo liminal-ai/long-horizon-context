@@ -118,7 +118,9 @@ Facts from the code. Read them before driving:
   `[/compact instructions, recorded only: ...]` note and a transcript notice.
   A view that cannot help is not installed: when the view's tokens plus the
   fixed context (the engine breakdown's `used` rows other than `Messages`,
-  logged as `fixed context N`) reach the trigger, the hook falls back as below.
+  logged as `fixed context N`, sent with `/compact`) reach the trigger, the
+  sidecar answers native before it begins a receipt, so a receipt only ever
+  exists for an installed view, and the hook falls back as below.
   Any failure (sidecar unreachable, outbox not drained, core refusal) logs
   `compact <trigger> fell back to native after <ms>ms: <reason>`, shows `LHC could not
   compact (...)`, sets the status line to the fallback, and returns

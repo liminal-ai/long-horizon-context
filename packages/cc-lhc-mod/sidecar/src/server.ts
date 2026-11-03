@@ -40,9 +40,12 @@ function parseEntries(body: unknown): CaptureEntry[] {
 }
 
 function parseCompact(body: unknown): CompactRequest {
-  const { sessionId, trigger, target } = (body ?? {}) as Record<string, unknown>;
+  const { sessionId, trigger, target, guard } = (body ?? {}) as Record<string, unknown>;
   if (!isString(sessionId) || !isString(trigger) || !isCount(target)) throw new Error("compact needs sessionId, trigger and target");
-  return { sessionId, trigger, target };
+  if (guard === undefined) return { sessionId, trigger, target };
+  const { trigger: limit, fixed } = (guard ?? {}) as Record<string, unknown>;
+  if (!isCount(limit) || typeof fixed !== "number" || !Number.isFinite(fixed) || fixed < 0) throw new Error("compact guard needs trigger and fixed token counts");
+  return { sessionId, trigger, target, guard: { trigger: limit, fixed } };
 }
 
 const OPS: ReadonlySet<string> = new Set<RetrievalOp>(["get_turns", "get_messages"]);
