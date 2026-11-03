@@ -1,0 +1,53 @@
+{
+  "turns": [
+    {
+      "outcome": "aborted",
+      "outcomeReason": "interrupted",
+      "messages": [
+        {
+          "kind": "user_prompt",
+          "blocks": [
+            {
+              "content": {
+                "text": "one"
+              }
+            }
+          ]
+        },
+        {
+          "kind": "tool_call",
+          "blocks": [
+            {
+              "content": {
+                "toolCallId": "extra"
+              }
+            }
+          ]
+        },
+        {
+          "kind": "tool_result",
+          "blocks": [
+            {
+              "content": {
+                "toolCallId": "extra"
+              }
+            }
+          ]
+        },
+        {
+          "kind": "assistant_text",
+          "blocks": [
+            {
+              "content": {
+                "text": "two"
+              }
+            }
+          ]
+        }
+      ],
+      "status": "closed",
+      "turnId": "t1",
+      "order": 1
+    }
+  ]
+}

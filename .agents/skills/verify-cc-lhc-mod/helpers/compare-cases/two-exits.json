@@ -1,0 +1,111 @@
+{
+  "turns": [
+    {
+      "turnId": "t1",
+      "order": 1,
+      "status": "closed",
+      "outcome": "aborted",
+      "outcomeReason": "interrupted",
+      "messages": [
+        {
+          "kind": "user_prompt",
+          "blocks": [
+            {
+              "content": {
+                "text": "one"
+              }
+            }
+          ]
+        },
+        {
+          "kind": "tool_call",
+          "blocks": [
+            {
+              "content": {
+                "toolCallId": "cut-1"
+              }
+            }
+          ]
+        },
+        {
+          "kind": "tool_result",
+          "blocks": [
+            {
+              "content": {
+                "toolCallId": "cut-1"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "turnId": "t2",
+      "order": 2,
+      "status": "closed",
+      "outcome": "aborted",
+      "outcomeReason": "interrupted",
+      "messages": [
+        {
+          "kind": "user_prompt",
+          "blocks": [
+            {
+              "content": {
+                "text": "two"
+              }
+            }
+          ]
+        },
+        {
+          "kind": "tool_call",
+          "blocks": [
+            {
+              "content": {
+                "toolCallId": "cut-2"
+              }
+            }
+          ]
+        },
+        {
+          "kind": "tool_result",
+          "blocks": [
+            {
+              "content": {
+                "toolCallId": "cut-2"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "turnId": "t3",
+      "order": 3,
+      "status": "closed",
+      "outcome": "completed",
+      "outcomeReason": "answer",
+      "messages": [
+        {
+          "kind": "user_prompt",
+          "blocks": [
+            {
+              "content": {
+                "text": "three"
+              }
+            }
+          ]
+        },
+        {
+          "kind": "assistant_text",
+          "blocks": [
+            {
+              "content": {
+                "text": "four"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

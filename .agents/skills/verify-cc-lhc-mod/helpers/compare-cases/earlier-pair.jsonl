@@ -1,0 +1,2 @@
+{"uuid": "p1", "parentUuid": null, "type": "user", "origin": {"kind": "prompt"}, "message": {"content": "one"}}
+{"uuid": "a1", "parentUuid": "p1", "type": "assistant", "message": {"content": [{"type": "text", "text": "two"}]}}

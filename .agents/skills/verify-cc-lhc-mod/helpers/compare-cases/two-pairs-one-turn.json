@@ -1,0 +1,61 @@
+{
+  "turns": [
+    {
+      "status": "closed",
+      "outcome": "aborted",
+      "outcomeReason": "interrupted",
+      "messages": [
+        {
+          "kind": "user_prompt",
+          "blocks": [
+            {
+              "content": {
+                "text": "one"
+              }
+            }
+          ]
+        },
+        {
+          "kind": "tool_call",
+          "blocks": [
+            {
+              "content": {
+                "toolCallId": "cut-1"
+              }
+            }
+          ]
+        },
+        {
+          "kind": "tool_result",
+          "blocks": [
+            {
+              "content": {
+                "toolCallId": "cut-1"
+              }
+            }
+          ]
+        },
+        {
+          "kind": "tool_call",
+          "blocks": [
+            {
+              "content": {
+                "toolCallId": "cut-2"
+              }
+            }
+          ]
+        },
+        {
+          "kind": "tool_result",
+          "blocks": [
+            {
+              "content": {
+                "toolCallId": "cut-2"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

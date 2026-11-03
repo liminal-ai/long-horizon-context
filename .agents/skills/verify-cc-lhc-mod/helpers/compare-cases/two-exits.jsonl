@@ -1,0 +1,4 @@
+{"uuid": "p1", "parentUuid": null, "type": "user", "origin": {"kind": "prompt"}, "message": {"content": "one"}}
+{"uuid": "p2", "parentUuid": "p1", "type": "user", "origin": {"kind": "prompt"}, "message": {"content": "two"}}
+{"uuid": "p3", "parentUuid": "p2", "type": "user", "origin": {"kind": "prompt"}, "message": {"content": "three"}}
+{"uuid": "a3", "parentUuid": "p3", "type": "assistant", "message": {"content": [{"type": "text", "text": "four"}]}}
