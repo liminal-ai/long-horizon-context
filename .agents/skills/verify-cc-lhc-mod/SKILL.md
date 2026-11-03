@@ -20,8 +20,8 @@ Facts from the code. Read them before driving:
 - Layout under the LHC home (`src/paths.ts`): `run/<load id>.sock` in a mode
   0700 directory, `logs/mod-<load id>.log` and `logs/sidecar-<load id>.log`.
   One load id per module load, so a hot reload starts a new pair.
-- Binding: `classic.SessionStart` (startup, clear, resume, fork) posts
-  `/bind`. A reload re-runs `session.start` only, so the mod keeps the binding
+- Binding: `classic.SessionStart` (startup, clear, resume, fork, and
+  `compact` after each compaction) posts `/bind`. A reload re-runs `session.start` only, so the mod keeps the binding
   in `$.state` and rebinds with source `reload`. The sidecar answers
   `GET /health` with its binding and policy.
 - Settings (`src/settings.ts`): `userConfig` fields `lowerBound` (140000),
@@ -91,13 +91,31 @@ pnpm --filter cc-lhc-mod seam-check
 ```
 
 It builds, prints `claude --version`, and runs `claude -p` four times against
-the built mod. It checks plugin validation, the startup and resume binds with
-the transcript path, the 0700 socket directory, sidecar exit, settings from
-`userConfig`, the 20000-token output reserve (`effectiveWindow=80000` on a
-100k window), and that the override lowers the trigger (1234 compacts the
-first check, the 67000 default does not). Pass line: `seam-check: PASS`.
+the built mod. Each seam observes what its name says:
+
+- `validate`: `claude plugin validate` exits 0.
+- `bind-startup`, `bind-transcript`, `bind-resume`: the sidecar logs the
+  session id, its existing `<id>.jsonl` transcript, and the source.
+- `socket-dir`: the socket directory is mode 0700.
+- `sidecar-exit`: the sidecar's PID is gone within 5 s of `claude` exiting.
+- `mod-computes-policy`: the mod's logged policy for the live window equals
+  the settings model's. This checks the mod's arithmetic only. The override
+  seams prove the engine side.
+- `settings-from-userConfig`: `--settings` options reach the mod: window
+  100000, trigger 30000, target 10000, pct 37.5.
+- `output-reserve`: a 100k window gives `effectiveWindow=80000`.
+- `override-lowers-trigger`: a real crossing at trigger 30000. Each request's
+  context is its transcript usage (input + cache read + cache creation), as
+  `turn.step` counts it. No compact-level check comes while the last measured
+  context is below 30000, and the first check after it crosses compacts.
+- `override-default-holds`: with the defaults (trigger 67000), no check in
+  the run is compact-level.
+
+Pass line: `seam-check: PASS`.
 It removes its scratch dir on a pass and keeps it, with the debug logs, on a fail.
 Interactive seams (`/clear`, reload, a real crossing) are the drives below.
+Unverified anywhere: the live re-apply after `/model`. There is no seam for
+it and no drive has run it, so report it as unverified, not passed.
 
 Unit checks: `pnpm --filter cc-lhc-mod test` (settings, sidecar). CI runs it.
 

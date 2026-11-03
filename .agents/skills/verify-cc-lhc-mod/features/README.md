@@ -68,7 +68,10 @@ the debug log shows `level=ok` or `level=warn` checks before the first
 40000 and below the 67000 default. Later compacts may trip Claude Code's
 refill breaker; that is native compaction, not this feature.
 
-Not yet driven live: a `/model` switch mid-session and a `/config` change.
+Unverified: the live re-apply on `/model`. The mod re-applies at the next
+turn when `$.session.model()` changes, and no drive or seam has switched the
+model mid-session and watched the trigger follow. A `/config` change is not
+driven live either.
 
 ## Launch cost
 

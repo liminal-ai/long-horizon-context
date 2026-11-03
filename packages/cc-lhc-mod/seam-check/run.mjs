@@ -1,6 +1,15 @@
 #!/usr/bin/env node
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -80,14 +89,68 @@ function run(prompt, { args = [], env = {} } = {}) {
       .map((name) => readFileSync(join(lhcHome, "logs", name), "utf8"))
       .join("");
   const sessionId = JSON.parse(result.stdout).session_id;
+  const sidecarLog = read("sidecar-");
+  const transcript = new RegExp(`bound session ${sessionId} transcript (\\S+)`).exec(sidecarLog)?.[1];
   console.log(`seam-check: run ${runs} session ${sessionId}`);
-  return { sessionId, sidecarLog: read("sidecar-"), modLog: read("mod-"), debug: readFileSync(debugFile, "utf8") };
+  return { sessionId, sidecarLog, transcript, modLog: read("mod-"), debug: readFileSync(debugFile, "utf8") };
 }
 
 const policyLine = (modLog) => {
   const match = / window (\d+) trigger (\d+) target (\d+) pct (\S+)/.exec(modLog);
   return match === null ? undefined : { window: +match[1], trigger: +match[2], target: +match[3], pct: match[4] };
 };
+
+const isAlive = (pid) => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+async function gone(pid) {
+  for (let waited = 0; waited < 5000 && isAlive(pid); waited += 100) await new Promise((r) => setTimeout(r, 100));
+  return !isAlive(pid);
+}
+
+// Each main-loop request's context, measured as turn.step usage counts it: input + cache read + cache creation.
+function requests(transcriptPath) {
+  const seen = new Map();
+  for (const line of readFileSync(transcriptPath, "utf8").split("\n")) {
+    if (line === "") continue;
+    const row = JSON.parse(line);
+    const usage = row.message?.usage;
+    if (row.type !== "assistant" || row.isSidechain || usage === undefined || seen.has(row.message.id)) continue;
+    const tokens = usage.input_tokens + (usage.cache_read_input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0);
+    seen.set(row.message.id, { at: row.timestamp, tokens });
+  }
+  return [...seen.values()];
+}
+
+const checks = (debug) =>
+  [...debug.matchAll(/^(\S+) \[DEBUG\] autocompact: tokens=\S+ level=(\w+) effectiveWindow=\d+/gm)].map((m) => ({
+    at: m[1],
+    level: m[2],
+  }));
+
+// Each check is judged by the context of the last request measured before it. Up to the first compact-level
+// check: none may come while that context is below the trigger, and the first check after it crosses must compact.
+function firstCrossing(run, trigger) {
+  const measured = requests(run.transcript);
+  for (const check of checks(run.debug)) {
+    const before = measured.filter((request) => request.at < check.at).at(-1)?.tokens ?? 0;
+    if (check.level === "compact") {
+      return before >= trigger
+        ? { ok: true, detail: `first compact-level check at ${check.at}, after a request of ${before} tokens` }
+        : { ok: false, detail: `compact-level check at ${check.at} while measured context was ${before}` };
+    }
+    if (before >= trigger) {
+      return { ok: false, detail: `${check.level}-level check at ${check.at} after a request of ${before} tokens` };
+    }
+  }
+  return { ok: false, detail: `no compact-level check; requests ${measured.map((r) => r.tokens).join(", ")}` };
+}
 
 const first = run("Reply with just: ok");
 const bound = new RegExp(`bound session ${first.sessionId} transcript (\\S+) source startup`).exec(first.sidecarLog);
@@ -98,18 +161,23 @@ check(
   `transcript ${bound?.[1]}`,
 );
 check("socket-dir", (statSync(join(lhcHome, "run")).mode & 0o777) === 0o700, "run directory is mode 0700");
-check("sidecar-exit", first.sidecarLog.includes("exit SIGTERM"), "the sidecar left when claude exited");
+const sidecarPid = Number(/listening \S+ pid (\d+)/.exec(first.sidecarLog)?.[1]);
+check(
+  "sidecar-exit",
+  sidecarPid > 0 && (await gone(sidecarPid)),
+  `sidecar pid ${sidecarPid} is gone within 5 s of claude exiting`,
+);
 const live = policyLine(first.modLog);
 const expected = live && computePolicy(resolveSettings({}), live.window).policy;
 check(
-  "settings-applied",
+  "mod-computes-policy",
   live !== undefined &&
     live.trigger === expected.trigger &&
     live.target === expected.target &&
     live.pct === String(expected.pct),
   live === undefined
     ? "no policy line in the mod log"
-    : `window ${live.window} trigger ${live.trigger} target ${live.target} pct ${live.pct}`,
+    : `the mod's policy for window ${live.window} is the settings model's: trigger ${live.trigger} target ${live.target} pct ${live.pct} (the override seams prove the engine side)`,
 );
 
 const resumed = run("Reply with just: ok again", { args: ["--resume", first.sessionId] });
@@ -119,35 +187,48 @@ check(
   `resume bound ${first.sessionId}`,
 );
 
-// A 100k compact window: the engine's effective window is 80000 and its default trigger 67000, above this
-// prompt (~23k). A trigger the mod sets below the prompt makes the first check compact; the default does not.
+// A 100k compact window gives effectiveWindow 80000 and an engine default trigger of 67000. The crossing run sets
+// trigger 30000 and reads a file in chunks of about 6k tokens, so its context passes 30000 a few steps in.
 const smallWindow = { CLAUDE_CODE_AUTO_COMPACT_WINDOW: "100000" };
-const low = run("Reply with just: ok", {
-  env: smallWindow,
-  args: [
-    "--settings",
-    JSON.stringify({ pluginConfigs: { "lhc@inline": { options: { upperBound: 1234, lowerBound: 1000 } } } }),
-  ],
+const words = ["amber", "birch", "cobalt", "delta", "ember", "fjord", "garnet", "harbor", "indigo", "juniper"];
+const lines = Array.from({ length: 600 }, (_, l) => {
+  const row = Array.from({ length: 8 }, (_, k) => `${words[(l * 7 + k * 3) % 10]}${(l * k) % 97}`);
+  return `line ${l}: ${row.join(" ")}`;
 });
-const lowPolicy = policyLine(low.modLog);
+writeFileSync(join(work, "f1.txt"), `${lines.join("\n")}\n`);
+const crossing = run(
+  "Read f1.txt in chunks of 150 lines (offset 1, 151, 301, 451), one Read call at a time, then reply DONE.",
+  {
+    env: smallWindow,
+    args: [
+      "--allowedTools",
+      "Read",
+      "--settings",
+      JSON.stringify({ pluginConfigs: { "lhc@inline": { options: { upperBound: 30_000, lowerBound: 10_000 } } } }),
+    ],
+  },
+);
+const crossingPolicy = policyLine(crossing.modLog);
 check(
   "settings-from-userConfig",
-  lowPolicy?.window === 100_000 && lowPolicy.trigger === 1234 && lowPolicy.pct === "1.5425",
-  `window ${lowPolicy?.window} trigger ${lowPolicy?.trigger} pct ${lowPolicy?.pct}`,
+  crossingPolicy?.window === 100_000 &&
+    crossingPolicy.trigger === 30_000 &&
+    crossingPolicy.target === 10_000 &&
+    crossingPolicy.pct === "37.5",
+  `window ${crossingPolicy?.window} trigger ${crossingPolicy?.trigger} target ${crossingPolicy?.target} pct ${crossingPolicy?.pct}`,
 );
-check("output-reserve", low.debug.includes("effectiveWindow=80000"), "a 100k window gives effectiveWindow=80000");
-check(
-  "override-lowers-trigger",
-  /autocompact: tokens=\S+ level=compact effectiveWindow=80000/.test(low.debug) &&
-    low.debug.includes("thresholdSource=env"),
-  "trigger 1234 makes the first check compact",
-);
-const high = run("Reply with just: ok", { env: smallWindow });
+check("output-reserve", crossing.debug.includes("effectiveWindow=80000"), "a 100k window gives effectiveWindow=80000");
+const crossed = firstCrossing(crossing, 30_000);
+check("override-lowers-trigger", crossed.ok, `trigger 30000: ${crossed.detail}`);
+
+const held = run("Reply with just: ok", { env: smallWindow });
+const heldChecks = checks(held.debug);
 check(
   "override-default-holds",
-  /autocompact: tokens=\S+ level=ok effectiveWindow=80000/.test(high.debug) &&
-    policyLine(high.modLog)?.trigger === 67_000,
-  "trigger 67000 leaves the first check ok",
+  policyLine(held.modLog)?.trigger === 67_000 &&
+    heldChecks.length > 0 &&
+    heldChecks.every((c) => c.level !== "compact"),
+  `trigger 67000: ${heldChecks.length} checks, levels ${[...new Set(heldChecks.map((c) => c.level))].join(", ")}`,
 );
 
 if (failures === 0) rmSync(home, { recursive: true, force: true });
