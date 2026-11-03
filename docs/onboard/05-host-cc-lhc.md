@@ -121,11 +121,11 @@ or isolation. Parser drift is visible and covered by real-rollout fixtures.
 
 Assistant identity is stored from the response record. Thinking signatures are
 opaque. Empty-and-unsigned thinking is
-omitted from serving; empty-but-signed thinking is preserved. A rebuilt rollout
-would replay signed thinking only when stored identity exactly matched the live
-request identity. The wrapper cannot observe Claude's prepared request, so the
-certified rebuild arm currently omits thinking blocks rather than guessing from
-mutable session state.
+omitted from serving; empty-but-signed thinking is preserved. The rebuild arm
+is `signed_verbatim` (`SELECTED_THINKING_REBUILD_ARM` in
+`src/rollout/thinking-ladder.ts`). A rebuilt rollout replays each thinking
+block with its captured signature. The other arms in that file are
+`unsigned_visible` and `omit`.
 
 Capture moves to the replacement at the routing switch; the outgoing
 generation's final read and drain are fired and forgotten, because the old
