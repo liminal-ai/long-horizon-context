@@ -119,7 +119,8 @@ export function registerCompact(on: On): void {
     if (e.instructions !== undefined && e.instructions.trim() !== "") {
       $.ui.log("LHC recorded your /compact instructions as a note. Its view comes from the record, so they were not applied.");
     }
-    isPressureCheckDue = true;
+    // A mid-turn view over the trigger holds one oversized step, which the next seam compacts.
+    isPressureCheckDue = !answer.isMidTurn || after < policy.trigger;
     return {
       messages: answer.messages,
       tokensAfter: answer.viewTokens,

@@ -48,6 +48,25 @@ it("a hot-reloaded open turn uses the mid-turn entry point", async () => {
   expect(answer.kind === "view" && answer.isMidTurn).toBe(true);
 });
 
+it("installs the mid-turn view and its receipt when one open step is over the trigger", async () => {
+  const h = fresh();
+  const script = new Script();
+  script.prompt("read this large file and continue");
+  script.turnStart("running");
+  script.step("running", 0);
+  script.answer({ type: "tool_use", id: "toolu_big", name: "Read", input: { file_path: "big.txt" } });
+  script.resultsOf(() => "ledger line ".repeat(20_000), "toolu_big");
+  writeTranscript(h, script.lines);
+  const r = await recorder(h);
+  const guard = { trigger: 20_000, fixed: 10_000 };
+  const answer = await answerCompact(r, { sessionId: SESSION, trigger: "auto", target: 10_000, guard }, () => {});
+  expect(answer.kind === "view" && answer.isMidTurn && answer.viewTokens + guard.fixed).toBeGreaterThan(guard.trigger);
+  const receipt = JSON.parse(readFileSync(join(h.home, "receipts", `${SESSION}.json`), "utf8")) as {
+    expected: string[];
+  };
+  expect(receipt.expected).not.toEqual([]);
+});
+
 it("a recovered large open turn either reduces or falls back", async () => {
   const h = fresh();
   const script = new Script();

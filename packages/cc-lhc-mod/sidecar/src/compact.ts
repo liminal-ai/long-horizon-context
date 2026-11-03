@@ -59,8 +59,10 @@ export async function answerCompact(
   if (messages.length === 0) return { kind: "native", reason: "the LHC view is empty" };
   viewTokens ??= builtTokens(messages);
   const { guard } = request;
-  // A view that, with Claude Code's fixed overhead, still reaches the trigger reduces nothing and is not installed.
-  if (guard !== undefined && viewTokens + guard.fixed >= guard.trigger) {
+  // A settled view that, with Claude Code's fixed overhead, still reaches the trigger reduces nothing and is not
+  // installed. Mid-turn, any compaction, Claude Code's own included, keeps the open step whole, and the next seam
+  // compacts it as history, so an oversized step still gets the LHC view.
+  if (guard !== undefined && !isMidTurn && viewTokens + guard.fixed >= guard.trigger) {
     return {
       kind: "native",
       reason: `its view of ${kilo(viewTokens)} plus ${kilo(guard.fixed)} of fixed context would not get below the ${kilo(guard.trigger)} trigger`,
