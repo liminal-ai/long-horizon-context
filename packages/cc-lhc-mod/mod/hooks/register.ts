@@ -8,6 +8,7 @@ const LOAD_ID = Math.random().toString(36).slice(2, 10);
 let options: Record<string, unknown> = {};
 let settings: ResolvedSettings = resolveSettings(options);
 let sidecar: Promise<string> | undefined;
+let sidecarStarts = 0;
 let boundSessionId: string | undefined;
 let appliedModel: string | undefined;
 let queue: Promise<unknown> = Promise.resolve();
@@ -37,11 +38,19 @@ function startSidecar($: EngineInterface): Promise<string> {
       const child = $.process.spawn({
         argv: ["node", `${$.plugin.root}/sidecar/main.js`, "--home", home, "--id", LOAD_ID],
       });
+      const isReplacement = sidecarStarts++ > 0;
       let pending = "";
+      let isListening = false;
       try {
         for await (const piece of child) {
           pending += piece.text;
-          if (pending.includes(`listening ${socket}`)) resolve(socket);
+          if (!isListening && pending.includes(`listening ${socket}`)) {
+            isListening = true;
+            const replayed = isReplacement ? rebind($, socket) : Promise.resolve();
+            void replayed
+              .catch((error: unknown) => log($, `rebind failed: ${String(error)}`))
+              .then(() => resolve(socket));
+          }
           if (piece.stream === "stderr") log($, `sidecar stderr: ${piece.text.trim()}`);
         }
       } catch (error) {
@@ -53,6 +62,19 @@ function startSidecar($: EngineInterface): Promise<string> {
     })();
   });
   return sidecar;
+}
+
+async function rebind($: EngineInterface, socket: string): Promise<void> {
+  const { value: binding } = await $.state.get({ plugin: "lhc", key: "binding" });
+  if (binding === undefined || binding.sessionId !== boundSessionId) return;
+  const replayed = { ...binding, source: "restart" };
+  await $.http.fetch("http://sidecar/bind", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(replayed),
+    socketPath: socket,
+  });
+  log($, `bind session ${binding.sessionId} source restart`);
 }
 
 async function post($: EngineInterface, path: string, body: unknown): Promise<void> {
