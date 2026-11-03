@@ -13,8 +13,6 @@ import { UNMARKED } from "./capture/transcript.ts";
  * far, so live capture and transcript recovery skip the same rows.
  */
 export type Receipt = {
-  sessionId: string;
-  cursor: number;
   expected: string[];
   claimed: string[];
   /** Rows earlier receipts claimed, so a later recovery still knows them as installed. */
@@ -64,8 +62,8 @@ export class Receipts {
     mkdirSync(join(home, "receipts"), { recursive: true });
     this.#path = join(home, "receipts", `${sessionId}.json`);
     try {
-      const read = JSON.parse(readFileSync(this.#path, "utf8")) as Receipt;
-      this.#receipt = { ...read, earlier: read.earlier ?? [] };
+      const { expected, claimed, earlier } = JSON.parse(readFileSync(this.#path, "utf8")) as Receipt;
+      this.#receipt = { expected, claimed, earlier: earlier ?? [] };
     } catch {
       this.#receipt = undefined;
     }
@@ -85,8 +83,8 @@ export class Receipts {
   }
 
   /** A new install to match, carrying the rows earlier installs claimed. */
-  begin(next: { sessionId: string; cursor: number; expected: string[] }): void {
-    this.persist({ ...next, claimed: [], earlier: this.#installed() });
+  begin(expected: string[]): void {
+    this.persist({ expected, claimed: [], earlier: this.#installed() });
   }
 
   persist(receipt: Receipt): void {

@@ -67,7 +67,7 @@ export async function answerCompact(
     };
   }
   // Only a view the mod installs gets a receipt: recovery matches rows against it.
-  recorder.receipts.begin({ sessionId: request.sessionId, cursor: recovered.offset, expected: messages.map(fingerprintOf) });
+  recorder.receipts.begin(messages.map(fingerprintOf));
   log(
     `${request.op ?? "compact"} ${request.trigger} ${isMidTurn ? "mid-turn" : "settled"} view ${viewTokens} tokens (target ${target}) ` +
       `messages ${messages.length} ${outcome} recovered ${recovered.recorded} took ${Date.now() - started}ms`,

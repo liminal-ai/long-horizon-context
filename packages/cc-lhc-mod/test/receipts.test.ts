@@ -1,3 +1,5 @@
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Row } from "../sidecar/src/capture/map.ts";
 import { NATIVE_SUMMARY_LABEL } from "../sidecar/src/capture/map.ts";
@@ -269,15 +271,35 @@ describe("rows an earlier install claimed", () => {
       at: 0,
     });
     const view = (text: string): BuiltMessage => ({ role: "user", text, toolUses: [] });
-    receipts.begin({ sessionId: SESSION, cursor: 0, expected: [fingerprintOf(view("[context · brief]\nfirst view"))] });
+    receipts.begin([fingerprintOf(view("[context · brief]\nfirst view"))]);
     expect(receipts.isProjection(row("install-1", "[context · brief]\nfirst view"))).toBe(true);
-    receipts.begin({
-      sessionId: SESSION,
-      cursor: 0,
-      expected: [fingerprintOf(view("[context · brief]\nsecond view"))],
-    });
+    receipts.begin([fingerprintOf(view("[context · brief]\nsecond view"))]);
 
     expect(receipts.isProjection(row("install-1", "[context · brief]\nfirst view"))).toBe(true);
     expect(receipts.current?.claimed).toEqual([]);
+  });
+
+  it("still match from a receipt written with the session id and cursor older sidecars kept", () => {
+    const text = "[context · brief]\nold view";
+    const expected = fingerprintOf({ role: "user", text, toolUses: [] });
+    mkdirSync(join(h.home, "receipts"), { recursive: true });
+    const path = join(h.home, "receipts", `${SESSION}.json`);
+    writeFileSync(path, JSON.stringify({ sessionId: SESSION, cursor: 4096, expected: [expected], claimed: [] }));
+    const row: Row = {
+      kind: "row",
+      sessionId: SESSION,
+      uuid: "install-old",
+      door: "note",
+      origin: "engine",
+      message: { type: "user", role: "user", content: [{ type: "text", text }] },
+      at: 0,
+    };
+
+    expect(new Receipts(h.home, SESSION).isProjection(row)).toBe(true);
+    expect(JSON.parse(readFileSync(path, "utf8"))).toEqual({
+      expected: [expected],
+      claimed: ["install-old"],
+      earlier: [],
+    });
   });
 });
