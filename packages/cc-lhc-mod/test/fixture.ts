@@ -258,8 +258,9 @@ export async function record(h: Harness, source = "startup", ownerPid = process.
   return openRecording({ lhc: h.lhc, home: h.home, ownerPid, log: (line) => h.log.push(line) }, binding);
 }
 
+/** A recorder bound as the mod binds after a sidecar restart in the same Claude process. */
 export async function recorder(h: Harness): Promise<Recorder> {
-  const recording = await record(h);
+  const recording = await record(h, "restart");
   if (recording.kind !== "recording") throw new Error(recording.notice);
   return recording.recorder;
 }

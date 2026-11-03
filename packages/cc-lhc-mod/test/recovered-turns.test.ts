@@ -1,7 +1,17 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, it } from "vitest";
-import { events, type Harness, harness, messages, recorder, Script, SESSION, writeTranscript } from "./fixture.ts";
+import {
+  events,
+  type Harness,
+  harness,
+  messages,
+  record,
+  recorder,
+  Script,
+  SESSION,
+  writeTranscript,
+} from "./fixture.ts";
 
 let h: Harness;
 beforeEach(() => {
@@ -100,4 +110,51 @@ it("recovery settles a turn a crash interrupted before the next prompt opens its
     "t1 user_prompt read these files and continue working",
     "t2 user_prompt after the crash",
   ]);
+});
+
+for (const via of ["typed", "print"] as const) {
+  it(`a ${via} prompt after exiting mid-tool and resuming opens its own turn`, async () => {
+    const script = new Script();
+    script.prompt("run the long command");
+    script.turnStart("running");
+    script.step("running", 0);
+    script.answer({ type: "tool_use", id: "toolu_long", name: "Bash", input: { command: "sleep 600" } });
+    script.results("toolu_long");
+    (script.lines.at(-1)?.message as { content: Array<{ content: string; is_error?: boolean }> }).content[0] = {
+      type: "tool_result",
+      tool_use_id: "toolu_long",
+      content: "Exit code 137",
+      is_error: true,
+    } as never;
+    writeTranscript(h, script.lines);
+    const recording = await record(h, "resume");
+    if (recording.kind !== "recording") throw new Error(recording.notice);
+    const r = recording.recorder;
+    expect(r.isTurnOpen).toBe(false);
+    const next = new Script();
+    next.rewindTo(script.lines.at(-1)?.uuid ?? "");
+    const uuid = next.prompt("New task, reply with only NEW-OK.");
+    const entries = next.entries.map((entry) =>
+      entry.kind === "row" && entry.uuid === uuid && via === "print" ? { ...entry, origin: "unclassified" } : entry,
+    );
+    writeTranscript(h, [...script.lines, ...next.lines]);
+
+    await r.capture(entries);
+
+    expect((await messages(r)).filter((m) => m.includes("user_prompt"))).toEqual([
+      "t1 user_prompt run the long command",
+      "t2 user_prompt New task, reply with only NEW-OK.",
+    ]);
+    const end = (await events(r)).get(`claude-code:turn:${script.turnId("running")}:turn_end`);
+    expect(end).toMatchObject({ outcome: "aborted" });
+  });
+}
+
+it("a hot reload mid-turn keeps the recovered turn open", async () => {
+  const script = runningTurn(1);
+  writeTranscript(h, script.lines);
+
+  const recording = await record(h, "reload");
+
+  expect(recording.kind === "recording" && recording.recorder.isTurnOpen).toBe(true);
 });

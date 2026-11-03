@@ -63,6 +63,8 @@ export async function openRecording(deps: Deps, binding: Binding): Promise<Recor
   }
   const recorder = new Recorder(deps, binding, thread, lease.release);
   const recovered = await recorder.recover();
+  // A turn cannot outlive its Claude Code process: a new one (startup, resume) ends the old process's open turn.
+  if (binding.source === "startup" || binding.source === "resume") await recorder.endInterruptedTurn();
   deps.log(
     `recording session ${binding.sessionId} thread ${thread.threadId} recovered ${recovered.recorded} of ${recovered.scanned} transcript rows`,
   );
@@ -97,6 +99,13 @@ export class Recorder {
 
   get isTurnOpen(): boolean {
     return this.#state.isOpen;
+  }
+
+  async endInterruptedTurn(): Promise<void> {
+    const { isOpen, turnId } = this.#state;
+    if (!isOpen || turnId === undefined) return;
+    await this.#capture([{ kind: "turn-end", sessionId: "", turnId, isAborted: true, reason: "interrupted", at: 0 }], true);
+    this.deps.log(`ended turn ${turnId} its process left open`);
   }
 
   capture(entries: readonly Entry[]): Promise<number> {
