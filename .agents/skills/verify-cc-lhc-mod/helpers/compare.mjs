@@ -20,7 +20,9 @@ const isToolResultRow = (row) => blocksOf(row.message?.content).some((block) => 
 // parent is on it (parallel calls give two results one parent).
 const byUuid = new Map(rows.map((row) => [row.uuid, row]));
 const live = new Set();
-for (let row = rows.at(-1); row !== undefined; row = byUuid.get(row.parentUuid)) live.add(row.uuid);
+for (let row = rows.at(-1); row !== undefined; row = byUuid.get(row.parentUuid ?? row.logicalParentUuid)) {
+  live.add(row.uuid);
+}
 for (let grew = true; grew; ) {
   grew = false;
   for (const row of rows) {
@@ -32,7 +34,7 @@ for (let grew = true; grew; ) {
 }
 
 const expected = [];
-for (const row of rows.filter((r) => live.has(r.uuid))) {
+for (const row of rows.filter((r) => live.has(r.uuid) && r.isCompactSummary !== true)) {
   for (const block of blocksOf(row.message?.content)) {
     if (row.type === "assistant" && block.type === "text" && block.text !== "") expected.push(`text ${block.text}`);
     if (row.type === "assistant" && block.type === "tool_use") expected.push(`call ${block.id}`);
