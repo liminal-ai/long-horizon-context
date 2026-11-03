@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
 set -u
+if [ -z "${VERIFY_EVIDENCE:-}" ]; then
+  echo "cleanup: set VERIFY_EVIDENCE to your run's folder; it acts only on what that run recorded" >&2
+  exit 2
+fi
 . "$(dirname "$0")/lib.sh"
 scratch="$(cd "$SCRATCH_ROOT" && pwd -P)"
 if [ -f "$EVIDENCE_DIR/tmux.txt" ]; then

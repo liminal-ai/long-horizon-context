@@ -2,6 +2,7 @@ import { appendFileSync, chmodSync, mkdirSync, rmSync } from "node:fs";
 import { dirname } from "node:path";
 import { parseArgs } from "node:util";
 import { sidecarLogPath, socketPath } from "../../src/paths.ts";
+import { createLhc } from "./inference-sdk.ts";
 import { createSidecarServer } from "./server.ts";
 
 // Linux caps sun_path at 108 bytes including the terminator.
@@ -27,7 +28,9 @@ chmodSync(dirname(socket), 0o700);
 rmSync(socket, { force: true });
 
 const parent = process.ppid;
+const { server } = createSidecarServer({ lhc: createLhc(), home: values.home, ownerPid: parent, log });
 const stop = (why: string): void => {
+  // The lease stays: it belongs to the Claude process, which outlives a reloaded sidecar and is reclaimed once dead.
   log(`exit ${why}`);
   rmSync(socket, { force: true });
   process.exit(0);
@@ -36,7 +39,7 @@ for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"] as const) process.on(signal
 // Claude Code kills the sidecar when the module unloads; a killed Claude cannot, so leave when orphaned.
 setInterval(() => process.ppid !== parent && stop("orphaned"), 5000).unref();
 
-createSidecarServer(log).listen(socket, () => {
+server.listen(socket, () => {
   log(`listening ${socket} pid ${process.pid}`);
   console.log(`listening ${socket}`);
 });

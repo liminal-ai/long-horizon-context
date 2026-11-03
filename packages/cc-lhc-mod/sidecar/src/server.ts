@@ -1,10 +1,14 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import type { Lhc } from "lhc";
+import type { CaptureEntry, CaptureReply } from "../../src/capture.ts";
+import { type Binding, openRecording, type Recording } from "./capture/recorder.ts";
 
-export type Binding = { sessionId: string; transcriptPath: string; source: string };
+export type { Binding };
 export type Policy = { window: number; trigger: number; target: number };
-export type SidecarState = { binding: Binding | null; policy: Policy | null };
+export type SidecarState = { binding: Binding | null; policy: Policy | null; recording: Recording | null };
+export type SidecarDeps = { lhc: Lhc; home: string; ownerPid: number; log: (line: string) => void };
 
-type Route = (body: unknown, state: SidecarState, log: (line: string) => void) => unknown;
+type Route = (body: unknown, state: SidecarState, deps: SidecarDeps) => unknown;
 
 const isString = (value: unknown): value is string => typeof value === "string" && value !== "";
 const isCount = (value: unknown): value is number => Number.isInteger(value) && (value as number) > 0;
@@ -25,19 +29,66 @@ function parsePolicy(body: unknown): Policy {
   return { window, trigger, target };
 }
 
+function parseEntries(body: unknown): CaptureEntry[] {
+  const { entries } = (body ?? {}) as { entries?: unknown };
+  if (!Array.isArray(entries)) throw new Error("capture needs entries");
+  return entries as CaptureEntry[];
+}
+
+function describe(recording: Recording | null): unknown {
+  if (recording === null) return null;
+  return recording.kind === "recording"
+    ? { kind: "recording", threadId: recording.recorder.thread.threadId }
+    : recording;
+}
+
+export function stopRecording(state: SidecarState): void {
+  if (state.recording?.kind === "recording") state.recording.recorder.release();
+  state.recording = null;
+}
+
 const routes: Record<string, Route> = {
-  "GET /health": (_body, state) => ({ pid: process.pid, ...state }),
-  "POST /bind": (body, state, log) => {
-    state.binding = parseBinding(body);
-    log(
-      `bound session ${state.binding.sessionId} transcript ${state.binding.transcriptPath} source ${state.binding.source}`,
-    );
-    return state.binding;
+  "GET /health": (_body, state) => ({
+    pid: process.pid,
+    binding: state.binding,
+    policy: state.policy,
+    recording: describe(state.recording),
+  }),
+  "POST /bind": async (body, state, deps): Promise<unknown> => {
+    const binding = parseBinding(body);
+    const current = state.recording?.kind === "recording" ? state.recording.recorder : undefined;
+    if (current?.binding.sessionId === binding.sessionId && current.binding.transcriptPath === binding.transcriptPath) {
+      const recovered = await current.recover();
+      state.binding = binding;
+      deps.log(`bound session ${binding.sessionId} transcript ${binding.transcriptPath} source ${binding.source}`);
+      deps.log(`still recording session ${binding.sessionId}, recovered ${recovered.recorded} of ${recovered.scanned} rows`);
+      return binding;
+    }
+    stopRecording(state);
+    state.binding = null;
+    const recording = await openRecording(deps, binding);
+    state.recording = recording;
+    state.binding = binding;
+    deps.log(`bound session ${binding.sessionId} transcript ${binding.transcriptPath} source ${binding.source}`);
+    if (recording.kind === "refused") deps.log(`not recording: ${recording.notice}`);
+    return { ...binding, ...(recording.kind === "refused" ? { notice: recording.notice } : {}) };
   },
-  "POST /policy": (body, state, log) => {
+  "POST /policy": (body, state, deps) => {
     state.policy = parsePolicy(body);
-    log(`policy window ${state.policy.window} trigger ${state.policy.trigger} target ${state.policy.target}`);
+    deps.log(`policy window ${state.policy.window} trigger ${state.policy.trigger} target ${state.policy.target}`);
     return state.policy;
+  },
+  "POST /capture": async (body, state, deps): Promise<CaptureReply> => {
+    const entries = parseEntries(body);
+    const sessionId = state.binding?.sessionId;
+    const foreign = entries.find((entry) => entry.sessionId !== sessionId);
+    if (foreign !== undefined) throw new Error(`entries for session ${foreign.sessionId}, bound to ${sessionId}`);
+    if (state.recording === null) throw new Error("no recording is open");
+    if (state.recording.kind !== "recording" || entries.length === 0) return { recorded: 0 };
+    const recorded = await state.recording.recorder.capture(entries);
+    const lag = Math.max(...entries.map((entry) => Date.now() - entry.at));
+    deps.log(`captured ${entries.length} entries recorded ${recorded} events lag ${lag}ms`);
+    return { recorded };
   },
 };
 
@@ -52,17 +103,20 @@ function reply(res: ServerResponse, status: number, value: unknown): void {
   res.end(JSON.stringify(value));
 }
 
-export function createSidecarServer(log: (line: string) => void): Server {
-  const state: SidecarState = { binding: null, policy: null };
-  return createServer((req, res) => {
+export function createSidecarServer(deps: SidecarDeps): { server: Server; state: SidecarState } {
+  const state: SidecarState = { binding: null, policy: null, recording: null };
+  let inArrivalOrder: Promise<unknown> = Promise.resolve();
+  const server = createServer((req, res) => {
     const route = routes[`${req.method} ${req.url}`];
     if (route === undefined) return reply(res, 404, { error: `no route ${req.method} ${req.url}` });
-    readJson(req)
-      .then((body) => reply(res, 200, route(body, state, log)))
+    const body = readJson(req);
+    inArrivalOrder = inArrivalOrder
+      .then(async () => reply(res, 200, await route(await body, state, deps)))
       .catch((error: unknown) => {
         const message = error instanceof Error ? error.message : String(error);
-        log(`refused ${req.method} ${req.url}: ${message}`);
+        deps.log(`refused ${req.method} ${req.url}: ${message}`);
         reply(res, 400, { error: message });
       });
   });
+  return { server, state };
 }

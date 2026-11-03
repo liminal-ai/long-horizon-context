@@ -124,6 +124,9 @@ jobs:
       - name: Install workspace (frozen)
         run: pnpm install --frozen-lockfile
 
+      - name: Build lhc and claude-adapter
+        run: pnpm --filter lhc run build && pnpm --filter claude-adapter run build
+
       - name: Build cc-lhc-mod
         run: pnpm --filter cc-lhc-mod run build
 

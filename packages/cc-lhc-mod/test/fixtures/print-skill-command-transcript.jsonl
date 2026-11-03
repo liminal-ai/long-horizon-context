@@ -1,0 +1,18 @@
+{"uuid":"edfeaa22-087b-4ba7-b925-127e9f69f209","type":"user","isSidechain":false,"message":{"role":"user","model":null,"content":"<command-message>bro</command-message>\n<command-name>/bro</command-name>\n<command-args>hello</command-args>"}}
+{"uuid":"3a6bd23b-8f2b-458a-bf50-6d173fc706aa","parentUuid":"edfeaa22-087b-4ba7-b925-127e9f69f209","type":"user","isSidechain":false,"isMeta":true,"message":{"role":"user","model":null,"content":[{"type":"text","text":"Base directory for this skill: /home/user/work your last message. Stop using jargon and speak coherently. State it more simply and concisely, like one human talking to another.\n\n\nARGUMENTS: hello"}]}}
+{"uuid":"38ae87f6-92dc-47a2-a41f-6d5169423231","parentUuid":"3a6bd23b-8f2b-458a-bf50-6d173fc706aa","type":"attachment","isSidechain":false,"attachment":{"type":"environment"}}
+{"uuid":"c781db03-a125-44e7-8ed4-c0255bf0c69b","parentUuid":"38ae87f6-92dc-47a2-a41f-6d5169423231","type":"attachment","isSidechain":false,"attachment":{"type":"model"}}
+{"uuid":"f3c5d37a-d7d9-478f-ad19-6e781a147e67","parentUuid":"c781db03-a125-44e7-8ed4-c0255bf0c69b","type":"attachment","isSidechain":false,"attachment":{"type":"output_style_instructions"}}
+{"uuid":"627649c3-4495-4215-a331-6cf6771df24d","parentUuid":"f3c5d37a-d7d9-478f-ad19-6e781a147e67","type":"attachment","isSidechain":false,"attachment":{"type":"deferred_tools_delta"}}
+{"uuid":"7d29f507-5dc4-4079-b79e-5cec65633127","parentUuid":"627649c3-4495-4215-a331-6cf6771df24d","type":"attachment","isSidechain":false,"attachment":{"type":"agent_listing_delta"}}
+{"uuid":"be920f85-9d04-4409-aaf9-643ff997f42c","parentUuid":"7d29f507-5dc4-4079-b79e-5cec65633127","type":"attachment","isSidechain":false,"attachment":{"type":"mcp_instructions_delta"}}
+{"uuid":"90c14bba-ad77-41ed-a195-46d3b98dac5a","parentUuid":"be920f85-9d04-4409-aaf9-643ff997f42c","type":"attachment","isSidechain":false,"attachment":{"type":"skill_listing"}}
+{"uuid":"6dba7fc2-0b9d-4fde-8643-639dc43f5915","parentUuid":"90c14bba-ad77-41ed-a195-46d3b98dac5a","type":"attachment","isSidechain":false,"attachment":{"type":"output_style"}}
+{"uuid":"573f196c-03cb-4ce9-9c89-aaba8fa920ad","parentUuid":"6dba7fc2-0b9d-4fde-8643-639dc43f5915","type":"attachment","isSidechain":false,"attachment":{"type":"command_permissions"}}
+{"uuid":"ef434686-8bd8-494b-af26-16de15fb359b","parentUuid":"573f196c-03cb-4ce9-9c89-aaba8fa920ad","type":"attachment","isSidechain":false,"attachment":{"type":"session_context"}}
+{"uuid":"da2822f1-bc87-4256-8d85-b22adbd76362","parentUuid":"ef434686-8bd8-494b-af26-16de15fb359b","type":"attachment","isSidechain":false,"attachment":{"type":"date"}}
+{"uuid":"50bcbe74-b083-4f6d-a2a3-d0a2abf769f3","parentUuid":"da2822f1-bc87-4256-8d85-b22adbd76362","type":"attachment","isSidechain":false,"attachment":{"type":"remote_session_change"}}
+{"uuid":"1d2f9f5e-3bf6-4726-8b4d-dcf21ec07292","parentUuid":"50bcbe74-b083-4f6d-a2a3-d0a2abf769f3","type":"attachment","isSidechain":false,"attachment":{"type":"prompt_snapshot"}}
+{"uuid":"8855258c-90ab-4344-a8a0-ed15fa4c15d6","parentUuid":"1d2f9f5e-3bf6-4726-8b4d-dcf21ec07292","type":"assistant","isSidechain":false,"message":{"role":"assistant","model":"claude-sonnet-5-5","content":[{"type":"thinking"}]}}
+{"uuid":"6a8119dd-1702-4bff-b869-88b9d4887eaf","parentUuid":"8855258c-90ab-4344-a8a0-ed15fa4c15d6","type":"assistant","isSidechain":false,"message":{"role":"assistant","model":"claude-sonnet-5-5","content":[{"type":"text","text":"Hi! I haven't said anything yet in this chat, so there's nothing to restate. What do you want to work on?"}]}}
+{"uuid":"432f5c66-750c-4067-a394-44d45fcac276","parentUuid":"6a8119dd-1702-4bff-b869-88b9d4887eaf","type":"attachment","isSidechain":false,"attachment":{"type":"prompt_snapshot"}}

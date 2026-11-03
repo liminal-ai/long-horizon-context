@@ -43,7 +43,7 @@ const check = (seam, ok, detail) => {
 };
 
 if (!existsSync(join(plugin, "hooks", "register.js"))) {
-  console.error(`seam-check: no built plugin at ${plugin}; run pnpm --filter cc-lhc-mod build`);
+  console.error(`seam-check: no built plugin at ${plugin}; run pnpm --filter lhc build && pnpm --filter claude-adapter build && pnpm --filter cc-lhc-mod build`);
   process.exit(2);
 }
 console.log(`seam-check: ${execFileSync(claude, ["--version"], { encoding: "utf8" }).trim()} model ${model}`);
