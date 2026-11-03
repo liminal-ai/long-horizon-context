@@ -21,6 +21,7 @@ and `S` the tmux session name. Run every drive from the repo root with
 | [Resume after a compaction](#resume-after-a-compaction) | exit, then `claude --resume <id>` | `stop.sh`, `launch.sh` |
 | [Compaction fallback](#compaction-fallback) | sidecar killed, compaction failing, outbox not drained | `kill` the sidecar PID, `chmod 000` the thread file |
 | [Compaction cost](#compaction-cost) | a 300k-token session, LHC and native | `synth-transcript.mjs`, `claude -p --resume` |
+| [Derivations](#derivations) | `inferenceWorker` `bridge` or `sdk`, idle and mid-turn, a reload or Escape while one runs | `derive-perf.sh`, `say.sh`, edit `dist/plugin/hooks/register.js` |
 | [Retrieval](#retrieval) | `get_turns`, `get_messages`, any permission mode | `say.sh` |
 
 ## Session binding
@@ -246,6 +247,45 @@ exactly one `[Claude Code compaction summary: LHC fell back to native
 compaction] ...` note for the transcript's one `isCompactSummary` row and no
 note for that compaction's caveat, command or stdout rows, and no turn
 recorded before the fallback is rolled back.
+
+## Derivations
+
+Core's derivations run on the session's own client (`bridge`) or the Agent
+SDK worker (`sdk`). Lanes and timing:
+
+```sh
+VERIFY_TMUX_PREFIX=ccv2-lane-<pr>-1 $V/helpers/derive-perf.sh 3
+```
+
+Pass when every run ends `pending=0 failed=0`, the sidecar log names the
+run's lane (`model lane bridge`), and the bridge's median `drain_ms` is
+within 25 percent of the SDK worker's.
+
+A reload while a completion runs. A long reply makes the turn's compression
+call run for several seconds, and the drive saves the mod file as soon as that
+call is claimed:
+
+```sh
+$V/helpers/launch.sh "$S" -- --model sonnet
+$V/helpers/say.sh "$S" "Write about 600 words on how a hash map handles collisions. Use no tools."
+$V/helpers/wait.sh "$H" 'capture hook rows' 180   # the turn ended
+mod() { cat "$H"/lhc/logs/mod-*.log | grep -ac "$1"; }
+until [ "$(mod claimed)" -gt "$(mod 'answered in')" ]; do sleep 0.1; done   # its compression call is in flight
+echo "// reload" >> packages/cc-lhc-mod/dist/plugin/hooks/register.js
+$V/helpers/wait.sh "$H" 'source reload' 30
+pnpm --filter cc-lhc-mod build                    # restore the bundle (another reload)
+```
+
+Pass when the cut-off request has no `answered` line in the old mod log, the
+old sidecar log ends `exit SIGTERM`, the new mod log claims and answers a
+request within seconds of `source reload`, and `thread health` ends
+`pending=0 failed=0`.
+
+Escape while derivations run: after `$V/helpers/fixtures.sh "$H"`, send "Read f1.txt, f2.txt and f3.txt with the
+Read tool one at a time, then reply DONE.", wait for `bridge .* claimed`, and
+press Escape in the pane (`tmux send-keys -t "=$S:" Escape`). Pass when the
+claimed request logs `answered` and `thread health` ends `pending=0
+failed=0`.
 
 ## Retrieval
 

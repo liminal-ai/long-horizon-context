@@ -3,14 +3,16 @@ import { RETRIEVAL_MAX_IDS, type RetrievalOp, runRetrieval } from "claude-adapte
 import type { Lhc } from "lhc";
 import type { CaptureEntry, CaptureReply } from "../../src/capture.ts";
 import type { CompactAnswer, CompactRequest, RetrieveAnswer, RetrieveRequest } from "../../src/compact.ts";
+import type { BridgeOutcome, BridgeRequest, BridgeResult } from "../../src/inference.ts";
 import { answerCompact } from "./compact.ts";
 import { HARNESS } from "./capture/map.ts";
 import { type Binding, openRecording, type Recorder, type Recording } from "./capture/recorder.ts";
+import type { Bridge } from "./inference-bridge.ts";
 
 export type { Binding };
 export type Policy = { window: number; trigger: number; target: number };
 export type SidecarState = { binding: Binding | null; policy: Policy | null; recording: Recording | null };
-export type SidecarDeps = { lhc: Lhc; home: string; ownerPid: number; log: (line: string) => void };
+export type SidecarDeps = { lhc: Lhc; bridge?: Bridge; home: string; ownerPid: number; log: (line: string) => void };
 
 type Route = (body: unknown, state: SidecarState, deps: SidecarDeps) => unknown;
 
@@ -62,6 +64,16 @@ function parseRetrieve(body: unknown): RetrieveRequest {
   return { sessionId, op: op as RetrievalOp, ids, ...(fromToken === undefined ? {} : { fromToken: fromToken as number }) };
 }
 
+const REASONS: ReadonlySet<unknown> = new Set(["api-error", "empty-reply", "aborted"]);
+
+function parseResult(body: unknown): BridgeResult {
+  const { id, outcome } = (body ?? {}) as { id?: unknown; outcome?: Record<string, unknown> };
+  const isValid =
+    outcome?.isAnswered === true ? typeof outcome.text === "string" : outcome?.isAnswered === false && REASONS.has(outcome.reason);
+  if (!isString(id) || !isValid) throw new Error("result needs an id and an outcome");
+  return { id, outcome: outcome as BridgeOutcome };
+}
+
 function recorderFor(state: SidecarState, sessionId: string): Recorder | string {
   if (state.binding?.sessionId !== sessionId) return `the sidecar is bound to ${state.binding?.sessionId ?? "no session"}`;
   if (state.recording?.kind !== "recording") return state.recording?.notice ?? "the session is not recorded";
@@ -104,6 +116,7 @@ const routes: Record<string, Route> = {
     state.binding = binding;
     deps.log(`bound session ${binding.sessionId} transcript ${binding.transcriptPath} source ${binding.source}`);
     if (recording.kind === "refused") deps.log(`not recording: ${recording.notice}`);
+    else void deps.lhc.work.drain(recording.recorder.thread);
     return { ...binding, ...(recording.kind === "refused" ? { notice: recording.notice } : {}) };
   },
   "POST /policy": (body, state, deps) => {
@@ -145,6 +158,14 @@ const routes: Record<string, Route> = {
   },
 };
 
+const unorderedRoutes: Record<string, (body: unknown, bridge: Bridge | undefined) => unknown> = {
+  "POST /inference/claim": (_body, bridge): { requests: BridgeRequest[] } => ({ requests: bridge?.claim() ?? [] }),
+  "POST /inference/result": (body, bridge) => {
+    bridge?.answer(parseResult(body));
+    return {};
+  },
+};
+
 async function readJson(req: IncomingMessage): Promise<unknown> {
   let text = "";
   for await (const chunk of req) text += chunk;
@@ -160,6 +181,16 @@ export function createSidecarServer(deps: SidecarDeps): { server: Server; state:
   const state: SidecarState = { binding: null, policy: null, recording: null };
   let inArrivalOrder: Promise<unknown> = Promise.resolve();
   const server = createServer((req, res) => {
+    const unorderedRoute = unorderedRoutes[`${req.method} ${req.url}`];
+    if (unorderedRoute !== undefined) {
+      void readJson(req)
+        .then((body) => reply(res, 200, unorderedRoute(body, deps.bridge)))
+        .catch((error: unknown) => {
+          deps.log(`refused ${req.method} ${req.url}: ${error instanceof Error ? error.message : String(error)}`);
+          reply(res, 400, { error: String(error) });
+        });
+      return;
+    }
     const route = routes[`${req.method} ${req.url}`];
     if (route === undefined) return reply(res, 404, { error: `no route ${req.method} ${req.url}` });
     const body = readJson(req);
