@@ -41,7 +41,8 @@ claude_cmd() {
   shift 2
   local unset="" name config=""
   for name in "${PARENT_SESSION_ENV[@]}"; do unset+=" -u $name"; done
-  [ -z "${VERIFY_ISOLATED_CONFIG:-}" ] || config="$(isolated_config "$home")"
+  # Isolated unless opted out: /model, /config and the panel write the config dir's settings.json.
+  [ "${VERIFY_ISOLATED_CONFIG:-1}" = 0 ] || config="$(isolated_config "$home")"
   printf 'cd %q && env%s DISABLE_AUTOUPDATER=1 LHC_HOME=%q%s %s claude --plugin-dir %q --debug-file %q' \
     "$home/work" "$unset" "$home/lhc" "$config" "${VERIFY_ENV:-}" "$PLUGIN" "$home/debug-$tag.log"
   printf ' %q' "$@"
@@ -51,7 +52,8 @@ wait_for() {
   local timeout="$1" pattern="$2" deadline=$((SECONDS + $1)) line
   shift 2
   while [ "$SECONDS" -lt "$deadline" ]; do
-    line="$(cat "$@" 2>/dev/null | grep -aE -m1 "$pattern")" && { echo "$line"; return 0; }
+    line="$(grep -ahsE -m1 "$pattern" "$@" || true)"
+    [ -z "$line" ] || { echo "${line%%$'\n'*}"; return 0; }
     sleep 0.2
   done
   echo "TIMEOUT after ${timeout}s waiting for /$pattern/" >&2

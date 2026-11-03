@@ -136,14 +136,19 @@ for (const row of rows.filter((r) => live.has(r.uuid) && r.isCompactSummary !== 
 
 const recorded = [];
 const exported = JSON.parse(readFileSync(exportFile, "utf8"));
+// An exit mid-tool can drop the cut-off call and its result from the transcript after capture recorded both.
+const cutOffTurns = [];
 for (const turn of exported.turns) {
+  const toolIds = new Set();
   for (const message of turn.messages) {
     const content = message.blocks?.[0]?.content ?? {};
     if (message.kind === "assistant_text") recorded.push(`text ${content.text}`);
     if (message.kind === "tool_call") recorded.push(`call ${content.toolCallId}`);
     if (message.kind === "tool_result") recorded.push(`result ${content.toolCallId}`);
     if (message.kind === "user_prompt" && content.steer !== true) recorded.push(`prompt ${content.text}`);
+    if (message.kind === "tool_call" || message.kind === "tool_result") toolIds.add(content.toolCallId);
   }
+  if (turn.outcome === "aborted" && turn.outcomeReason === "interrupted") cutOffTurns.push(toolIds);
 }
 
 const count = (items) => items.reduce((map, item) => map.set(item, (map.get(item) ?? 0) + 1), new Map());
@@ -156,11 +161,17 @@ for (const [item, n] of want) {
   if (got > n) console.log(`duplicated x${got} ${item.slice(0, 120)}`);
   if (got !== n) failures++;
 }
-for (const [item] of have) {
-  if (!want.has(item)) {
-    console.log(`extra ${item.slice(0, 120)}`);
-    failures++;
-  }
+const extras = [...have.keys()].filter((item) => !want.has(item));
+const dropped = [];
+for (const toolIds of cutOffTurns) {
+  const pairs = [...toolIds].filter((id) => extras.includes(`call ${id}`) && extras.includes(`result ${id}`));
+  if (pairs.length === 1 && have.get(`call ${pairs[0]}`) === 1 && have.get(`result ${pairs[0]}`) === 1) dropped.push(pairs[0]);
+}
+for (const id of dropped) console.log(`dropped at exit ${id}: one call and result in a turn closed aborted/interrupted`);
+for (const item of extras) {
+  if (dropped.some((id) => item === `call ${id}` || item === `result ${id}`)) continue;
+  console.log(`extra ${item.slice(0, 120)}`);
+  failures++;
 }
 console.log(`transcript items ${expected.length}, thread items ${recorded.length}`);
 console.log(`compare: ${failures === 0 ? "PASS" : "FAIL"}`);

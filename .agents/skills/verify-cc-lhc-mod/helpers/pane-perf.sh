@@ -4,8 +4,8 @@ set -euo pipefail
 session="$1"
 runs="${2:-10}"
 target="=$session:"
-if [ "${VERIFY_ISOLATED_CONFIG:-}" != "1" ]; then
-  echo "pane-perf.sh types /lhc bounds, which writes the plugin's settings: launch the session with VERIFY_ISOLATED_CONFIG=1 and set it here too." >&2
+if [ "${VERIFY_ISOLATED_CONFIG:-1}" = 0 ]; then
+  echo "pane-perf.sh types /lhc bounds, which writes the plugin's settings: launch the session with an isolated config (drop VERIFY_ISOLATED_CONFIG=0)." >&2
   exit 2
 fi
 if [ "$(tmux display -p -t "$target" '#{alternate_on}')" = "1" ]; then
