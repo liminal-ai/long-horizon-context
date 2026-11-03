@@ -209,6 +209,19 @@ check("output-reserve", /effectiveWindow=80000\b/.test(crossing.debug), "a 100k 
 const crossed = firstCrossing(crossing, 30_000, 67_000);
 check("override-lowers-trigger", crossed.ok, `trigger 30000: ${crossed.detail}`);
 
+// The mod measures context as Claude Code estimates it: the last response's usage plus its estimate of what was
+// appended since. The first auto dispatch must come at the first check at or past the trigger, not a step early or late.
+// The crossing is ordinary text Reads: an image counts 2000 only until the next response, so no live crossing rests on it.
+const dispatch = / compact auto dispatch context (\d+) last check (\d+) trigger (\d+)/.exec(crossing.modLog);
+const [atDispatch, atLastCheck, dispatchTrigger] = (dispatch ?? []).slice(1).map(Number);
+check(
+  "dispatch-at-trigger-text",
+  dispatch !== null && atLastCheck < dispatchTrigger && dispatchTrigger <= atDispatch,
+  dispatch === null
+    ? "no auto dispatch in the mod log"
+    : `last check ${atLastCheck} < trigger ${dispatchTrigger} <= dispatch ${atDispatch}`,
+);
+
 const held = run("Reply with just: ok", { env: smallWindow });
 const heldChecks = checks(held.debug);
 check(
