@@ -90,6 +90,7 @@ function slashCommand(row: Row): string | undefined {
 }
 
 export function isRecorded(row: Row): boolean {
+  // Installed view rows are written as <synthetic>, so dropping them keeps an unclaimed installed copy out of the record.
   if (DROPPED_DOORS.has(row.door) || row.message.role === undefined || row.model === "<synthetic>") return false;
   if (isCommandNoise(row)) return false;
   if (row.door === "attachment" || row.door === "hook-context") {

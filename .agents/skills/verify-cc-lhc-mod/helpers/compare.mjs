@@ -100,7 +100,7 @@ const expected = [];
 const seen = new Set();
 let isInstalling = false;
 // Capture records neither a native summary as a prompt nor Claude Code's own synthetic messages (the refill breaker's).
-// A synthetic row that calls a tool is a real call, such as a retrieval tool the mod serves.
+// An installed view's row that carries a call stands for it: the original can sit behind the boundary.
 const isSynthetic = (row) =>
   row.message?.model === "<synthetic>" && !blocksOf(row.message?.content).some((block) => block.type === "tool_use");
 for (const row of rows.filter((r) => live.has(r.uuid) && r.isCompactSummary !== true && !isSynthetic(r))) {
