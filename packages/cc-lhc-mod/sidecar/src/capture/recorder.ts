@@ -63,6 +63,7 @@ export async function openRecording(deps: Deps, binding: Binding): Promise<Recor
     };
   }
   const recorder = new Recorder(deps, binding, thread, lease.release);
+  await recorder.readAnswered();
   const recovered = await recorder.recover();
   // A turn cannot outlive its Claude Code process: a new one (startup, resume) ends the old process's open turn.
   if (binding.source === "startup" || binding.source === "resume") await recorder.endInterruptedTurn();
@@ -74,6 +75,7 @@ export async function openRecording(deps: Deps, binding: Binding): Promise<Recor
 
 export class Recorder {
   #state: TurnState = SETTLED;
+  #answered = new Set<string>();
   readonly #parents: TranscriptTail;
   readonly receipts: Receipts;
 
@@ -89,6 +91,18 @@ export class Recorder {
     this.release = release;
     this.#parents = new TranscriptTail(binding.transcriptPath);
     this.receipts = new Receipts(deps.home, binding.sessionId);
+  }
+
+  /** The tool calls the record already has a result for, which a later result row must not answer again. */
+  async readAnswered(): Promise<void> {
+    const listed = await this.deps.lhc.messages.list(this.thread);
+    if (!listed.ok) throw new Error(`message read failed: ${listed.error.reason}`);
+    for (const message of listed.value) {
+      if (message.kind !== "tool_result") continue;
+      for (const block of message.blocks) {
+        if (typeof block.content.toolCallId === "string") this.#answered.add(block.content.toolCallId);
+      }
+    }
   }
 
   recover(): Promise<Recovered> {
@@ -124,6 +138,7 @@ export class Recorder {
     this.#parents.read();
     const abandoned = new Set([...this.#parents.abandoned().values()].flat());
     const before = this.#state;
+    const answered = new Set(this.#answered);
     let recorded = 0;
     let pending: MessageEventInput[] = [];
     try {
@@ -141,11 +156,13 @@ export class Recorder {
           recorded += await this.#write(pending);
           pending = await this.#rewind(entry.uuid);
         }
-        const { events, state } = mapEntries([entry], this.#state);
+        const { events, state } = mapEntries([entry], this.#state, answered);
         this.#state = state;
         pending.push(...events);
       }
-      return recorded + (await this.#write(pending));
+      recorded += await this.#write(pending);
+      this.#answered = answered;
+      return recorded;
     } catch (error) {
       this.#state = before;
       throw error;

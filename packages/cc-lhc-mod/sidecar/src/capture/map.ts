@@ -178,16 +178,33 @@ function mapRow(row: Row, state: TurnState): MessageEventInput[] {
   }
 }
 
+/**
+ * The record holds one result per tool call: the first recorded. A later row
+ * answering the same call, such as the replacement Claude Code writes on resume
+ * for a result that never reached the transcript, is dropped.
+ */
+function firstResults(events: MessageEventInput[], answered: Set<string>): MessageEventInput[] {
+  return events.filter((event) => {
+    if (event.eventKind !== "tool_result") return true;
+    const { toolCallId } = event.payload as { toolCallId: string };
+    if (answered.has(toolCallId)) return false;
+    answered.add(toolCallId);
+    return true;
+  });
+}
+
+/** `answered` holds the tool calls the record already has a result for, and gains each one mapped here. */
 export function mapEntries(
   entries: readonly Entry[],
   from: TurnState,
+  answered = new Set<string>(),
 ): { events: MessageEventInput[]; state: TurnState } {
   const events: MessageEventInput[] = [];
   let state = from;
   for (const entry of entries) {
     switch (entry.kind) {
       case "row":
-        events.push(...mapRow(entry, state));
+        events.push(...firstResults(mapRow(entry, state), answered));
         state = {
           ...state,
           afterCaveat: caveatAfter(entry, state.afterCaveat),
