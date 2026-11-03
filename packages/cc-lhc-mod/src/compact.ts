@@ -16,6 +16,9 @@ export type BuiltMessage = {
   toolResults?: BuiltToolResult[];
 };
 
+/** `prune` installs the current view after core prune moves the visibility boundary, with no core compact. */
+export type CompactOp = "compact" | "prune";
+
 /**
  * `guard` is the auto-compact trigger and what Claude Code counts beside the
  * conversation, when its breakdown names both: a view that does not get below
@@ -26,12 +29,14 @@ export type CompactRequest = {
   sessionId: string;
   trigger: string;
   target: number;
+  op?: CompactOp;
   guard?: { trigger: number; fixed: number };
 };
 
 export type CompactAnswer =
   | { kind: "view"; messages: BuiltMessage[]; isMidTurn: boolean; viewTokens: number }
-  | { kind: "native"; reason: string };
+  | { kind: "native"; reason: string }
+  | { kind: "unchanged"; reason: string };
 
 export type RetrieveRequest = { sessionId: string; op: RetrievalOp; ids: string[]; fromToken?: number };
 export type RetrieveAnswer = { text: string; isError: boolean };

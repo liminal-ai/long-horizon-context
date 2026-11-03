@@ -1,7 +1,10 @@
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { RETRIEVAL_MAX_IDS, type RetrievalOp, runRetrieval } from "claude-adapter";
 import type { Lhc } from "lhc";
 import type { BindAnswer, CaptureEntry, CaptureReply } from "../../src/capture.ts";
+import type { Derivations, ExportAnswer, Health } from "../../src/panel.ts";
 import type { CompactAnswer, CompactRequest, RetrieveAnswer, RetrieveRequest } from "../../src/compact.ts";
 import type { BridgeOutcome, BridgeRequest, BridgeResult } from "../../src/inference.ts";
 import { answerCompact } from "./compact.ts";
@@ -42,12 +45,14 @@ function parseEntries(body: unknown): CaptureEntry[] {
 }
 
 function parseCompact(body: unknown): CompactRequest {
-  const { sessionId, trigger, target, guard } = (body ?? {}) as Record<string, unknown>;
+  const { sessionId, trigger, target, op, guard } = (body ?? {}) as Record<string, unknown>;
   if (!isString(sessionId) || !isString(trigger) || !isCount(target)) throw new Error("compact needs sessionId, trigger and target");
-  if (guard === undefined) return { sessionId, trigger, target };
+  if (op !== undefined && op !== "compact" && op !== "prune") throw new Error("compact op is compact or prune");
+  const request: CompactRequest = { sessionId, trigger, target, ...(op === undefined ? {} : { op }) };
+  if (guard === undefined) return request;
   const { trigger: limit, fixed } = (guard ?? {}) as Record<string, unknown>;
   if (!isCount(limit) || typeof fixed !== "number" || !Number.isFinite(fixed) || fixed < 0) throw new Error("compact guard needs trigger and fixed token counts");
-  return { sessionId, trigger, target, guard: { trigger: limit, fixed } };
+  return { ...request, guard: { trigger: limit, fixed } };
 }
 
 const OPS: ReadonlySet<string> = new Set<RetrievalOp>(["get_turns", "get_messages"]);
@@ -95,12 +100,27 @@ export function stopRecording(state: SidecarState): void {
   state.recording = null;
 }
 
+async function derivationsOf(state: SidecarState, deps: SidecarDeps): Promise<Derivations | null> {
+  if (state.recording?.kind !== "recording") return null;
+  const report = await deps.lhc.inspect.health(state.recording.recorder.thread);
+  if (!report.ok) return null;
+  const totals = { ready: 0, pending: 0, failed: 0, blocked: 0 };
+  for (const { counts } of report.value.owners) {
+    totals.ready += counts.ready;
+    totals.pending += counts.pending;
+    totals.failed += counts.failed;
+    totals.blocked += counts.blocked;
+  }
+  return totals;
+}
+
 const routes: Record<string, Route> = {
-  "GET /health": (_body, state) => ({
+  "GET /health": async (_body, state, deps): Promise<Health & { pid: number; binding: Binding | null; policy: Policy | null }> => ({
     pid: process.pid,
     binding: state.binding,
     policy: state.policy,
     recording: state.recording === null ? null : { kind: state.recording.kind, ...describe(state.recording) },
+    derivations: await derivationsOf(state, deps),
   }),
   "POST /bind": async (body, state, deps): Promise<unknown> => {
     const binding = parseBinding(body);
@@ -156,8 +176,22 @@ const routes: Record<string, Route> = {
         : await answerCompact(recorder, request, deps.log).catch(
             (error: unknown): CompactAnswer => ({ kind: "native", reason: String(error) }),
           );
-    if (answer.kind === "native") deps.log(`compact ${request.trigger} answered native: ${answer.reason}`);
+    if (answer.kind === "native") deps.log(`${request.op ?? "compact"} ${request.trigger} answered native: ${answer.reason}`);
     return answer;
+  },
+  "POST /export": async (body, state, deps): Promise<ExportAnswer> => {
+    const { sessionId } = (body ?? {}) as Record<string, unknown>;
+    if (!isString(sessionId)) throw new Error("export needs sessionId");
+    const recorder = recorderFor(state, sessionId);
+    if (typeof recorder === "string") throw new Error(`nothing to export: ${recorder}`);
+    const history = await deps.lhc.threads.exportHistory(recorder.thread);
+    if (!history.ok) throw new Error(`export refused: ${history.error.code}: ${history.error.reason}`);
+    const dir = join(deps.home, "exports");
+    mkdirSync(dir, { recursive: true });
+    const path = join(dir, `${recorder.thread.threadId}-${new Date().toISOString().replaceAll(":", "-")}.json`);
+    writeFileSync(path, `${JSON.stringify(history.value)}\n`);
+    deps.log(`exported ${history.value.turns.length} turns to ${path}`);
+    return { path, turns: history.value.turns.length };
   },
   "POST /retrieve": async (body, state, deps): Promise<RetrieveAnswer> => {
     const request = parseRetrieve(body);

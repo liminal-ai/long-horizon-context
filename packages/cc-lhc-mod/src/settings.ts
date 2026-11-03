@@ -22,7 +22,13 @@ export type CompactPolicy = {
 
 export type ResolvedSettings = { settings: Settings; notices: string[] };
 
-const isPositiveInteger = (value: unknown): value is number => Number.isInteger(value) && (value as number) > 0;
+/** A bound below this is a typo (`140` for `140k`) that would compact on every turn. */
+export const MIN_BOUND = 10_000;
+
+export const isBound = (value: unknown): value is number => Number.isInteger(value) && (value as number) >= MIN_BOUND;
+
+export const isPercent = (value: unknown): value is number =>
+  typeof value === "number" && Number.isFinite(value) && value >= 1 && value <= 100;
 
 export function resolveSettings(options: Readonly<Record<string, unknown>>): ResolvedSettings {
   const notices: string[] = [];
@@ -32,12 +38,10 @@ export function resolveSettings(options: Readonly<Record<string, unknown>>): Res
     notices.push(`${key} ${JSON.stringify(value)} is invalid; using ${DEFAULT_SETTINGS[key]}`);
     return DEFAULT_SETTINGS[key];
   };
-  const isPercent = (value: unknown): value is number =>
-    typeof value === "number" && Number.isFinite(value) && value >= 1 && value <= 100;
   return {
     settings: {
-      lowerBound: pick("lowerBound", isPositiveInteger),
-      upperBound: pick("upperBound", isPositiveInteger),
+      lowerBound: pick("lowerBound", isBound),
+      upperBound: pick("upperBound", isBound),
       compactPercent: pick("compactPercent", isPercent),
     },
     notices,

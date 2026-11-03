@@ -3,6 +3,7 @@ import { modLogPath, socketPath } from "../../src/paths.ts";
 import type { BindAnswer, CaptureEntry, CaptureReply } from "../../src/capture.ts";
 import type { InferenceLane } from "../../src/inference.ts";
 import type { Binding } from "../types";
+import { publishBestEffort } from "./state.ts";
 
 const LOAD_ID = Math.random().toString(36).slice(2, 10);
 
@@ -103,15 +104,23 @@ async function replayBind($: EngineInterface, socket: string): Promise<boolean> 
   }
 }
 
-export async function post($: EngineInterface, path: string, body: unknown): Promise<unknown> {
+async function request($: EngineInterface, path: string, init: { method: "GET" } | { method: "POST"; body: unknown }): Promise<unknown> {
   const response = await $.http.fetch(`http://sidecar${path}`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(body),
+    ...(init.method === "GET"
+      ? { method: "GET" }
+      : { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(init.body) }),
     socketPath: await startSidecar($),
   });
   if (!response.ok) throw new Error(`${path} answered ${response.status} ${response.text}`);
   return JSON.parse(response.text);
+}
+
+export function post($: EngineInterface, path: string, body: unknown): Promise<unknown> {
+  return request($, path, { method: "POST", body });
+}
+
+export function get($: EngineInterface, path: string): Promise<unknown> {
+  return request($, path, { method: "GET" });
 }
 
 /**
@@ -147,7 +156,7 @@ async function sendBind($: EngineInterface, binding: Binding): Promise<void> {
 async function show($: EngineInterface, { threadId, how, notice }: BindAnswer): Promise<void> {
   if (notice !== undefined) $.ui.log(notice);
   if (threadId === undefined) return;
-  $.ui.status(`LHC thread ${threadId} (${how})`);
+  void publishBestEffort($, { thread: { id: threadId, how: how ?? "" } });
   // A fork binds as a fork once: with its thread open, a respawn or reload in this process is a plain restart.
   if (sentBinding?.source === "fork") {
     sentBinding = { ...sentBinding, source: "restart" };

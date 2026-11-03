@@ -136,6 +136,14 @@ jobs:
       - name: Test cc-lhc-mod
         run: pnpm --filter cc-lhc-mod run test
 
+      - name: Install Claude Code 2.1.317
+        run: npm install --global @anthropic-ai/claude-code@2.1.317
+
+      - name: Test cc-lhc-mod inside Claude Code (mod and panel)
+        run: pnpm --filter cc-lhc-mod run test:mod
+        env:
+          DISABLE_AUTOUPDATER: "1"
+
   cc-lhc:
     name: cc-lhc
     runs-on: ubuntu-24.04

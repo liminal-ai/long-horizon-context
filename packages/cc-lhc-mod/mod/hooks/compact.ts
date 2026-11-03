@@ -1,17 +1,36 @@
 import type { EngineInterface, On, SessionCompactInput } from "claude-code";
-import { type CompactAnswer, isReductionInadequate, kilo } from "../../src/compact.ts";
+import { type CompactAnswer, type CompactOp, isReductionInadequate, kilo } from "../../src/compact.ts";
 import type { CompactPolicy } from "../../src/settings.ts";
 import { contextMeasure, lastCheckMeasure, measureCompacted } from "./measure.ts";
 import { currentPolicy } from "./policy.ts";
 import { boundSession, drainOutbox, log, post } from "./sidecar.ts";
+import { publishBestEffort } from "./state.ts";
 
 let isPressureCheckDue = false;
+let requested: CompactOp | undefined;
+let unpruned: { isNoOp: boolean; reason: string } | undefined;
+
+/** The op for the next manual `/compact`, the one the panel runs; auto compactions never take it. */
+export function requestCompact(op: CompactOp | undefined): void {
+  requested = op;
+  unpruned = undefined;
+}
+
+export const unprunedOutcome = (): { isNoOp: boolean; reason: string } | undefined => unpruned;
+
+function opFor(e: SessionCompactInput): CompactOp {
+  if (e.trigger !== "manual" || requested === undefined) return "compact";
+  const op = requested;
+  requested = undefined;
+  return op;
+}
 
 async function askForView(
   $: EngineInterface,
   e: SessionCompactInput,
   policy: CompactPolicy,
   fixed: number | undefined,
+  op: CompactOp,
 ): Promise<CompactAnswer> {
   const sessionId = boundSession();
   if (sessionId === undefined) return { kind: "native", reason: "no session is bound" };
@@ -21,6 +40,7 @@ async function askForView(
       sessionId,
       trigger: e.trigger,
       target: policy.target,
+      op,
       ...(fixed === undefined ? {} : { guard: { trigger: policy.trigger, fixed } }),
     })) as CompactAnswer;
   } catch (error) {
@@ -60,25 +80,40 @@ export function registerCompact(on: On): void {
   on("session.compact", async ($, e, next) => {
     if (e.trigger === "precompute") return { skip: "LHC builds its view when the compaction runs" };
     if (e.agentId !== undefined) return next(e);
+    const op = opFor(e);
     const started = Date.now();
-    const before = (await $.session.usage()).context.tokens;
+    const before = (await $.session.usage()).context.tokens ?? contextMeasure();
     const policy = await currentPolicy($);
     if (e.trigger === "auto") {
       log($, `compact auto dispatch context ${contextMeasure() ?? "unknown"} last check ${lastCheckMeasure() ?? "unknown"} trigger ${policy.trigger}`);
     }
-    measureCompacted();
-    const answer = await askForView($, e, policy, await fixedContext($));
+    const fixed = await fixedContext($);
+    const answer = await askForView($, e, policy, fixed, op);
     const took = Date.now() - started;
-    if (answer.kind === "native") {
+    const at = Date.now();
+    const sized = before === undefined ? {} : { before };
+    if (op === "prune" && answer.kind !== "view") {
+      log($, `prune ${e.trigger} left the context as it was after ${took}ms: ${answer.reason}`);
+      unpruned = { isNoOp: answer.kind === "unchanged", reason: answer.reason };
+      return { skip: `LHC did not prune: ${answer.reason}` };
+    }
+    measureCompacted();
+    if (answer.kind !== "view") {
       log($, `compact ${e.trigger} fell back to native after ${took}ms: ${answer.reason}`);
       $.ui.log(`LHC could not compact (${answer.reason}). Claude Code's own summary runs instead.`);
-      $.ui.status("LHC fell back to Claude Code's summary at the last compaction");
-      return next(e);
+      const native = await next(e);
+      if (native.skip === undefined) {
+        await publishBestEffort($, { lastCompact: { at, op, trigger: e.trigger, ...sized, by: "native", reason: answer.reason }, context: null });
+      }
+      return native;
     }
     const mode = answer.isMidTurn ? "mid-turn" : "settled";
-    const from = before === undefined ? "" : `${kilo(before)} `;
-    log($, `compact ${e.trigger} ${mode} view ${answer.viewTokens} messages ${answer.messages.length} took ${took}ms`);
-    $.ui.status(`LHC compacted ${from}to ${kilo(answer.viewTokens)} (${mode})`);
+    log($, `${op} ${e.trigger} ${mode} view ${answer.viewTokens} messages ${answer.messages.length} took ${took}ms`);
+    const after = answer.viewTokens + (fixed ?? 0);
+    await publishBestEffort($, {
+      lastCompact: { at, op, trigger: e.trigger, ...sized, by: "lhc", after, isMidTurn: answer.isMidTurn },
+      context: after,
+    });
     if (e.instructions !== undefined && e.instructions.trim() !== "") {
       $.ui.log("LHC recorded your /compact instructions as a note. Its view comes from the record, so they were not applied.");
     }

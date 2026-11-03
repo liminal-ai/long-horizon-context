@@ -110,10 +110,14 @@ const isCaveat = (row: Row): boolean => joinedText(row.message.content).trimStar
 /**
  * The person's own request: a submitted prompt, or a slash command that
  * prompts the model (a skill, a plugin or custom command). A built-in local
- * command (/model, /clear) follows its caveat row and is a note.
+ * command (/model, /clear) follows its caveat row and is a note. A row a
+ * plugin sent (`$.command.run`, such as the LHC panel's `/compact`) is never
+ * the person's: it maps as the same row with no prompt door would.
  */
-export const isUserPrompt = (row: Row, afterCaveat = false): boolean =>
-  slashCommand(row) === undefined ? row.door === "prompt" && !isTaskNotification(row) : !afterCaveat;
+export const isUserPrompt = (row: Row, afterCaveat = false): boolean => {
+  if (row.origin === "plugin") return false;
+  return slashCommand(row) === undefined ? row.door === "prompt" && !isTaskNotification(row) : !afterCaveat;
+};
 
 const isPromptCommand = (row: Row, afterCaveat = false): boolean => slashCommand(row) !== undefined && !afterCaveat;
 

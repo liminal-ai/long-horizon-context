@@ -18,6 +18,7 @@ and `S` the tmux session name. Run every drive from the repo root with
 | [Thread lease](#thread-lease) | a second `claude --resume` of a recorded session | `launch.sh` twice on one home |
 | [Rewind](#rewind) | double Escape or `/rewind`, then a new prompt | the picker in tmux |
 | [Capture cost](#capture-cost) | every row | `capture-perf.sh` |
+| [LHC panel](#lhc-panel) | `/lhc`, its buttons and fields, `/lhc status\|compact\|prune\|export\|bounds`, the status line, `/config` auto-compact | `launch.sh` with `VERIFY_ISOLATED_CONFIG=1`, `shot.mjs`, `pane-perf.sh` |
 | [LHC compaction](#lhc-compaction) | auto mid-turn, auto settled, `/compact`, `/compact <text>`, a background job's notification turn | `fixtures.sh`, `say.sh`, `compare.mjs` |
 | [Resume after a compaction](#resume-after-a-compaction) | exit, then `claude --resume <id>` | `stop.sh`, `launch.sh` |
 | [Compaction fallback](#compaction-fallback) | sidecar killed, compaction failing, outbox not drained | `kill` the sidecar PID, `chmod 000` the thread file |
@@ -43,8 +44,8 @@ Pass when the sidecar logs one `bound session <id> transcript <path> source
 
 ## Session threads
 
-Each session id records to one thread, shown in the status line as `LHC
-thread <id> (<how>)`. The sidecar log says `recording session <id> thread
+Each session id records to one thread, shown in the status line as `thread
+<id> (<how>)`. The sidecar log says `recording session <id> thread
 <thread> (<how>)`.
 
 ```sh
@@ -231,7 +232,7 @@ $V/helpers/launch.sh "$S" "$H" -- --model sonnet --resume <id>   # a later bind:
 ```
 
 Pass when the mod logs `compact auto mid-turn view ...` per crossing with no
-`fell back`, the pane's status line reads `LHC compacted ... (mid-turn)`, the
+`fell back`, the pane's status line reads `compacted ... (mid-turn)`, the
 answers are whiskey, echo, romeo, xray, tango, kilo, the debug log has no
 `source=compact` request, the receipt's claimed count equals its expected
 count after the resume bind (`jq '[.claimed, .expected] | map(length)'
@@ -357,4 +358,66 @@ run, `claude -p --debug-file <log> --resume <id> "/compact"` with no plugin, tim
 from `source=compact` to `compact] finished` in the debug log. Pass when the hook's
 p95 is at most 10 s and below native's median, and the next request's input
 after an LHC compact is at most the target plus 40k.
+
+## LHC panel
+
+The pane, the `/lhc` subcommands, the status line and the auto-compact
+warning. Every drive here writes settings, so launch with an isolated config
+and your own evidence dir, and use a cheap model:
+
+```sh
+export VERIFY_ISOLATED_CONFIG=1 VERIFY_EVIDENCE=<run folder>/evidence
+$V/helpers/launch.sh "$S" -- --model haiku
+$V/helpers/say.sh "$S" "/lhc"
+node $V/helpers/shot.mjs png "$S" panel.png
+```
+
+Pass when the pane shows a context figure against the trigger with a bar
+and a percent, `None since Claude Code started.` (the pane's state lives with the Claude process, so a restart such as `/tui fullscreen` clears it) or the last compaction, derivation
+counts, the three settings, `Compacts at <trigger>, back to <target> ·
+<window> window`, and the three buttons, and the status line reads `lhc:
+context <n> of <trigger> (<pct>%) · thread <id> (<how>)`. Under `/tui
+fullscreen` the same pane docks at the right. With
+`VERIFY_ENV=CLAUDE_CODE_AUTO_COMPACT_WINDOW=200000` the pane says
+`Compacts at 167k, back to 80k · 200k window` and `Clamped: a 200k window
+leaves room for 167k at most.`
+
+Settings. Focus the pane with `/lhc` (or `ctrl+x tab`), Tab to a field,
+`C-u`, type a value such as `600k`, Enter; or `/lhc bounds 150k 700k 85`.
+Pass when the pane and the status line show the new trigger at once, the mod
+log has `panel window W trigger T target X pct P` and then a `start` line
+with the same numbers (the write reloads the plugin), `<H>/claude/settings.json`
+holds `pluginConfigs["lhc@inline"].options`, and `~/.claude/settings.json`
+is unchanged. A bad value (`lots`, `140` without its `k`: each bound is at
+least 10k, a percent of 0 or `0x5A`) shows `✗` and changes nothing. For a live crossing at the new trigger, use a 100k compact window
+and an upper bound below it, then fill context as in
+[LHC compaction](#lhc-compaction): the mod log's `compact auto dispatch
+context M last check P trigger T` names the new trigger.
+
+Buttons. In the focused pane press `c`, `p`, `e`. Pass when compact logs
+`compact manual settled view N ...` (never `fell back`), the pane's last
+compaction reads `<before> → <after> by LHC` with `manual · compact ·
+settled`, prune logs `prune manual ...` with a smaller view after a session
+with large tool output, or `✓ Nothing to prune: ...` and `prune manual left
+the context as it was` on a small one, and export shows `✓ Exported <n>
+turns to <H>/lhc/exports/<thread>-<time>.json`, a file that parses.
+`/lhc compact` answers `LHC compacts once this command ends.` and the same
+log line follows. Right after a compaction the pane's context matches
+`/context` within a few hundred tokens. Pressing `p` while a compaction runs
+waits for it, then prunes. Pressing `p` during a turn that crosses the
+trigger leaves that auto compaction a compact (`compact auto ...`) and prunes
+once the turn ends. On an empty session with `/lhc bounds 10k 10k`,
+`c` falls back, Claude Code answers `Not enough messages to compact.`, and
+the pane shows that with `✗` and keeps the last compaction.
+
+Auto-compact warning. `/config`, Enter on `Auto-compact` to turn it off.
+Pass when a toast and a transcript line read `Auto-compact is off, so LHC
+stops compacting: ...`. Turn it back on.
+
+Cost. `$V/helpers/pane-perf.sh "$S" 10` on a session with the pane closed,
+in the default renderer (`/tui default`), with `VERIFY_ISOLATED_CONFIG=1`; it
+refuses a fullscreen session and a run without that variable.
+Pass when the `/lhc` open median is at or below the `/context` median and the
+redraw max is at most 200 ms. Each figure runs from Enter to the text on
+screen, polled every 10 ms, so it includes the command's own run.
 

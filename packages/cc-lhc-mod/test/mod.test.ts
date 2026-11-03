@@ -118,7 +118,7 @@ test("a bind shows the thread the session records to, and why it is not the one 
   await $.classic.SessionStart({ source: "resume", session_id: "session-1", transcript_path: "/t/session-1.jsonl" });
   await policyPosted();
 
-  expect(statuses).toEqual(["LHC thread th_new (replaced)"]);
+  expect(statuses).toEqual(["thread th_new (replaced)"]);
   expect(notices).toEqual(["LHC thread th_old is not adopted."]);
 });
 
@@ -133,7 +133,7 @@ test("a fork shows its copied thread once its first rows are captured", async ($
   await $.session.append({ message: prompt, door: "prompt", origin: { kind: "composer" }, uuid: "row-1" });
   await shown;
 
-  expect(statuses).toEqual(["LHC thread th_fork (forked)"]);
+  expect(statuses).toEqual(["thread th_fork (forked)"]);
 });
 
 test("applySettings sets the override for a 1M window", async ($, on) => {
@@ -232,6 +232,45 @@ test("a fork whose thread is open is rebound as a plain restart, so its running 
   ]);
   const bindings = stored.filter((value) => (value as { sessionId?: unknown }).sessionId !== undefined);
   expect(bindings.map((value) => (value as Body).source)).toEqual(["fork", "restart"]);
+});
+
+test("a command a plugin runs opens no turn, so the person's next prompt opens its own", async ($, on) => {
+  const { posts, policyPosted, openCapture, captured } = engine(on, 1_000_000);
+  on("turn.start", (_, e) => ({ turnId: e.turnId }));
+
+  await $.classic.SessionStart({ source: "startup", session_id: "session-1", transcript_path: "/t/session-1.jsonl" });
+  await policyPosted();
+  const text = (value: string) => ({
+    type: "user" as const,
+    role: "user" as const,
+    content: [{ type: "text" as const, text: value }],
+  });
+  // The LHC panel's /compact, as Claude Code 2.1.317 raises it: by the prompt door, from the plugin, run as an engine turn.
+  await $.session.append({
+    message: text("/compact"),
+    door: "prompt",
+    origin: { kind: "plugin", name: "lhc" },
+    uuid: "row-compact",
+  });
+  await $.turn.start({ text: "/compact", turnId: "turn-2" });
+  await $.session.append({
+    message: text("next prompt"),
+    door: "prompt",
+    origin: { kind: "composer" },
+    uuid: "row-next",
+  });
+  await $.turn.start({ text: "next prompt", turnId: "turn-3" });
+
+  openCapture();
+  await captured(3);
+  const sent = posts
+    .filter((post) => post.path === "/capture")
+    .flatMap((post) => (post.body as { entries: Array<{ kind: string; uuid?: string; turnId?: string }> }).entries);
+  expect(sent.map((entry) => `${entry.kind} ${entry.uuid ?? entry.turnId ?? ""}`)).toEqual([
+    "row row-compact",
+    "row row-next",
+    "turn-start row-next",
+  ]);
 });
 
 test("capture hooks queue rows and turn steps in order and never wait on the sidecar", async ($, on) => {

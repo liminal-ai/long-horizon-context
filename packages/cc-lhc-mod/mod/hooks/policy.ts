@@ -1,6 +1,7 @@
 import type { EngineInterface } from "claude-code";
 import { type CompactPolicy, computePolicy, type ResolvedSettings, resolveSettings } from "../../src/settings.ts";
 import { log, post, runInBackground } from "./sidecar.ts";
+import { publishBestEffort } from "./state.ts";
 
 let options: Record<string, unknown> = {};
 let settings: ResolvedSettings = resolveSettings(options);
@@ -39,6 +40,7 @@ export function applySettings($: EngineInterface, reason: string): void {
     const set = await $.env.set("CLAUDE_AUTOCOMPACT_PCT_OVERRIDE", String(policy.pct));
     if ("deny" in set) throw new Error(`env refused: ${set.deny}`);
     applied = policy;
+    await publishBestEffort($, { settings: settings.settings, policy });
     const clamp = policy.isClamped ? " clamped" : "";
     log(
       $,

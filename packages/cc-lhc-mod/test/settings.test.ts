@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { parseSetting } from "../src/panel.ts";
 import { computePolicy, DEFAULT_SETTINGS, resolveSettings } from "../src/settings.ts";
 
 const engineThreshold = (window: number, pct: number): number => Math.floor(((window - 20_000) * pct) / 100);
@@ -24,8 +25,8 @@ describe("computePolicy", () => {
 
   it("sets an override the engine floors back to exactly the trigger", () => {
     for (const window of [100_000, 200_000, 1_000_000]) {
-      for (let upperBound = 600; upperBound < window; upperBound += 997) {
-        const { policy } = computePolicy(resolveSettings({ upperBound, lowerBound: 500 }), window);
+      for (let upperBound = 10_000; upperBound < window; upperBound += 997) {
+        const { policy } = computePolicy(resolveSettings({ upperBound, lowerBound: 10_000 }), window);
         expect(engineThreshold(window, policy.pct)).toBe(policy.trigger);
       }
     }
@@ -64,6 +65,15 @@ describe("resolveSettings", () => {
       "upperBound 1.5 is invalid; using 800000",
       "compactPercent 120 is invalid; using 90",
     ]);
+  });
+
+  it("refuses a bound below 10k, as the panel does, so a /config typo cannot compact every turn", () => {
+    const { settings, notices } = resolveSettings({ lowerBound: 140, upperBound: 800 });
+    expect(settings).toEqual(DEFAULT_SETTINGS);
+    expect(notices).toEqual(["lowerBound 140 is invalid; using 140000", "upperBound 800 is invalid; using 800000"]);
+    expect(parseSetting("upperBound", "800")).toHaveProperty("error");
+    expect(resolveSettings({ lowerBound: 10_000, upperBound: 10_000 }).notices).toEqual([]);
+    expect(parseSetting("lowerBound", "10k")).toEqual({ field: "lowerBound", value: 10_000 });
   });
 
   it("refuses a percent below 1", () => {

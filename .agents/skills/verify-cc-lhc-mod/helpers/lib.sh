@@ -28,13 +28,22 @@ new_home() {
   echo "$home"
 }
 
+isolated_config() {
+  local home="$1"
+  mkdir -p "$home/claude"
+  [ -f "$home/claude/.claude.json" ] || echo '{"hasCompletedOnboarding":true,"theme":"dark"}' >"$home/claude/.claude.json"
+  printf ' CLAUDE_CONFIG_DIR=%q CLAUDE_CODE_OAUTH_TOKEN="$(python3 -c %q)"' "$home/claude" \
+    'import json,os;print(json.load(open(os.path.expanduser("~/.claude/.credentials.json")))["claudeAiOauth"]["accessToken"])'
+}
+
 claude_cmd() {
   local home="$1" tag="$2"
   shift 2
-  local unset="" name
+  local unset="" name config=""
   for name in "${PARENT_SESSION_ENV[@]}"; do unset+=" -u $name"; done
-  printf 'cd %q && env%s DISABLE_AUTOUPDATER=1 LHC_HOME=%q %s claude --plugin-dir %q --debug-file %q' \
-    "$home/work" "$unset" "$home/lhc" "${VERIFY_ENV:-}" "$PLUGIN" "$home/debug-$tag.log"
+  [ -z "${VERIFY_ISOLATED_CONFIG:-}" ] || config="$(isolated_config "$home")"
+  printf 'cd %q && env%s DISABLE_AUTOUPDATER=1 LHC_HOME=%q%s %s claude --plugin-dir %q --debug-file %q' \
+    "$home/work" "$unset" "$home/lhc" "$config" "${VERIFY_ENV:-}" "$PLUGIN" "$home/debug-$tag.log"
   printf ' %q' "$@"
 }
 

@@ -11,8 +11,8 @@ const candidates = [
 const types = candidates.find((path) => existsSync(path));
 if (types === undefined) {
   console.log(
-    "cc-lhc-mod: SKIP mod type-check and claude plugin test: both need a local Claude Code install " +
-      "(no claude-code.d.ts here). Run them locally per .agents/skills/verify-cc-lhc-mod.",
+    "cc-lhc-mod: SKIP mod type-check: it needs the claude-code.d.ts a local Claude Code lays down. " +
+      "Run it locally per .agents/skills/verify-cc-lhc-mod.",
   );
   process.exit(0);
 }
@@ -34,9 +34,18 @@ writeFileSync(
       noUncheckedIndexedAccess: true,
       noEmit: true,
       skipLibCheck: true,
+      jsx: "react",
+      jsxFactory: "h",
+      jsxFragmentFactory: "Fragment",
     },
     files: [types],
-    include: [join(root, "mod"), join(root, "src"), join(root, "test", "mod.test.ts"), join(root, "test", "hooks")],
+    include: [
+      join(root, "mod"),
+      join(root, "src"),
+      join(root, "test", "mod.test.ts"),
+      join(root, "test", "panel.test.tsx"),
+      join(root, "test", "hooks"),
+    ],
   }),
 );
 console.log(`cc-lhc-mod: mod typecheck against ${types}`);
