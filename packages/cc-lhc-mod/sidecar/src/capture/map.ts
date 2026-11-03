@@ -68,9 +68,10 @@ const COMMAND_ARGS = /<command-args>([\s\S]*?)<\/command-args>/;
 const isCommandNoise = (row: Row): boolean => {
   const text = joinedText(row.message.content).trimStart();
   return (
-    text.startsWith("<local-command-caveat>") ||
-    text.startsWith("<local-command-stdout>") ||
-    text.startsWith("<local-command-stderr>")
+    row.message.type === "user" &&
+    (text.startsWith("<local-command-caveat>") ||
+      text.startsWith("<local-command-stdout>") ||
+      text.startsWith("<local-command-stderr>"))
   );
 };
 

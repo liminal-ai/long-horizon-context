@@ -175,4 +175,16 @@ describe("slash command markup quoted in conversation", () => {
       "assistant_text It looks like <command-name>/example</command-name> in the transcript.",
     ]);
   });
+
+  it("keeps a response that starts with local-command output markup", () => {
+    const script = new Script();
+    script.answer({
+      type: "text",
+      text: "<local-command-stdout>Done</local-command-stdout> is how command output is filed.",
+    });
+
+    const [event] = mapEntries(script.entries, SETTLED).events;
+
+    expect(event?.eventKind).toBe("assistant_text");
+  });
 });
