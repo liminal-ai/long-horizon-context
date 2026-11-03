@@ -72,6 +72,7 @@ export async function openRecording(deps: Deps, binding: Binding): Promise<Recor
 export class Recorder {
   #state: TurnState = SETTLED;
   #afterAbandoned = false;
+  #lastRow: string | undefined;
   readonly #parents: TranscriptTail;
 
   readonly deps: Deps;
@@ -92,7 +93,13 @@ export class Recorder {
       home: this.deps.home,
       sessionId: this.binding.sessionId,
       transcriptPath: this.binding.transcriptPath,
-      capture: (rows) => this.capture(rows),
+      capture: async (entries) => {
+        const recorded = await this.capture(entries);
+        // Recovery's rows are their own stream: the mod's next entry follows none of them.
+        this.#lastRow = undefined;
+        this.#afterAbandoned = false;
+        return recorded;
+      },
     });
   }
 
@@ -105,16 +112,18 @@ export class Recorder {
     this.#parents.read();
     const abandoned = new Set([...this.#parents.abandoned().values()].flat());
     // A turn marker belongs to the row before it, even across batches, so a discarded turn's markers go with its rows.
-    const wasAfterAbandoned = this.#afterAbandoned;
-    const entries = all.filter((entry) => {
-      if (entry.kind === "row") this.#afterAbandoned = abandoned.has(entry.uuid);
-      return entry.kind === "settle" || !this.#afterAbandoned;
-    });
+    const [wasAfterAbandoned, wasLastRow] = [this.#afterAbandoned, this.#lastRow];
     const before = this.#state;
     let recorded = 0;
     let pending: MessageEventInput[] = [];
     try {
-      for (const entry of entries) {
+      for (const entry of all) {
+        if (entry.kind === "row") {
+          this.#afterAbandoned = abandoned.has(entry.uuid);
+          this.#lastRow = entry.uuid;
+        }
+        if (entry.kind !== "settle" && this.#afterAbandoned) continue;
+        if (entry.kind === "turn-end" && entry.turnId !== this.#state.turnId && this.#isPassed()) continue;
         if (entry.kind === "row" && isRecorded(entry) && opensTurn(entry, this.#state)) {
           recorded += await this.#write(pending);
           pending = await this.#rewind(entry.uuid);
@@ -127,8 +136,23 @@ export class Recorder {
     } catch (error) {
       this.#state = before;
       this.#afterAbandoned = wasAfterAbandoned;
+      this.#lastRow = wasLastRow;
       throw error;
     }
+  }
+
+  /**
+   * Whether a turn end from another turn than the open one belongs to a turn
+   * the transcript has moved past: a row opened a later turn after its turn's
+   * last row. A replay after a restart can carry one after recovery has
+   * recorded the next turn. With no row before it, the end is passed if
+   * recovery left a later turn open.
+   */
+  #isPassed(): boolean {
+    const transcript = this.#parents;
+    if (this.#lastRow === undefined) return this.#state.isOpen;
+    const position = transcript.order.get(this.#lastRow);
+    return position !== undefined && position < transcript.lastOpener;
   }
 
   async #write(events: MessageEventInput[]): Promise<number> {

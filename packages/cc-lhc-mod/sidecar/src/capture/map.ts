@@ -22,7 +22,13 @@ export type Entry = CaptureEntry | Settle;
  * Where the open turn stands, and whether the last user row was a local
  * command's caveat, which Claude Code writes just before a built-in command.
  */
-export type TurnState = { isOpen: boolean; step: number | undefined; afterCaveat?: boolean; afterCommand?: boolean };
+export type TurnState = {
+  isOpen: boolean;
+  step: number | undefined;
+  turnId?: string;
+  afterCaveat?: boolean;
+  afterCommand?: boolean;
+};
 
 export const SETTLED: TurnState = { isOpen: false, step: undefined };
 
@@ -174,7 +180,7 @@ export function mapEntries(
         };
         break;
       case "turn-start":
-        state = { ...state, isOpen: true, step: undefined };
+        state = { ...state, isOpen: true, step: undefined, turnId: entry.turnId };
         break;
       case "step":
         state = { ...state, step: entry.index };

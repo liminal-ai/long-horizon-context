@@ -393,3 +393,42 @@ it("a real 65-tool discarded turn cannot split replacement across 200-entry batc
   expect(new Set(replacement.map((m) => m.split(" ")[0])).size).toBe(1);
   expect(replacement.at(-1)).toMatch(/assistant_text replacement done$/);
 });
+
+for (const withRows of [true, false]) {
+  it(`a replayed turn end cannot close the next turn recovery already recorded (${withRows ? "with" : "without"} its rows)`, async () => {
+    const s = new Script();
+    s.toolTurn("a", "first", "a");
+    s.prompt("second");
+    s.turnStart("b");
+    s.step("b", 0);
+    const lastRows = s.entries.length;
+    s.answer({ type: "text", text: "second done" });
+    s.turnEnd("b");
+    const outbox = s.entries.slice(withRows ? lastRows : -1);
+    const committed = s.entries.slice(0, withRows ? lastRows : -1);
+    s.prompt("third");
+    s.turnStart("c");
+    s.step("c", 0);
+    s.answer({ type: "tool_use", id: "c1", name: "Bash", input: {} });
+    s.results("c1");
+    const recoveredLines = s.lines.length;
+    const liveFrom = s.entries.length;
+    s.step("c", 1);
+    s.answer({ type: "text", text: "third done" });
+    const r = await recorder(h);
+    writeTranscript(h, s.lines.slice(0, recoveredLines));
+    await r.capture(committed);
+    r.release();
+
+    const next = await recorder(h);
+    await next.capture(outbox);
+    writeTranscript(h, s.lines);
+    await next.capture(s.entries.slice(liveFrom));
+
+    const recorded = await messages(next);
+    const turnOf = (suffix: string) => recorded.find((m) => m.endsWith(suffix))?.split(" ")[0];
+    expect(turnOf("user_prompt third")).toBeDefined();
+    expect(turnOf("assistant_text third done")).toBe(turnOf("user_prompt third"));
+    expect(next.isTurnOpen).toBe(true);
+  });
+}
