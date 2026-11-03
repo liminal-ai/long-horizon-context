@@ -16,8 +16,10 @@ const promptRow = ($: Engine, uuid: string) =>
 type Sent = { sessionId: string; uuid?: string; turnId?: string };
 type Body = { sessionId: string; source: string; entries: Sent[] };
 
-function engine(on: On, window: number) {
+function engine(on: On, window: number, answers: Record<string, string> = {}) {
   const posts: Post[] = [];
+  const statuses: Array<string | undefined> = [];
+  const notices: string[] = [];
   const envSets: Array<{ name: string; value: string | undefined }> = [];
   const policyWaiters = new Map<number, () => void>();
   const sawPolicy = (count: number): void => policyWaiters.get(count)?.();
@@ -33,7 +35,19 @@ function engine(on: On, window: number) {
     return { value: {} };
   });
   on("fs.write", () => ({ value: undefined }));
-  on("ui.log", () => ({ value: undefined }));
+  on("ui.log", (_, e) => {
+    if (e.to !== "debug") notices.push(e.text);
+    return { value: undefined };
+  });
+  let statusShown: () => void = () => {};
+  const shown = new Promise<void>((resolve) => {
+    statusShown = resolve;
+  });
+  on("ui.status", (_, e) => {
+    statuses.push(e.text);
+    statusShown();
+    return { value: undefined };
+  });
   on("session.id", () => ({ value: "session-1" }));
   let model = "claude-sonnet-5-5";
   const switchModel = (next: string): void => {
@@ -79,11 +93,11 @@ function engine(on: On, window: number) {
     posts.push({ path, body: JSON.parse(e.init?.body ?? "null"), socketPath: e.init?.socketPath });
     for (const waiter of captureWaiters) if (capturedEntries() >= waiter.count) waiter.resolve();
     if (path === "/policy") sawPolicy(posts.filter((post) => post.path === "/policy").length);
-    return { value: { status: 200, ok: true, headers: {}, text: "{}" } };
+    return { value: { status: 200, ok: true, headers: {}, text: answers[path] ?? "{}" } };
   });
   on("classic.SessionStart", () => ({}));
 
-  return { posts, envSets, policyPosted, killFirstChild, switchModel, openCapture, captured };
+  return { posts, envSets, policyPosted, killFirstChild, switchModel, openCapture, captured, statuses, shown, notices };
 }
 
 test("bind posts the session id and transcript path to the sidecar socket", async ($, on) => {
@@ -95,6 +109,31 @@ test("bind posts the session id and transcript path to the sidecar socket", asyn
   const bind = posts.find((post) => post.path === "/bind");
   expect(bind?.body).toEqual({ sessionId: "session-1", transcriptPath: "/t/session-1.jsonl", source: "startup" });
   expect(bind?.socketPath).toMatch(/^\/lhc-test-home\/run\/[a-z0-9]+\.sock$/);
+});
+
+test("a bind shows the thread the session records to, and why it is not the one it had", async ($, on) => {
+  const answer = { threadId: "th_new", how: "replaced", notice: "LHC thread th_old is not adopted." };
+  const { statuses, notices, policyPosted } = engine(on, 1_000_000, { "/bind": JSON.stringify(answer) });
+
+  await $.classic.SessionStart({ source: "resume", session_id: "session-1", transcript_path: "/t/session-1.jsonl" });
+  await policyPosted();
+
+  expect(statuses).toEqual(["LHC thread th_new (replaced)"]);
+  expect(notices).toEqual(["LHC thread th_old is not adopted."]);
+});
+
+test("a fork shows its copied thread once its first rows are captured", async ($, on) => {
+  const { statuses, shown, openCapture } = engine(on, 1_000_000, {
+    "/capture": JSON.stringify({ recorded: 4, threadId: "th_fork", how: "forked" }),
+  });
+
+  await $.classic.SessionStart({ source: "fork", session_id: "session-1", transcript_path: "/t/session-1.jsonl" });
+  openCapture();
+  const prompt = { type: "user" as const, role: "user" as const, content: [{ type: "text" as const, text: "hi" }] };
+  await $.session.append({ message: prompt, door: "prompt", origin: { kind: "composer" }, uuid: "row-1" });
+  await shown;
+
+  expect(statuses).toEqual(["LHC thread th_fork (forked)"]);
 });
 
 test("applySettings sets the override for a 1M window", async ($, on) => {
@@ -145,6 +184,54 @@ test("a replacement sidecar gets the session's binding before anything else", as
     transcriptPath: "/t/session-1.jsonl",
     source: "restart",
   });
+});
+
+test("a replacement sidecar is rebound as a fork, so it still copies the source", async ($, on) => {
+  const { posts, policyPosted, killFirstChild, switchModel, openCapture } = engine(on, 1_000_000);
+  on("turn.start", (_, e) => ({ turnId: e.turnId }));
+  openCapture();
+
+  await $.classic.SessionStart({ source: "fork", session_id: "session-1", transcript_path: "/t/session-1.jsonl" });
+  await policyPosted();
+  killFirstChild();
+  switchModel("claude-opus-5-5");
+  await $.turn.start({ text: "first prompt", turnId: "turn-1" });
+  await policyPosted(2);
+
+  expect(posts.filter((post) => post.path === "/bind").map((post) => (post.body as Body).source)).toEqual([
+    "fork",
+    "fork",
+  ]);
+});
+
+test("a fork whose thread is open is rebound as a plain restart, so its running turn survives", async ($, on) => {
+  const { posts, policyPosted, killFirstChild, switchModel, openCapture, shown } = engine(on, 1_000_000, {
+    "/capture": JSON.stringify({ recorded: 1, threadId: "th_fork", how: "forked" }),
+  });
+  on("turn.start", (_, e) => ({ turnId: e.turnId }));
+  const stored: unknown[] = [];
+  on("state.set", (_, e) => {
+    stored.push((e as { value?: unknown }).value);
+    return { value: { isSet: true, version: stored.length } };
+  });
+  openCapture();
+
+  await $.classic.SessionStart({ source: "fork", session_id: "session-1", transcript_path: "/t/session-1.jsonl" });
+  await policyPosted();
+  const prompt = { type: "user" as const, role: "user" as const, content: [{ type: "text" as const, text: "hi" }] };
+  await $.session.append({ message: prompt, door: "prompt", origin: { kind: "composer" }, uuid: "row-1" });
+  await shown;
+  killFirstChild();
+  switchModel("claude-opus-5-5");
+  await $.turn.start({ text: "hi", turnId: "turn-1" });
+  await policyPosted(2);
+
+  expect(posts.filter((post) => post.path === "/bind").map((post) => (post.body as Body).source)).toEqual([
+    "fork",
+    "restart",
+  ]);
+  const bindings = stored.filter((value) => (value as { sessionId?: unknown }).sessionId !== undefined);
+  expect(bindings.map((value) => (value as Body).source)).toEqual(["fork", "restart"]);
 });
 
 test("capture hooks queue rows and turn steps in order and never wait on the sidecar", async ($, on) => {

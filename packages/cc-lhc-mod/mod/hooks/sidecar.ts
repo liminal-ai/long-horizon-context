@@ -1,6 +1,6 @@
 import type { EngineInterface } from "claude-code";
 import { modLogPath, socketPath } from "../../src/paths.ts";
-import type { CaptureEntry } from "../../src/capture.ts";
+import type { BindAnswer, CaptureEntry, CaptureReply } from "../../src/capture.ts";
 import type { InferenceLane } from "../../src/inference.ts";
 import type { Binding } from "../types";
 
@@ -92,7 +92,7 @@ async function replayBind($: EngineInterface, socket: string): Promise<boolean> 
     const response = await $.http.fetch("http://sidecar/bind", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ ...sentBinding, source: "restart" }),
+      body: JSON.stringify(rebinding(sentBinding, "restart")),
       socketPath: socket,
     });
     log($, `bind session ${sentBinding.sessionId} source restart answered ${response.status}`);
@@ -119,6 +119,12 @@ export async function post($: EngineInterface, path: string, body: unknown): Pro
  * entries behind it go only after it, and an entry leaves only once the
  * sidecar has answered for it.
  */
+/** A fork not yet bound to its thread keeps its source on a rebind, so a sidecar that never saw its first row still copies the source. */
+export const rebinding = (binding: Binding, why: string): Binding => ({
+  ...binding,
+  source: binding.source === "fork" ? "fork" : why,
+});
+
 export function bind($: EngineInterface, binding: Binding): void {
   boundSessionId = binding.sessionId;
   outbox.push({ kind: "bind", binding });
@@ -132,10 +138,21 @@ export function enqueue($: EngineInterface, entry: CaptureEntry): void {
 
 async function sendBind($: EngineInterface, binding: Binding): Promise<void> {
   await $.state.set({ plugin: "lhc", key: "binding" }, binding);
-  const { notice } = (await post($, "/bind", binding)) as { notice?: string };
+  const answer = (await post($, "/bind", binding)) as BindAnswer;
   sentBinding = binding;
   log($, `bind session ${binding.sessionId} source ${binding.source}`);
+  await show($, answer);
+}
+
+async function show($: EngineInterface, { threadId, how, notice }: BindAnswer): Promise<void> {
   if (notice !== undefined) $.ui.log(notice);
+  if (threadId === undefined) return;
+  $.ui.status(`LHC thread ${threadId} (${how})`);
+  // A fork binds as a fork once: with its thread open, a respawn or reload in this process is a plain restart.
+  if (sentBinding?.source === "fork") {
+    sentBinding = { ...sentBinding, source: "restart" };
+    await $.state.set({ plugin: "lhc", key: "binding" }, sentBinding);
+  }
 }
 
 async function send($: EngineInterface): Promise<void> {
@@ -144,7 +161,7 @@ async function send($: EngineInterface): Promise<void> {
     // A replacement sidecar whose replayed bind failed knows no session: replay it here first.
     if (needsReplay) {
       needsReplay = false;
-      if (sentBinding !== undefined) outbox.unshift({ kind: "bind", binding: { ...sentBinding, source: "restart" } });
+      if (sentBinding !== undefined) outbox.unshift({ kind: "bind", binding: rebinding(sentBinding, "restart") });
       continue;
     }
     if (head.kind === "bind") {
@@ -155,7 +172,7 @@ async function send($: EngineInterface): Promise<void> {
     }
     const barrier = outbox.findIndex((item) => item.kind === "bind");
     const batch = outbox.slice(0, Math.min(MAX_BATCH, barrier === -1 ? outbox.length : barrier)) as CaptureEntry[];
-    await post($, "/capture", { entries: batch });
+    await show($, (await post($, "/capture", { entries: batch })) as CaptureReply);
     outbox.splice(0, batch.length);
     failures = 0;
   }

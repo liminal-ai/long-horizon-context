@@ -6,7 +6,7 @@ import { startInferencePump } from "./inference.ts";
 import { measureCheck, measureResponse } from "./measure.ts";
 import { applySettings, appliedPolicy, hasModelChanged, setOption, setOptions } from "./policy.ts";
 import { registerRetrieval, registerRetrievalTools } from "./retrieval.ts";
-import { bind, boundSession, setInference, startSidecar } from "./sidecar.ts";
+import { bind, boundSession, rebinding, setInference, startSidecar } from "./sidecar.ts";
 
 export const register: Register = (on, initial) => {
   setOptions(initial);
@@ -23,7 +23,7 @@ export const register: Register = (on, initial) => {
     await registerRetrievalTools($);
     const { value: binding } = await $.state.get({ plugin: "lhc", key: "binding" });
     if (binding !== undefined && boundSession() === undefined && binding.sessionId === (await $.session.id())) {
-      bind($, { ...binding, source: "reload" });
+      bind($, rebinding(binding, "reload"));
     }
     applySettings($, "start");
     return started;
