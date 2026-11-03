@@ -1,5 +1,5 @@
 import type { CompactReceipt, OpResult } from "lhc";
-import { type BuiltMessage, type CompactAnswer, type CompactRequest, isViewUseless, kilo } from "../../src/compact.ts";
+import { type BuiltMessage, type CompactAnswer, type CompactRequest, kilo } from "../../src/compact.ts";
 import { estimateContent } from "../../src/estimate.ts";
 import type { Recorder } from "./capture/recorder.ts";
 import { projectView } from "./projector.ts";
@@ -59,7 +59,8 @@ export async function answerCompact(
   if (messages.length === 0) return { kind: "native", reason: "the LHC view is empty" };
   viewTokens ??= builtTokens(messages);
   const { guard } = request;
-  if (guard !== undefined && isViewUseless(viewTokens, guard.fixed, guard.trigger)) {
+  // A view that, with Claude Code's fixed overhead, still reaches the trigger reduces nothing and is not installed.
+  if (guard !== undefined && viewTokens + guard.fixed >= guard.trigger) {
     return {
       kind: "native",
       reason: `its view of ${kilo(viewTokens)} plus ${kilo(guard.fixed)} of fixed context would not get below the ${kilo(guard.trigger)} trigger`,

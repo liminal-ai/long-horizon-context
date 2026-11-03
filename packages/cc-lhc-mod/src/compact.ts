@@ -42,18 +42,3 @@ export type RetrieveRequest = { sessionId: string; op: RetrievalOp; ids: string[
 export type RetrieveAnswer = { text: string; isError: boolean };
 
 export const kilo = (tokens: number): string => (tokens < 1000 ? `${tokens}` : `${Math.round(tokens / 1000)}k`);
-
-/** A view that, with Claude Code's fixed overhead, still reaches the trigger reduces nothing and is not installed. */
-export function isViewUseless(viewTokens: number, fixedOverhead: number, trigger: number): boolean {
-  return viewTokens + fixedOverhead >= trigger;
-}
-
-/**
- * Claude Code stops a turn after three refills within three turns of a
- * compact. A context that leaves less than a quarter of the trigger free right
- * after compacting refills in a few steps, so it is called out first.
- */
-
-export function isReductionInadequate(contextTokens: number, trigger: number): boolean {
-  return contextTokens > 0.75 * trigger;
-}

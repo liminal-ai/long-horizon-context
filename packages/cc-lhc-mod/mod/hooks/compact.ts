@@ -1,5 +1,5 @@
 import type { EngineInterface, On, SessionCompactInput } from "claude-code";
-import { type CompactAnswer, type CompactOp, isReductionInadequate, kilo } from "../../src/compact.ts";
+import { type CompactAnswer, type CompactOp, kilo } from "../../src/compact.ts";
 import type { CompactPolicy } from "../../src/settings.ts";
 import { contextMeasure, lastCheckMeasure, measureCompacted } from "./measure.ts";
 import { currentPolicy } from "./policy.ts";
@@ -51,7 +51,9 @@ async function askForView(
 async function checkPressure($: EngineInterface, policy: CompactPolicy): Promise<void> {
   const tokens = (await $.session.usage({ breakdown: "summary" })).context.breakdown?.totalTokens;
   if (tokens === undefined) return;
-  const isInadequate = isReductionInadequate(tokens, policy.trigger);
+  // Claude Code stops a turn after three refills within three turns of a compact. A context that
+  // leaves less than a quarter of the trigger free right after compacting refills in a few steps.
+  const isInadequate = tokens > 0.75 * policy.trigger;
   log($, `post-compact context ${tokens} trigger ${policy.trigger} target ${policy.target} ${isInadequate ? "inadequate" : "ok"}`);
   if (isInadequate) {
     $.ui.log(
