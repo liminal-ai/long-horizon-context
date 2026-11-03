@@ -1478,6 +1478,8 @@ const drives = {
       await until(() => scratchProcesses(scratch).length === 0, "the packed sidecar and its claude to exit after close()", 15_000);
       assert(out.entry === pathToFileURL(join(project, "node_modules/claude-lhc/dist/index.js")).href, `claude-lhc resolved to ${out.entry}, not the installed tarball`);
       assert(existsSync(join(project, "node_modules/claude-lhc/node_modules/lhc/dist/index.js")), "the tarball does not bundle the lhc core");
+      assert(existsSync(join(project, "node_modules/claude-lhc/node_modules/claude-adapter/dist/index.js")), "the tarball does not bundle claude-adapter");
+      assert(!existsSync(join(project, "node_modules/claude-adapter")), "claude-adapter was installed beside the tarball instead of inside it");
       assert(out.created && typeof out.window === "number", `the packed query() did not start a thread and answer getContextUsage: ${JSON.stringify(out)}`);
       assert(scratch.threads().length === 1, `expected 1 thread file, got ${scratch.threads().length}`);
       const installed = JSON.parse(readFileSync(join(project, "node_modules/claude-lhc/package.json"), "utf8"));
@@ -1486,7 +1488,7 @@ const drives = {
       assert(bundle.forbidden.length === 0, `the installed claude-lhc/client bundles ${bundle.forbidden.join(", ")}`);
       const missing = CLIENT_EXPORTS.filter((name) => !bundle.exports.includes(name));
       assert(missing.length === 0, `the installed claude-lhc/client bundle does not export ${missing.join(", ")}`);
-      return `${basename(tarball)} installed in a scratch project; query() from its dist/index.js ran the default sidecar: ${out.created}, window ${out.window}; the installed claude-lhc/client bundles ${CLIENT_EXPORTS.join(", ")} with no lhc, effect, js-tiktoken or Agent SDK module`;
+      return `${basename(tarball)} installed in a scratch project; query() from its dist/index.js ran the default sidecar: ${out.created}, window ${out.window}; lhc and claude-adapter are bundled inside it; the installed claude-lhc/client bundles ${CLIENT_EXPORTS.join(", ")} with no lhc, effect, js-tiktoken or Agent SDK module`;
     } finally {
       mkdirSync(evidenceDir, { recursive: true });
       writeFileSync(join(evidenceDir, "packed-install.log"), `${log.join("\n")}\n`);
