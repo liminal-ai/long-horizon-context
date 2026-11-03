@@ -10,7 +10,10 @@ const candidates = [
 ].filter((path) => path !== undefined && path !== "");
 const types = candidates.find((path) => existsSync(path));
 if (types === undefined) {
-  console.log("cc-lhc-mod: SKIP mod typecheck, no claude-code.d.ts (set CLAUDE_CODE_TYPES or load dist/plugin once)");
+  console.log(
+    "cc-lhc-mod: SKIP mod type-check and claude plugin test: both need a local Claude Code install " +
+      "(no claude-code.d.ts here). Run them locally per .agents/skills/verify-cc-lhc-mod.",
+  );
   process.exit(0);
 }
 

@@ -99,9 +99,22 @@ first check, the 67000 default does not). Pass line: `seam-check: PASS`.
 It removes its scratch dir on a pass and keeps it, with the debug logs, on a fail.
 Interactive seams (`/clear`, reload, a real crossing) are the drives below.
 
-Unit checks: `pnpm --filter cc-lhc-mod test` (settings, sidecar) and
-`pnpm --filter cc-lhc-mod test:mod`, which runs `test/mod.test.ts` under
-`claude plugin test dist/plugin`.
+Unit checks: `pnpm --filter cc-lhc-mod test` (settings, sidecar). CI runs it.
+
+Local-only checks. CI has no Claude Code, so its typecheck logs `SKIP mod
+type-check and claude plugin test` and runs neither. Run both locally before
+every code-ready or fix-round push:
+
+```sh
+helpers/launch.sh <session> && helpers/stop.sh <session>   # Claude Code lays dist/plugin/.claude-plugin/types
+pnpm --filter cc-lhc-mod typecheck   # expect "mod typecheck against .../claude-code/index.d.ts", not SKIP
+pnpm --filter cc-lhc-mod test:mod    # test/mod.test.ts under claude plugin test dist/plugin
+```
+
+The build keeps `dist/plugin/.claude-plugin/types`, so one launch per Claude
+Code version is enough. `CLAUDE_CODE_TYPES=<path to claude-code.d.ts>` points
+the type-check at another copy, such as the one the plugin-authoring skill
+writes. The repo does not vendor that early-access file.
 
 Feature drives are in [features/README.md](features/README.md).
 

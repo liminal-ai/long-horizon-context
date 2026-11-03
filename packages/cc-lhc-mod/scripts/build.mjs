@@ -6,8 +6,11 @@ import { build } from "esbuild";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const out = join(root, "dist", "plugin");
 
-rmSync(out, { recursive: true, force: true });
-mkdirSync(out, { recursive: true });
+// Keep .claude-plugin/types: Claude Code lays it there when it loads the plugin, and typecheck-mod.mjs reads it.
+for (const built of ["hooks", "sidecar", "test", "types", ".claude-plugin/plugin.json"]) {
+  rmSync(join(out, built), { recursive: true, force: true });
+}
+mkdirSync(join(out, ".claude-plugin"), { recursive: true });
 
 await build({
   entryPoints: [join(root, "mod", "hooks", "register.ts")],
