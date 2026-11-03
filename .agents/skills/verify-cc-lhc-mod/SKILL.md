@@ -1,6 +1,6 @@
 ---
 name: verify-cc-lhc-mod
-description: "Verify cc-lhc-mod (packages/cc-lhc-mod, the Claude Code mod plus per-process Node sidecar for LHC) the way a user runs it: plain claude with --plugin-dir in an isolated tmux session, a throwaway LHC home and a pinned Claude Code version. Use when proving the mod's sidecar, session binding, settings and compact trigger, reload, or the seam check on a new Claude Code release."
+description: "Verify cc-lhc-mod (packages/cc-lhc-mod, the Claude Code mod plus per-process Node sidecar for LHC) the way a user runs it: plain claude with --plugin-dir in an isolated tmux session, a throwaway LHC home and a pinned Claude Code version. Use when proving the mod's sidecar, session binding, settings and compact trigger, reload, capture into the LHC thread (rows, recovery, lease, rewind), or the seam check on a new Claude Code release."
 ---
 
 # Verify cc-lhc-mod
@@ -19,7 +19,23 @@ Facts from the code. Read them before driving:
   Every drive sets `LHC_HOME` to a throwaway dir. Never point it at a real home.
 - Layout under the LHC home (`src/paths.ts`): `run/<load id>.sock` in a mode
   0700 directory, `logs/mod-<load id>.log` and `logs/sidecar-<load id>.log`.
-  One load id per module load, so a hot reload starts a new pair.
+  One load id per module load, so a hot reload starts a new pair. Capture
+  adds `registry.sqlite` and `threads/` (core), `owners/<thread id>.json` (the
+  lease, holding the Claude process pid) and `cursors/<session id>.json` (the
+  committed transcript offset).
+- Capture (`mod/hooks/capture.ts`, `sidecar/src/capture/`): the mod queues
+  every main-loop `session.append` row and `turn.start`, `turn.step` and
+  `turn.complete` in one outbox and posts it to `/capture` in order; it drops
+  an entry only when the sidecar answers after the commit. The sidecar records
+  into the thread under alias `claude-code:<session id>`. It drops `queue`,
+  `compaction` and `notice` rows, rows with no role, and mechanical attachments
+  by name (`MECHANICAL_ATTACHMENTS` in `sidecar/src/capture/map.ts`). A task
+  notification is a note, a `queued_command` attachment is a steer. At bind it
+  recovers missed rows from the transcript JSONL past the cursor. A prompt
+  whose transcript parent is not the end of the record writes core `rollback`.
+  A second live Claude process on the same thread, and a fork, are refused
+  with a notice in the transcript. `LHC_NO_INFERENCE=1` in the pane's env
+  swaps the Agent SDK summary worker for deterministic derivations.
 - Binding: `classic.SessionStart` (startup, clear, resume, fork, and
   `compact` after each compaction) posts `/bind`. A reload re-runs `session.start` only, so the mod keeps the binding
   in `$.state` and rebinds with source `reload`. The sidecar answers
@@ -84,6 +100,8 @@ validate`, and that the scratch root sits outside any repo. Pass line:
 | `helpers/wait.sh <home> <regex> [timeout]` | Waits for a line in the home's mod, sidecar or debug logs |
 | `helpers/stop.sh <session> [pane file]` | Saves the pane, sends `/exit`, kills that exact tmux session |
 | `helpers/perf.sh [runs]` | Interleaved launches with and without the plugin, launch-to-prompt-box time and sidecar RSS |
+| `helpers/compare.mjs <export.json> <transcript.jsonl>` | Diffs a thread export against the transcript's live branch: prompts, tool calls, tool results, assistant text. Pass line `compare: PASS` |
+| `helpers/capture-perf.sh [runs]` | The same headless 40-call session with and without the plugin, interleaved: wall time, the append hook's p95 own time, commit lag p95 |
 | `helpers/cleanup.sh` | Kills the tmux sessions the helpers recorded, removes recorded homes |
 
 Seam check, headless, run on every Claude Code release:
@@ -124,7 +142,7 @@ Interactive seams (`/clear`, reload, a real crossing) are the drives below.
 Unverified anywhere: the live re-apply after `/model`. There is no seam for
 it and no drive has run it, so report it as unverified, not passed.
 
-Unit checks: `pnpm --filter cc-lhc-mod test` (settings, sidecar). CI runs it.
+Unit checks: `pnpm --filter cc-lhc-mod test` (settings, sidecar, capture, recovery, rewind). CI runs it.
 
 Local-only checks. CI has no Claude Code, so its typecheck logs `SKIP mod
 type-check and claude plugin test` and runs neither. Run both locally before
@@ -162,7 +180,14 @@ Read-only diagnostics, per home:
   `exit <signal>`.
 - Debug log: `<home>/debug-<session>.log`. `autocompact: ... level=ok|warn|compact
   effectiveWindow=E` per check, plugin load and reload lines.
-- Health: `curl --unix-socket <home>/lhc/run/<id>.sock http://x/health`.
+- Health: `curl --unix-socket <home>/lhc/run/<id>.sock http://x/health`,
+  with `recording` naming the thread or the refusal.
+- Capture lines. Sidecar: `recording session <id> thread <thread> recovered
+  R of N transcript rows`, `captured E entries recorded M events lag Lms`,
+  `rewind before prompt <uuid>: rollback keeps through event K`, `not
+  recording: <notice>`. Mod: `capture hook rows N p95 Xms max Yms` per turn.
+- The thread: `node packages/lhc/dist/cli.js thread export --home <home>/lhc
+  --thread-id <thread> --out <file>` and `thread health` with the same flags.
 - Transcript JSONL at the path the bind line names. `compact_boundary` rows
   carry `preTokens`.
 
@@ -188,5 +213,8 @@ Never kill a `claude` or `node` process by pattern. Transcripts under
   `helpers/lib.sh` or `helpers/launch.sh`.
 - Reruns the perf drive: a change to the mod's `session.start` or
   `classic.SessionStart` hooks, the sidecar's startup, or `helpers/perf.sh`.
+- Reruns the capture perf drive: a change to `mod/hooks/capture.ts`,
+  `sidecar/src/capture/`, the sidecar's `/capture` route, or
+  `helpers/capture-perf.sh`.
 - Carries: text in this skill and `features/` that changes no setup, action,
   assertion or evidence. `doctor.sh` always reruns.

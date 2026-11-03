@@ -12,6 +12,11 @@ and `S` the tmux session name. Run every drive from the repo root with
 | [Reload](#reload) | a save to the loaded mod | edit `dist/plugin/hooks/register.js` |
 | [Settings and trigger](#settings-and-trigger) | `userConfig` from settings or `/config`, model window, compact window | seam check `settings-*`, `override-*`, crossing drive |
 | [Launch cost](#launch-cost) | every launch | `perf.sh` |
+| [Capture](#capture) | every main-loop row, interactive and `-p` | `say.sh`, `compare.mjs` |
+| [Capture recovery](#capture-recovery) | sidecar crash, reload, any later bind | `kill -9` the sidecar PID |
+| [Thread lease](#thread-lease) | a second `claude --resume` of a recorded session | `launch.sh` twice on one home |
+| [Rewind](#rewind) | double Escape or `/rewind`, then a new prompt | the picker in tmux |
+| [Capture cost](#capture-cost) | every row | `capture-perf.sh` |
 
 ## Session binding
 
@@ -81,3 +86,72 @@ VERIFY_TMUX_PREFIX=ccv2-lane-<pr> $V/helpers/perf.sh 10
 Pass when the median launch-to-prompt-box time with the mod is at most 300
 ms over plain `claude`, and the sidecar's RSS after bind is under 150 MB.
 Resolution is one `tmux capture-pane` poll, about 55 ms.
+
+## Capture
+
+Every main-loop row lands in the session's thread, in order, once.
+
+```sh
+VERIFY_ENV="LHC_NO_INFERENCE=1" $V/helpers/launch.sh "$S"
+$V/helpers/say.sh "$S" "Create a.txt containing hello, then cat it with Bash, then say done."
+$V/helpers/say.sh "$S" "Run 'sleep 20; echo BG-DONE' with Bash in the background, then 'sleep 8' in the foreground, then run date."
+sleep 4; $V/helpers/say.sh "$S" "Also print STEER-OK at the end."   # a steer, typed mid-turn
+sleep 60                                                               # the task notification's turn
+T=$(grep -ah 'recording session' "$H"/lhc/logs/sidecar-*.log | tail -1 | sed 's/.* thread \(th_[0-9a-f]*\).*/\1/')
+node packages/lhc/dist/cli.js thread export --home "$H/lhc" --thread-id "$T" --out export.json
+node $V/helpers/compare.mjs export.json <transcript path from the bind line>
+node packages/lhc/dist/cli.js thread health --home "$H/lhc" --thread-id "$T"
+```
+
+Pass when `compare: PASS`, the export holds the steer as a `user_prompt`
+with `steer: true` and the task notification as a `runtime_note`, no
+mechanical attachment (`date`, `skill_listing`, `auto_mode`, ...) is in the
+export, and health shows `pending=0 failed=0` once derivations drain. Drop
+`LHC_NO_INFERENCE=1` to prove the Agent SDK summary worker; health then takes
+longer to drain.
+
+## Capture recovery
+
+Rows the sidecar missed come back from the transcript at the next bind.
+
+```sh
+S_PID=$(curl -s --unix-socket "$(ls -t "$H"/lhc/run/*.sock | head -1)" http://x/health | jq .pid)
+$V/helpers/say.sh "$S" "Run with Bash one at a time: 'sleep 3; echo ONE', 'sleep 3; echo TWO', 'echo THREE'. Then say finished."
+sleep 5; kill -9 "$S_PID"
+$V/helpers/wait.sh "$H" 'source restart' 60
+```
+
+Pass when the sidecar log shows `recording session ... recovered R of N`, and
+`compare.mjs` passes on a fresh export. A reload (save to the bundle) drives
+the same path with source `reload`.
+
+## Thread lease
+
+```sh
+$V/helpers/launch.sh "$S2" "$H" -- --resume <session id of $S>
+```
+
+Pass when the second pane shows `LHC thread <id> is already recorded by
+Claude Code process <pid>. This session is not recorded.`, its sidecar log
+says `not recording:`, and the first session keeps recording.
+
+## Rewind
+
+```sh
+tmux send-keys -t "=$S:" Escape; sleep 0.3; tmux send-keys -t "=$S:" Escape   # the picker
+# Up to the second prompt, Enter, then "1. Restore conversation"
+tmux send-keys -t "=$S:" C-u; $V/helpers/say.sh "$S" "Reply with just the word REWOUND."
+```
+
+Pass when the sidecar log says `rewind before prompt <uuid>: rollback keeps
+through event K`, and the export holds no message after the first turn other
+than the new prompt's turn.
+
+## Capture cost
+
+```sh
+VERIFY_ENV="LHC_NO_INFERENCE=1" $V/helpers/capture-perf.sh 3
+```
+
+Pass when every mod run's `hook_p95` is at most 5 ms and `lag_p95` at most
+2000 ms. Wall times compare the two modes; model latency dominates them.
