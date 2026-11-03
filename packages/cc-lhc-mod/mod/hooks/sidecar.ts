@@ -64,7 +64,7 @@ export function startSidecar($: EngineInterface): Promise<string> {
       let isListening = false;
       try {
         for await (const piece of child) {
-          pending += piece.text;
+          if (!isListening) pending += piece.text;
           if (!isListening && pending.includes(`listening ${socket}`)) {
             isListening = true;
             const replayed = isReplacement ? replayBind($, socket) : Promise.resolve(true);

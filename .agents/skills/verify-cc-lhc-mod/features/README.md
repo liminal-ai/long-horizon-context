@@ -11,6 +11,7 @@ and `S` the tmux session name. Run every drive from the repo root with
 | [Session binding](#session-binding) | startup, `/clear`, `/resume`, `--continue`, `--resume`, `-p` | `launch.sh`, `say.sh`, seam check `bind-*` |
 | [Session threads](#session-threads) | `/clear`, `/resume`, `--continue`, `--resume --fork-session`, an older host's thread | `launch.sh`, `say.sh`, `compare.mjs` |
 | [Reload](#reload) | a save to the loaded mod | edit `dist/plugin/hooks/register.js` |
+| [Hangup](#hangup) | a closed terminal or killed tmux pane, idle, mid-turn or right after Escape | `tmux kill-session`, `stop.sh` |
 | [Settings and trigger](#settings-and-trigger) | `userConfig` from settings or `/config`, model window, compact window | seam check `settings-*`, `override-*`, crossing drive |
 | [Launch cost](#launch-cost) | every launch | `perf.sh` |
 | [Capture](#capture) | every main-loop row, interactive and `-p` | `say.sh`, `compare.mjs` |
@@ -98,6 +99,30 @@ pnpm --filter cc-lhc-mod build                    # restore the bundle
 
 Pass when the old sidecar log ends `exit SIGTERM`, a new sidecar log binds
 the same id with source `reload`, and `run/` holds only the new socket.
+
+## Hangup
+
+A hangup (a closed terminal, a killed tmux pane) sends SIGHUP to Claude and
+its sidecar together. A dying Claude can still post to the sidecar and spawn
+a replacement, which the system reparents before it starts. The sidecar writes a
+newline to stdout every 5 s, and only its Claude reads that pipe, so it logs
+`exit orphaned` and leaves once the write fails.
+
+```sh
+$V/helpers/launch.sh "$S" -- --model sonnet
+$V/helpers/fixtures.sh "$H"
+$V/helpers/say.sh "$S" "Read f1.txt, f2.txt and f3.txt with the Read tool one at a time, then reply DONE."
+$V/helpers/wait.sh "$H" 'bridge .* claimed' 90
+tmux send-keys -t "=$S:" Escape; sleep 1.5
+$V/helpers/stop.sh "$S"        # appends /exit to the restored prompt, then kills the pane
+sleep 12
+pgrep -f -- "--home $H/lhc "   # lists your own sidecars only
+```
+
+Run it idle and mid-turn with a plain `tmux kill-session -t "=$S"` too. Pass
+when no sidecar of the home is left 12 s after the kill. A respawn during the
+teardown shows in the sidecar log as a second `listening` line followed by
+`exit orphaned`. The Escape variant hit it in one run of four.
 
 ## Settings and trigger
 

@@ -105,4 +105,48 @@ describe("sidecar", () => {
 
     expect(acquireLease(home, threadId, process.ppid)).toEqual({ held: false, ownerPid: process.pid });
   });
+
+  // The owner stands in for Claude Code: it spawns the sidecar with piped output, as $.process.spawn does, then dies.
+  async function orphan(id: string, ownerDies: "at-spawn" | "once-listening"): Promise<boolean> {
+    const owner = spawn(
+      process.execPath,
+      [
+        "-e",
+        `const c = require("node:child_process").spawn(process.execPath, process.argv.slice(1), { stdio: ["ignore", "pipe", "pipe"] });
+        process.stdout.write(c.pid + "\\n");
+        if (process.env.OWNER_DIES === "at-spawn") process.exit(0);
+        c.stdout.on("data", (d) => String(d).includes("listening") && process.exit(0));`,
+        main,
+        "--home",
+        home,
+        "--id",
+        id,
+      ],
+      { stdio: ["ignore", "pipe", "inherit"], env: { ...process.env, OWNER_DIES: ownerDies } },
+    );
+    const pid = await new Promise<number>((resolve) => owner.stdout?.once("data", (d: Buffer) => resolve(Number(d))));
+    await new Promise((resolve) => owner.once("exit", resolve));
+    const isAlive = (): boolean => {
+      try {
+        process.kill(pid, 0);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    for (let waited = 0; waited < 12_000 && isAlive(); waited += 100) await new Promise((r) => setTimeout(r, 100));
+    const survived = isAlive();
+    if (survived) process.kill(pid, "SIGKILL");
+    return !survived;
+  }
+
+  it("exits once the Claude process that spawned it has died, even when it died before the sidecar started", async () => {
+    expect(await orphan("orphan1", "at-spawn")).toBe(true);
+    expect(readFileSync(join(home, "logs", "sidecar-orphan1.log"), "utf8")).toContain("exit orphaned");
+  }, 20_000);
+
+  it("exits once the Claude process that spawned it dies while it is listening", async () => {
+    expect(await orphan("orphan2", "once-listening")).toBe(true);
+    expect(readFileSync(join(home, "logs", "sidecar-orphan2.log"), "utf8")).toContain("exit orphaned");
+  }, 20_000);
 });
