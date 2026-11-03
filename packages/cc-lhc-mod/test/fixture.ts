@@ -14,6 +14,8 @@ export class Script {
   readonly entries: CaptureEntry[] = [];
   readonly lines: Line[] = [];
   #parent: string | null = null;
+  #opener: string | undefined;
+  readonly #turns = new Map<string, string>();
 
   #row(
     door: string,
@@ -22,6 +24,7 @@ export class Script {
     extra: { origin?: string; model?: string } = {},
   ): string {
     const uuid = randomUUID();
+    if (door === "prompt" || door === "command") this.#opener = uuid;
     this.entries.push({
       kind: "row",
       sessionId: SESSION,
@@ -185,19 +188,29 @@ export class Script {
     return uuid;
   }
 
-  turnStart(turnId: string): void {
-    this.entries.push({ kind: "turn-start", sessionId: SESSION, turnId, at: Date.now() });
+  /**
+   * Turns are named as the mod names them: by the uuid of the prompt or
+   * command row that opened them. Tests keep a short name for each.
+   */
+  turnId(name: string): string {
+    return this.#turns.get(name) ?? name;
   }
 
-  step(turnId: string, index: number): void {
-    this.entries.push({ kind: "step", sessionId: SESSION, turnId, index, at: Date.now() });
+  turnStart(name: string): void {
+    this.#turns.set(name, this.#opener ?? name);
+    this.#opener = undefined;
+    this.entries.push({ kind: "turn-start", sessionId: SESSION, turnId: this.turnId(name), at: Date.now() });
   }
 
-  turnEnd(turnId: string): void {
+  step(name: string, index: number): void {
+    this.entries.push({ kind: "step", sessionId: SESSION, turnId: this.turnId(name), index, at: Date.now() });
+  }
+
+  turnEnd(name: string): void {
     this.entries.push({
       kind: "turn-end",
       sessionId: SESSION,
-      turnId,
+      turnId: this.turnId(name),
       isAborted: false,
       reason: "answer",
       at: Date.now(),

@@ -407,3 +407,26 @@ test("capture stops with one visible notice after repeated failed sends", async 
   expect(f.attempts()).toBe(5);
   expect(f.accepted).toEqual([]);
 });
+
+test("turn markers name the turn by the row that opened it", async ($, on) => {
+  const { posts, policyPosted, openCapture, captured } = engine(on, 1_000_000);
+  on("turn.start", (_, e) => ({ turnId: e.turnId }));
+  on("turn.complete", () => ({ text: "" }));
+  openCapture();
+
+  await $.classic.SessionStart({ source: "startup", session_id: "session-1", transcript_path: "/t/session-1.jsonl" });
+  await policyPosted();
+  const prompt = { type: "user" as const, role: "user" as const, content: [{ type: "text" as const, text: "hi" }] };
+  await $.session.append({ message: prompt, door: "prompt", origin: { kind: "composer" }, uuid: "prompt-row" });
+  await $.turn.start({ text: "hi", turnId: "engine-turn" });
+  await $.turn.complete({ turnId: "engine-turn", reason: "answer", answer: "", durationMs: 1, isAborted: false });
+  await $.turn.start({ text: "", turnId: "continuation" });
+  await captured(4);
+
+  const markers = posts
+    .filter((post) => post.path === "/capture")
+    .flatMap((post) => (post.body as { entries: Array<{ kind: string; turnId?: string }> }).entries)
+    .filter((entry) => entry.kind !== "row")
+    .map((entry) => `${entry.kind} ${entry.turnId}`);
+  expect(markers).toEqual(["turn-start prompt-row", "turn-end prompt-row", "turn-start continuation"]);
+});

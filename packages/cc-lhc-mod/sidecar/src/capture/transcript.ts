@@ -22,9 +22,8 @@ export class TranscriptTail {
   readonly parents = new Map<string, string | null>();
   readonly compactBoundaries = new Set<string>();
   readonly prompts = new Set<string>();
-  /** Each row's position in the file, and the position of the last row that opened a turn. */
+  /** Each row's position in the file. */
   readonly order = new Map<string, number>();
-  lastOpener = -1;
   /** The summary and the command rows a native compaction writes after it, which no hook ever sees. */
   readonly compactionRows = new Set<string>();
   readonly #logicalParents = new Map<string, string>();
@@ -122,7 +121,6 @@ export class TranscriptTail {
             this.order.set(line.uuid, this.order.size);
             if (row !== undefined) {
               if (isUserPrompt(row, this.#afterCaveat)) this.prompts.add(line.uuid);
-              if (row.door === "prompt" || this.prompts.has(line.uuid)) this.lastOpener = this.order.size - 1;
               this.#afterCaveat = caveatAfter(row, this.#afterCaveat);
             }
             lines.push({ line, end: this.#offset });
