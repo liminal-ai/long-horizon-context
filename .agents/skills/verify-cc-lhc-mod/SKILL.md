@@ -33,7 +33,13 @@ Facts from the code. Read them before driving:
   by name (`MECHANICAL_ATTACHMENTS` in `sidecar/src/capture/map.ts`). A task
   notification, at a turn's start or delivered mid-turn as a `queued_command`,
   is a `runtime_note` holding its `<task-notification>` element; any other
-  `queued_command` is the person's steer. At bind it
+  `queued_command` is the person's steer. The lease outlives a sidecar that
+  exits under a live Claude process (a reload, a kill); a dead owner's lease
+  is taken over at the next bind.
+- Capture limits, accepted for v2. A row live capture missed and recovery
+  later records lands at the end of the record, not in its place. A refused
+  second session still writes to the shared transcript, so the owner's next
+  recovery records its rows. Recovered rows carry no step index. At bind it
   recovers missed rows from the transcript JSONL past the cursor. A prompt
   whose transcript parent is not the end of the record writes core `rollback`.
   A second live Claude process on the same thread, and a fork, are refused
