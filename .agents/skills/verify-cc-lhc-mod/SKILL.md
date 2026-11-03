@@ -1,6 +1,6 @@
 ---
 name: verify-cc-lhc-mod
-description: "Verify cc-lhc-mod (packages/cc-lhc-mod, the Claude Code mod plus per-process Node sidecar for LHC) the way a user runs it: plain claude with --plugin-dir in an isolated tmux session, a throwaway LHC home and a pinned Claude Code version. Use when proving the mod's sidecar, session binding, settings and compact trigger, reload, capture into the LHC thread (rows, recovery, lease, rewind), compaction answered with the LHC view (mid-turn, manual, fallback, resume, install receipts), get_turns and get_messages retrieval, or the seam check on a new Claude Code release."
+description: "Verify cc-lhc-mod (packages/cc-lhc-mod, the Claude Code mod plus per-process Node sidecar for LHC) the way a user runs it: plain claude with --plugin-dir in an isolated tmux session, a throwaway LHC home and a pinned Claude Code version. Use when proving the mod's sidecar, session binding, settings and compact trigger, reload, capture into the LHC thread (rows, recovery, lease, rewind), compaction answered with the LHC view (mid-turn, manual, fallback, resume, install receipts), derivations on the session's own model client or the Agent SDK worker, get_turns and get_messages retrieval, or the seam check on a new Claude Code release."
 ---
 
 # Verify cc-lhc-mod
@@ -78,8 +78,24 @@ Facts from the code. Read them before driving:
 - Lease: a second live Claude process on the same thread is refused with a
   notice in the transcript. The lease outlives a sidecar that exits under a
   live Claude process (a reload, a kill); a dead owner's lease is taken over
-  at the next bind. `LHC_NO_INFERENCE=1` in the pane's env swaps the Agent SDK
-  summary worker for deterministic derivations.
+  at the next bind.
+- Derivations (`sidecar/src/inference-bridge.ts`, `mod/hooks/inference.ts`):
+  the `userConfig` option `inferenceWorker` picks the model lane when the
+  sidecar starts (`--inference bridge|sdk`); a change to it reloads the
+  module, which starts a new sidecar. `bridge` (default): the sidecar queues
+  core's model calls with request ids and core's own prompts, and a pump on
+  `$.clock.every(1000)` in the mod claims them (at most 3 running), runs
+  `$.model.complete` (effort `low` for core's thinking `none`, cap 32000
+  tokens), and posts each result. The bridge routes skip the sidecar's
+  arrival order. An `aborted` completion goes back to the queue, never to
+  core as a failure. A reload kills the sidecar and its queue; core puts the
+  dying sidecar's claimed work items back in the queue on exit, and the new
+  sidecar drains them as soon as its recording opens at bind. A sidecar killed
+  with no exit (`kill -9`) leaves its claim until core's 120 s lease runs out;
+  a second such cut to the same item fails it (`claim_expired_repeatedly`).
+  `sdk`: the Agent SDK summary worker runs in
+  the sidecar, as in CCV2-4. `LHC_NO_INFERENCE=1` in the pane's env swaps
+  either for deterministic derivations.
 - Capture limits, accepted for v2. A row live capture missed and recovery
   later records lands at the end of the record, not in its place; a rewind
   found only by recovery also hides rows recorded live after it. A refused
@@ -199,6 +215,7 @@ validate`, and that the scratch root sits outside any repo. Pass line:
 | `helpers/compare.mjs <export.json> <transcript.jsonl>` | Diffs a thread export against the transcript's live branch: prompts, tool calls, tool results, assistant text. Rows an LHC install appends after a boundary (labeled bands and notes, messages already seen) are skipped. So are Claude Code's own `<synthetic>` messages, such as the refill breaker's, which capture never records. Pass line `compare: PASS` |
 | `helpers/synth-transcript.mjs <work dir> <turns> [lines]` | Writes a resumable Claude Code transcript for `<work dir>` (one Read per turn, about 3.9k tokens each; 77 turns is about 300k) and prints its session id, for the compaction cost drive |
 | `helpers/fixtures.sh <home>` | Writes the compaction drives' inputs into `<home>/work`: `f1.txt` to `f6.txt` (about 8k tokens each, last line `last word: whiskey`, `echo`, `romeo`, `xray`, `tango`, `kilo`) and `pic.png`, a red square |
+| `helpers/derive-perf.sh [runs]` | The same ten-turn interactive session on each model lane, interleaved: turn time, time to drain after the last turn, sidecar RSS and peak, `thread health` |
 | `helpers/capture-perf.sh [runs]` | The same headless 40-call session with and without the plugin, interleaved: wall time, the append hook's p95 own time, commit lag p95 |
 | `helpers/cleanup.sh` | Kills the tmux sessions the helpers recorded, removes recorded homes |
 
@@ -255,7 +272,7 @@ Interactive seams (`/clear`, reload, a real crossing) are the drives below.
 Unverified anywhere: the live re-apply after `/model`. There is no seam for
 it and no drive has run it, so report it as unverified, not passed.
 
-Unit checks: `pnpm --filter cc-lhc-mod test` (settings, sidecar, capture, recovery, rewind, projector, receipts, the compact route, retrieval). CI runs it.
+Unit checks: `pnpm --filter cc-lhc-mod test` (settings, sidecar, capture, recovery, rewind, projector, receipts, the compact route, retrieval, the model bridge). CI runs it.
 
 Local-only checks. CI has no Claude Code, so its typecheck logs `SKIP mod
 type-check and claude plugin test` and runs neither. Run both locally before
@@ -303,6 +320,11 @@ Read-only diagnostics, per home:
   R of N transcript rows`, `captured E entries recorded M events lag Lms`,
   `rewind before prompt <uuid>: rollback keeps through event K`, `not
   recording: <notice>`. Mod: `capture hook rows N p95 Xms max Yms` per turn.
+- Derivation lines. Sidecar: `model lane bridge|sdk|deterministic` at
+  start, `bridge <id> answered N chars`, `bridge <id> failed <kind>: ...`,
+  `bridge <id> aborted, back in the queue`. Mod: `bridge <id> <model>
+  claimed`, `bridge <id> <model> answered|api-error|empty-reply|aborted in
+  Nms`. Core's own failures are in `thread health` (`failed=`).
 - Compaction lines. Sidecar: `compact <trigger> mid-turn|settled view V
   tokens (target X) messages M compact point P degraded D gaps G recovered R
   took Tms`, `compact <trigger> answered native: <reason>`, `<op> <ids>
@@ -346,6 +368,10 @@ Never kill a `claude` or `node` process by pattern. Transcripts under
 - Reruns the compaction and retrieval drives: a change to
   `mod/hooks/compact.ts`, `mod/hooks/retrieval.ts`, `sidecar/src/compact.ts`,
   `projector.ts`, `receipts.ts`, or the `/compact` and `/retrieve` routes.
+- Reruns the derivation drives and `derive-perf.sh`: a change to
+  `mod/hooks/inference.ts`, `sidecar/src/inference-*.ts`, the sidecar's
+  model lane in `main.ts`, the `/inference/*` routes, or
+  `helpers/derive-perf.sh`.
 - Reruns the capture perf drive: a change to `mod/hooks/capture.ts`,
   `sidecar/src/capture/`, the sidecar's `/capture` route, or
   `helpers/capture-perf.sh`.
