@@ -3,7 +3,15 @@ SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REPO_ROOT="$(cd "$SKILL_DIR/../../.." && pwd)"
 PLUGIN="$REPO_ROOT/packages/cc-lhc-mod/dist/plugin"
 MAIN_CHECKOUT="$(git -C "$REPO_ROOT" worktree list --porcelain 2>/dev/null | sed -n '1s/^worktree //p')"
-EVIDENCE_DIR="${VERIFY_EVIDENCE:-${MAIN_CHECKOUT:-$REPO_ROOT}/.pstack/runs/verify-cc-lhc-mod/proof}"
+# One folder per run: its tmux.txt and homes.txt are the only things cleanup.sh may kill or delete.
+# Machines are shared, so an unset VERIFY_EVIDENCE gets a fresh folder, never a shared one.
+if [ -z "${VERIFY_EVIDENCE:-}" ]; then
+  runs="${MAIN_CHECKOUT:-$REPO_ROOT}/.pstack/runs/verify-cc-lhc-mod"
+  mkdir -p "$runs"
+  VERIFY_EVIDENCE="$(mktemp -d "$runs/run-$(date +%Y%m%dT%H%M%S)-XXXX")"
+  echo "VERIFY_EVIDENCE=$VERIFY_EVIDENCE  # export it for the rest of this run" >&2
+fi
+EVIDENCE_DIR="$VERIFY_EVIDENCE"
 # Short, and outside any repo: the sidecar socket path must fit in 107 bytes, and Claude loads CLAUDE.md above its cwd.
 SCRATCH_ROOT="${VERIFY_SCRATCH_ROOT:-${XDG_STATE_HOME:-$HOME/.local/state}/verify-cc-lhc-mod/scratch}"
 mkdir -p "$EVIDENCE_DIR" "$SCRATCH_ROOT"

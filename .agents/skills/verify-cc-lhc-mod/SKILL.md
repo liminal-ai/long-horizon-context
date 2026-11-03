@@ -205,9 +205,13 @@ Feature drives are in [features/README.md](features/README.md).
 
 ## Evidence
 
-Evidence dir is `$VERIFY_EVIDENCE`, default
-`.pstack/runs/verify-cc-lhc-mod/proof` in the main checkout (the first entry
-of `git worktree list`). Throwaway homes go under `$VERIFY_SCRATCH_ROOT`,
+Evidence dir is `$VERIFY_EVIDENCE`, one folder per run, because the machine
+is shared: its `tmux.txt` and `homes.txt` are the only things `cleanup.sh`
+may kill or delete. Set it once at the start of a run and export it, for
+example `export VERIFY_EVIDENCE=$(mktemp -d <main checkout>/.pstack/runs/verify-cc-lhc-mod/run-XXXX)`.
+Unset, each helper makes a fresh `run-<time>-XXXX` folder under
+`.pstack/runs/verify-cc-lhc-mod` in the main checkout (the first entry of
+`git worktree list`) and prints the line to export. Throwaway homes go under `$VERIFY_SCRATCH_ROOT`,
 default `${XDG_STATE_HOME:-~/.local/state}/verify-cc-lhc-mod/scratch`. The
 path stays short because the socket path must fit in 107 bytes, and outside
 any repo because Claude loads each `CLAUDE.md` above its work dir.
@@ -239,8 +243,12 @@ into the evidence dir before cleanup.
 ## Cleanup
 
 ```sh
-.agents/skills/verify-cc-lhc-mod/helpers/cleanup.sh
+VERIFY_EVIDENCE=<your run's folder> .agents/skills/verify-cc-lhc-mod/helpers/cleanup.sh
 ```
+
+It refuses to run without `VERIFY_EVIDENCE`, so it never touches another
+run's sessions or homes. Never kill by a name pattern, and never point
+`VERIFY_EVIDENCE` at a folder another run uses.
 
 It kills only the tmux sessions the helpers recorded in `tmux.txt`, by exact
 name, and removes only `h-*` homes under the scratch root recorded in
