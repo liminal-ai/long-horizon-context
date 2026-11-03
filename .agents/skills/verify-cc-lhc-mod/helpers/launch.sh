@@ -17,4 +17,4 @@ while [ "$(cat "$home"/lhc/logs/sidecar-*.log 2>/dev/null | grep -c 'bound sessi
   sleep 0.2
 done
 echo "HOME=$home"
-grep -ah 'bound session' "$home"/lhc/logs/sidecar-*.log | tail -1
+grep -ah 'bound session' "$home"/lhc/logs/sidecar-*.log | sort | tail -1 # lines lead with ISO times: the newest bind
