@@ -53,7 +53,11 @@ Facts from the code. Read them before driving:
   typed or by `claude -p`) prompts the model and is a `user_prompt` that
   starts a turn. Its caveat, its output and a
   skill's expanded body are dropped, live and recovered. A rollback never keeps a row past
-  the first abandoned one. A branch off the
+  the first abandoned one. Recovery also restores the turn state the
+  transcript shows: a prompt opens a turn, each model response (one message
+  id) is a step with its tool results, and a turn's duration row settles it,
+  so a sidecar reloaded mid-turn knows the turn is open and keeps live step
+  indices. A branch off the
   transcript's active chain (from its last row by parent) that holds a
   person's prompt is abandoned: recovery never records it, and a new prompt
   whose path back to the nearest recorded row passes one writes core

@@ -13,6 +13,11 @@ export const HARNESS = "claude-code";
 
 export type Row = Extract<CaptureEntry, { kind: "row" }>;
 
+/** A turn's end that recovery reads from the transcript: it settles the state and records nothing. */
+export type Settle = { kind: "settle" };
+
+export type Entry = CaptureEntry | Settle;
+
 /**
  * Where the open turn stands, and whether the last user row was a local
  * command's caveat, which Claude Code writes just before a built-in command.
@@ -148,7 +153,7 @@ function mapRow(row: Row, state: TurnState): MessageEventInput[] {
 }
 
 export function mapEntries(
-  entries: readonly CaptureEntry[],
+  entries: readonly Entry[],
   from: TurnState,
 ): { events: MessageEventInput[]; state: TurnState } {
   const events: MessageEventInput[] = [];
@@ -173,6 +178,9 @@ export function mapEntries(
           harness: HARNESS,
           payload: { outcome: entry.isAborted ? "aborted" : "completed", outcomeReason: entry.reason },
         });
+        state = SETTLED;
+        break;
+      case "settle":
         state = SETTLED;
         break;
     }

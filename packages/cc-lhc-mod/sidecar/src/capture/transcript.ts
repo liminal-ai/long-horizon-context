@@ -1,6 +1,6 @@
 import { closeSync, openSync, readSync } from "node:fs";
 import type { CapturedMessage } from "../../../src/capture.ts";
-import { caveatAfter, isUserPrompt, type Row } from "./map.ts";
+import { caveatAfter, type Entry, isUserPrompt, type Row } from "./map.ts";
 
 export type TranscriptLine = {
   uuid: string;
@@ -12,7 +12,7 @@ export type TranscriptLine = {
   isMeta?: boolean;
   isCompactSummary?: boolean;
   origin?: { kind?: string };
-  message?: { role?: string; content?: unknown; model?: string };
+  message?: { id?: string; role?: string; content?: unknown; model?: string };
   attachment?: { type?: string; prompt?: unknown; commandMode?: string; origin?: { kind?: string } };
 };
 
@@ -193,4 +193,42 @@ export function rowOf(line: TranscriptLine): Row | undefined {
     ...(line.message.model === undefined ? {} : { model: line.message.model }),
     at: 0,
   };
+}
+
+/**
+ * The entries live capture would have sent for transcript lines: each row past
+ * `from`, and, from every line, the turn starts, steps and ends that set the
+ * turn state. A prompt opens a turn, each model response (one message id) is
+ * one step with its tool results, and a turn's duration row settles it.
+ */
+export function entriesOf(
+  lines: ReadonlyArray<{ line: TranscriptLine; end: number }>,
+  skip: (uuid: string) => boolean,
+  from: number,
+): Entry[] {
+  const entries: Entry[] = [];
+  let step = -1;
+  let response: string | undefined;
+  let afterCaveat = false;
+  for (const { line, end } of lines) {
+    if (line.type === "system" && line.subtype === "turn_duration") {
+      entries.push({ kind: "settle" });
+      continue;
+    }
+    const row = skip(line.uuid) ? undefined : rowOf(line);
+    if (row === undefined) continue;
+    if (line.type === "assistant" && (line.message?.id ?? line.uuid) !== response) {
+      response = line.message?.id ?? line.uuid;
+      step += 1;
+      entries.push({ kind: "step", sessionId: "", turnId: "", index: step, at: 0 });
+    }
+    if (end > from) entries.push(row);
+    if (row.door === "prompt" || isUserPrompt(row, afterCaveat)) {
+      entries.push({ kind: "turn-start", sessionId: "", turnId: line.uuid, at: 0 });
+      step = -1;
+      response = undefined;
+    }
+    afterCaveat = caveatAfter(row, afterCaveat);
+  }
+  return entries;
 }

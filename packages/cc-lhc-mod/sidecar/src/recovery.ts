@@ -1,7 +1,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { CaptureEntry } from "../../src/capture.ts";
-import { rowOf, TranscriptTail } from "./capture/transcript.ts";
+import type { Entry } from "./capture/map.ts";
+import { entriesOf, TranscriptTail } from "./capture/transcript.ts";
 
 export type Recovered = { scanned: number; recorded: number; offset: number };
 
@@ -20,13 +20,13 @@ export async function recoverTranscript(input: {
   home: string;
   sessionId: string;
   transcriptPath: string;
-  capture: (rows: CaptureEntry[]) => Promise<number>;
+  capture: (entries: Entry[]) => Promise<number>;
 }): Promise<Recovered> {
-  const tail = new TranscriptTail(input.transcriptPath, readCursor(input.home, input.sessionId));
+  const cursor = readCursor(input.home, input.sessionId);
+  const tail = new TranscriptTail(input.transcriptPath);
   const lines = tail.read();
-  const rows = lines.flatMap(({ line }) => (tail.compactionRows.has(line.uuid) ? [] : (rowOf(line) ?? [])));
-  const recorded = await input.capture(rows);
+  const recorded = await input.capture(entriesOf(lines, (uuid) => tail.compactionRows.has(uuid), cursor));
   mkdirSync(join(input.home, "cursors"), { recursive: true });
   writeFileSync(cursorPath(input.home, input.sessionId), JSON.stringify({ offset: tail.offset }));
-  return { scanned: lines.length, recorded, offset: tail.offset };
+  return { scanned: lines.filter(({ end }) => end > cursor).length, recorded, offset: tail.offset };
 }

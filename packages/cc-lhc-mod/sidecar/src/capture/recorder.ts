@@ -6,7 +6,7 @@ import type { Lhc, MessageEventInput, ThreadRef } from "lhc";
 import type { CaptureEntry } from "../../../src/capture.ts";
 import { acquireLease } from "../lease.ts";
 import { type Recovered, recoverTranscript } from "../recovery.ts";
-import { HARNESS, isRecorded, mapEntries, opensTurn, SETTLED, type TurnState } from "./map.ts";
+import { type Entry, HARNESS, isRecorded, mapEntries, opensTurn, SETTLED, type TurnState } from "./map.ts";
 import { TranscriptTail } from "./transcript.ts";
 
 export type Binding = { sessionId: string; transcriptPath: string; source: string };
@@ -95,7 +95,11 @@ export class Recorder {
     });
   }
 
-  async capture(all: readonly CaptureEntry[]): Promise<number> {
+  get isTurnOpen(): boolean {
+    return this.#state.isOpen;
+  }
+
+  async capture(all: readonly Entry[]): Promise<number> {
     // Rows on a branch a rewind left are never recorded, whether live, replayed from the mod's outbox, or recovered.
     this.#parents.read();
     const abandoned = new Set([...this.#parents.abandoned().values()].flat());
