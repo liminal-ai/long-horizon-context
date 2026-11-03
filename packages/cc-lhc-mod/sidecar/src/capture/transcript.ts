@@ -1,6 +1,6 @@
 import { closeSync, openSync, readSync } from "node:fs";
 import type { CapturedMessage } from "../../../src/capture.ts";
-import { isUserPrompt, type Row } from "./map.ts";
+import { caveatAfter, isUserPrompt, type Row } from "./map.ts";
 
 export type TranscriptLine = {
   uuid: string;
@@ -25,6 +25,7 @@ export class TranscriptTail {
   /** The summary and the command rows a native compaction writes after it, which no hook ever sees. */
   readonly compactionRows = new Set<string>();
   readonly #logicalParents = new Map<string, string>();
+  #afterCaveat = false;
   #offset: number;
   #pending = Buffer.alloc(0);
 
@@ -110,7 +111,10 @@ export class TranscriptTail {
                 this.compactionRows.has(line.parentUuid));
             if (isCompactionRow) this.compactionRows.add(line.uuid);
             const row = rowOf(line);
-            if (row !== undefined && isUserPrompt(row)) this.prompts.add(line.uuid);
+            if (row !== undefined) {
+              if (isUserPrompt(row, this.#afterCaveat)) this.prompts.add(line.uuid);
+              this.#afterCaveat = caveatAfter(row, this.#afterCaveat);
+            }
             lines.push({ line, end: this.#offset });
           }
           end = this.#pending.indexOf(10);

@@ -47,10 +47,11 @@ Facts from the code. Read them before driving:
   (typed, `claude -p`, or an old row with no `origin`), the native `/compact`
   line is a note, and the summary and command rows a native compaction
   writes, which no hook sees, are dropped. A slash command is recorded once as
-  `/name args`: one the person typed that prompts the model (a skill, a
-  plugin or custom command; its row carries the person's origin) is a
-  `user_prompt` that starts a turn, and a built-in local command (`/model`,
-  `/clear`; no origin) is a `runtime_note`. Its caveat, its output and a
+  `/name args`: a built-in local command (`/model`, `/clear`), which
+  Claude Code files right after a `<local-command-caveat>` row, is a
+  `runtime_note`; any other command (a skill, a plugin or custom command,
+  typed or by `claude -p`) prompts the model and is a `user_prompt` that
+  starts a turn. Its caveat, its output and a
   skill's expanded body are dropped, live and recovered. A rollback never keeps a row past
   the first abandoned one. A branch off the
   transcript's active chain (from its last row by parent) that holds a

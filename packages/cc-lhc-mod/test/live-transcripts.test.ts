@@ -124,3 +124,34 @@ it("maps live command rows to the same one note as recovery", () => {
 
   expect(notes.map((event) => (event.payload as { text: string }).text)).toEqual(["/model sonnet"]);
 });
+
+it("recovers a claude -p skill command as the person's prompt and a claude -p /model as a note", async () => {
+  const skill = await recovered("print-skill-command-transcript.jsonl");
+  h.cleanup();
+  h = harness();
+  const model = await recovered("print-model-command-transcript.jsonl");
+
+  expect(skill.filter((m) => m.includes("user_prompt") || m.includes("runtime_note"))).toEqual([
+    "t1 user_prompt /bro hello",
+  ]);
+  expect(model.filter((m) => m.includes("user_prompt") || m.includes("runtime_note"))).toEqual([
+    "t1 runtime_note /model sonnet",
+  ]);
+});
+
+it("maps live claude -p command rows, which all arrive unclassified, the same way", () => {
+  const live = (name: string) =>
+    fixture(name)
+      .flatMap((line) => rowOf(line) ?? [])
+      .map((row) => ({ ...row, origin: "unclassified" }));
+
+  const kinds = (name: string) =>
+    mapEntries(live(name), SETTLED).events.map(
+      (event) => `${event.eventKind} ${(event.payload as { text?: string }).text}`,
+    );
+
+  expect(kinds("print-skill-command-transcript.jsonl").filter((k) => !k.startsWith("assistant"))).toEqual([
+    "user_prompt /bro hello",
+  ]);
+  expect(kinds("print-model-command-transcript.jsonl")).toEqual(["runtime_note /model sonnet"]);
+});

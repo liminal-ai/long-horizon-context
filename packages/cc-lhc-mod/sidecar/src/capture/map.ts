@@ -13,7 +13,11 @@ export const HARNESS = "claude-code";
 
 export type Row = Extract<CaptureEntry, { kind: "row" }>;
 
-export type TurnState = { isOpen: boolean; step: number | undefined };
+/**
+ * Where the open turn stands, and whether the last user row was a local
+ * command's caveat, which Claude Code writes just before a built-in command.
+ */
+export type TurnState = { isOpen: boolean; step: number | undefined; afterCaveat?: boolean };
 
 export const SETTLED: TurnState = { isOpen: false, step: undefined };
 
@@ -84,19 +88,22 @@ const NOTIFICATION = /<task-notification>[\s\S]*<\/task-notification>/;
 /** A background task's notification is not something the person said, whichever door it came by. */
 const isTaskNotification = (row: Row): boolean => row.origin === "task-notification";
 
-/** The person, as live capture and the transcript name them; a built-in local command's rows carry neither. */
-const BY_PERSON = new Set(["composer", "human"]);
+const isCaveat = (row: Row): boolean => joinedText(row.message.content).trimStart().startsWith("<local-command-caveat>");
 
 /**
  * The person's own request: a submitted prompt, or a slash command that
- * prompts the model (a skill, a plugin or custom command), which the person
- * typed. A built-in local command (/model, /clear) is a note.
+ * prompts the model (a skill, a plugin or custom command). A built-in local
+ * command (/model, /clear) follows its caveat row and is a note.
  */
-export const isUserPrompt = (row: Row): boolean =>
-  slashCommand(row) === undefined ? row.door === "prompt" && !isTaskNotification(row) : BY_PERSON.has(row.origin);
+export const isUserPrompt = (row: Row, afterCaveat = false): boolean =>
+  slashCommand(row) === undefined ? row.door === "prompt" && !isTaskNotification(row) : !afterCaveat;
+
+/** The caveat flag after a row: set by a caveat, cleared by any other user row. */
+export const caveatAfter = (row: Row, afterCaveat = false): boolean =>
+  row.message.type === "user" ? isCaveat(row) : afterCaveat;
 
 export function opensTurn(row: Row, state: TurnState): boolean {
-  return isUserPrompt(row) && !state.isOpen;
+  return isUserPrompt(row, state.afterCaveat) && !state.isOpen;
 }
 
 function withStep(events: MessageEventInput[], step: number | undefined): MessageEventInput[] {
@@ -125,7 +132,7 @@ function prompt(row: Row, isSteer: boolean): MessageEventInput[] {
 
 function mapRow(row: Row, state: TurnState): MessageEventInput[] {
   if (!isRecorded(row)) return [];
-  if (isUserPrompt(row)) return prompt(row, state.isOpen);
+  if (isUserPrompt(row, state.afterCaveat)) return prompt(row, state.isOpen);
   const command = slashCommand(row);
   if (command !== undefined) return [textEvent(HARNESS, "runtime_note", command, "system", kindlessTextKey(row))];
   if (row.message.name === "queued_command" && !isTaskNotification(row)) return prompt(row, true);
@@ -150,6 +157,7 @@ export function mapEntries(
     switch (entry.kind) {
       case "row":
         events.push(...mapRow(entry, state));
+        state = { ...state, afterCaveat: caveatAfter(entry, state.afterCaveat) };
         break;
       case "turn-start":
         state = { isOpen: true, step: undefined };

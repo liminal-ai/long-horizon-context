@@ -171,11 +171,22 @@ it("round2: classification distinguishes human quote, delivery metadata, command
   s.delivery("mode only");
   delete (s.lines[1]?.attachment as Record<string, unknown>).commandMode;
   delete (s.lines[2]?.attachment as Record<string, unknown>).origin;
+  // A built-in command, as Claude Code files one: its caveat row, then the command row.
   s.lines.push({
-    uuid: "slash",
+    uuid: "caveat",
     parentUuid: s.lines.at(-1)!.uuid,
     type: "user",
-    message: { role: "user", content: "<command-message>help</command-message>\n<command-name>/help</command-name>" },
+    isMeta: true,
+    message: {
+      role: "user",
+      content: "<local-command-caveat>The command below was run by the user.</local-command-caveat>",
+    },
+  });
+  s.lines.push({
+    uuid: "slash",
+    parentUuid: "caveat",
+    type: "user",
+    message: { role: "user", content: "<command-name>/help</command-name>\n<command-message>help</command-message>" },
   });
   const recovered = s.lines.flatMap((x) => rowOf(x as TranscriptLine) ?? []);
   const result = mapEntries(recovered, SETTLED).events;
