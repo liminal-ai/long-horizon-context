@@ -114,42 +114,26 @@ async function gone(pid) {
   return !isAlive(pid);
 }
 
-// Each main-loop request's context, measured as turn.step usage counts it: input + cache read + cache creation.
-function requests(transcriptPath) {
-  const seen = new Map();
-  for (const line of readFileSync(transcriptPath, "utf8").split("\n")) {
-    if (line === "") continue;
-    const row = JSON.parse(line);
-    const usage = row.message?.usage;
-    if (row.type !== "assistant" || row.isSidechain || usage === undefined || seen.has(row.message.id)) continue;
-    const tokens = usage.input_tokens + (usage.cache_read_input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0);
-    seen.set(row.message.id, { at: row.timestamp, tokens });
-  }
-  return [...seen.values()];
-}
-
 const checks = (debug) =>
   [...debug.matchAll(/^(\S+) \[DEBUG\] autocompact: tokens=\S+ level=(\w+) effectiveWindow=\d+/gm)].map((m) => ({
     at: m[1],
     level: m[2],
   }));
 
-// Each check is judged by the context of the last request measured before it. Up to the first compact-level
-// check: none may come while that context is below the trigger, and the first check after it crosses must compact.
-function firstCrossing(run, trigger) {
-  const measured = requests(run.transcript);
-  for (const check of checks(run.debug)) {
-    const before = measured.filter((request) => request.at < check.at).at(-1)?.tokens ?? 0;
-    if (check.level === "compact") {
-      return before >= trigger
-        ? { ok: true, detail: `first compact-level check at ${check.at}, after a request of ${before} tokens` }
-        : { ok: false, detail: `compact-level check at ${check.at} while measured context was ${before}` };
-    }
-    if (before >= trigger) {
-      return { ok: false, detail: `${check.level}-level check at ${check.at} after a request of ${before} tokens` };
-    }
-  }
-  return { ok: false, detail: `no compact-level check; requests ${measured.map((r) => r.tokens).join(", ")}` };
+// The engine records its own count of the context it compacted as the boundary row's preTokens. An override that
+// took holds when the first auto compact ran at or above the trigger and below the engine's default threshold.
+function firstCrossing(run, trigger, engineDefault) {
+  const boundary = readFileSync(run.transcript, "utf8")
+    .split("\n")
+    .filter((line) => line !== "")
+    .map((line) => JSON.parse(line))
+    .find((row) => row.subtype === "compact_boundary" && row.compactMetadata?.trigger === "auto");
+  const pre = boundary?.compactMetadata?.preTokens;
+  if (pre === undefined) return { ok: false, detail: "no auto compact_boundary row in the transcript" };
+  return {
+    ok: pre >= trigger && pre < engineDefault,
+    detail: `first auto compact ran at ${pre} tokens (trigger ${trigger}, engine default ${engineDefault})`,
+  };
 }
 
 const first = run("Reply with just: ok");
@@ -217,8 +201,8 @@ check(
     crossingPolicy.pct === "37.5",
   `window ${crossingPolicy?.window} trigger ${crossingPolicy?.trigger} target ${crossingPolicy?.target} pct ${crossingPolicy?.pct}`,
 );
-check("output-reserve", crossing.debug.includes("effectiveWindow=80000"), "a 100k window gives effectiveWindow=80000");
-const crossed = firstCrossing(crossing, 30_000);
+check("output-reserve", /effectiveWindow=80000\b/.test(crossing.debug), "a 100k window gives effectiveWindow=80000");
+const crossed = firstCrossing(crossing, 30_000, 67_000);
 check("override-lowers-trigger", crossed.ok, `trigger 30000: ${crossed.detail}`);
 
 const held = run("Reply with just: ok", { env: smallWindow });

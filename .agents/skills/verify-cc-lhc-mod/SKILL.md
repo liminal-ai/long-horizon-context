@@ -105,11 +105,11 @@ the built mod. Each seam observes what its name says:
   seams prove the engine side.
 - `settings-from-userConfig`: `--settings` options reach the mod: window
   100000, trigger 30000, target 10000, pct 37.5.
-- `output-reserve`: a 100k window gives `effectiveWindow=80000`.
-- `override-lowers-trigger`: a real crossing at trigger 30000. Each request's
-  context is its transcript usage (input + cache read + cache creation), as
-  `turn.step` counts it. No compact-level check comes while the last measured
-  context is below 30000, and the first check after it crosses compacts.
+- `output-reserve`: a 100k window gives exactly `effectiveWindow=80000`.
+- `override-lowers-trigger`: a real crossing at trigger 30000. The first auto
+  `compact_boundary` row's `compactMetadata.preTokens`, the engine's own count
+  of what it compacted, is at or above 30000 and below the 67000 default.
+  Request usage is not used: it predates the tool result the next check sees.
 - `override-default-holds`: with the defaults (trigger 67000), no check in
   the run is compact-level.
 
