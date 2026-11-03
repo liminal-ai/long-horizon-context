@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { messageKeyPrefix } from "claude-adapter";
 import type { Lhc, MessageEventInput, ThreadRef } from "lhc";
@@ -42,8 +42,15 @@ async function threadFor(lhc: Lhc, home: string, sessionId: string): Promise<Thr
   return { threadId: winner.value.threadId, registryPath };
 }
 
+/** A fork stays refused for the session's life, whatever reason a later bind gives. */
+const forkMark = (home: string, sessionId: string): string => join(home, "forks", sessionId);
+
 export async function openRecording(deps: Deps, binding: Binding): Promise<Recording> {
   if (binding.source === "fork") {
+    mkdirSync(join(deps.home, "forks"), { recursive: true });
+    writeFileSync(forkMark(deps.home, binding.sessionId), "");
+  }
+  if (existsSync(forkMark(deps.home, binding.sessionId))) {
     return { kind: "refused", notice: "LHC does not record forked sessions yet. This session is not recorded." };
   }
   const thread = await threadFor(deps.lhc, deps.home, binding.sessionId);
@@ -84,7 +91,7 @@ export class Recorder {
       home: this.deps.home,
       sessionId: this.binding.sessionId,
       transcriptPath: this.binding.transcriptPath,
-      write: (events) => this.#write(events),
+      capture: (rows) => this.capture(rows),
     });
   }
 
@@ -128,6 +135,7 @@ export class Recorder {
       this.deps.log(`rewind check skipped: prompt ${promptUuid} not in the transcript`);
       return [];
     }
+    if (await this.#hasRecordedDescendant(promptUuid)) return [];
     let keep = 0;
     for (let id: string | null | undefined = parent; typeof id === "string"; id = this.#parents.parents.get(id)) {
       const order = await this.#capturedThrough(id);
@@ -149,6 +157,20 @@ export class Recorder {
         payload: { keepThroughEventOrder: keep, reason: "rewind" },
       },
     ];
+  }
+
+  /** Recovery backfilling a missed prompt finds its answer already recorded; a rewound prompt has none. */
+  async #hasRecordedDescendant(uuid: string): Promise<boolean> {
+    const below = new Set([uuid]);
+    for (const [child, parent] of this.#parents.parents) if (parent !== null && below.has(parent)) below.add(child);
+    below.delete(uuid);
+    if (below.size === 0) return false;
+    const counts = await this.deps.lhc.intakeStream.eventKeyPrefixCounts(
+      this.thread,
+      [...below].map((id) => messageKeyPrefix(HARNESS, id)),
+    );
+    if (!counts.ok) throw new Error(`key lookup failed: ${counts.error.reason}`);
+    return counts.value.some((row) => row.exists);
   }
 
   async #parentOf(uuid: string): Promise<string | null | undefined> {

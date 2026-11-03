@@ -50,3 +50,27 @@ it("writes no rollback when the prompt follows the end of the record", async () 
 
   expect([...(await events(r)).keys()].filter((key) => key.endsWith(":rollback"))).toEqual([]);
 });
+
+it("rolls back a rewind that only recovery sees, after a restart", async () => {
+  const script = new Script();
+  script.toolTurn("turn-1", "first", "toolu_a");
+  const anchor = script.lines.at(-1)?.uuid ?? "";
+  script.toolTurn("turn-2", "second", "toolu_b");
+  const live = script.entries.length;
+  script.rewindTo(anchor);
+  script.prompt("third");
+  const first = await recorder(h);
+  writeTranscript(h, script.lines);
+  await first.capture(script.entries.slice(0, live));
+  first.release();
+
+  const restarted = await recorder(h);
+
+  expect(await messages(restarted)).toEqual([
+    "t1 user_prompt first",
+    "t1 tool_call toolu_a",
+    "t1 tool_result toolu_a",
+    "t1 assistant_text done turn-1",
+    "t3 user_prompt third",
+  ]);
+});

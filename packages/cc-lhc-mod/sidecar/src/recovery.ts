@@ -1,7 +1,6 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { MessageEventInput } from "lhc";
-import { mapEntries, SETTLED } from "./capture/map.ts";
+import type { CaptureEntry } from "../../src/capture.ts";
 import { rowOf, TranscriptTail } from "./capture/transcript.ts";
 
 export type Recovered = { scanned: number; recorded: number; offset: number };
@@ -21,12 +20,12 @@ export async function recoverTranscript(input: {
   home: string;
   sessionId: string;
   transcriptPath: string;
-  write: (events: MessageEventInput[]) => Promise<number>;
+  capture: (rows: CaptureEntry[]) => Promise<number>;
 }): Promise<Recovered> {
   const tail = new TranscriptTail(input.transcriptPath, readCursor(input.home, input.sessionId));
   const lines = tail.read();
   const rows = lines.flatMap(({ line }) => rowOf(line) ?? []);
-  const recorded = await input.write(mapEntries(rows, SETTLED).events);
+  const recorded = await input.capture(rows);
   mkdirSync(join(input.home, "cursors"), { recursive: true });
   writeFileSync(cursorPath(input.home, input.sessionId), JSON.stringify({ offset: tail.offset }));
   return { scanned: lines.length, recorded, offset: tail.offset };

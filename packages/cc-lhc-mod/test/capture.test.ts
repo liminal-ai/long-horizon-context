@@ -99,7 +99,9 @@ describe("capture", () => {
     expect((await record(h, "restart")).kind).toBe("recording");
   });
 
-  it("refuses a forked session until fork is supported", async () => {
+  it("refuses a forked session until fork is supported, across a sidecar restart and a mod reload", async () => {
     expect(await record(h, "fork")).toMatchObject({ kind: "refused", notice: expect.stringContaining("forked") });
+    expect(await record(h, "restart")).toMatchObject({ kind: "refused", notice: expect.stringContaining("forked") });
+    expect(await record(h, "reload")).toMatchObject({ kind: "refused", notice: expect.stringContaining("forked") });
   });
 });
