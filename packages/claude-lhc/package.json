@@ -22,9 +22,9 @@
     "claude-lhc": "./bin/claude-lhc.js"
   },
   "scripts": {
-    "build": "tsc -p ../claude-adapter/tsconfig.json && tsc -p tsconfig.json",
-    "typecheck": "tsc -p ../claude-adapter/tsconfig.json && tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit",
-    "test": "tsc -p ../claude-adapter/tsconfig.json && vitest run",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit",
+    "test": "vitest run",
     "standalone": "node --import tsx scripts/standalone.ts",
     "assemble:npm": "node scripts/assemble-npm-package.mjs"
   },

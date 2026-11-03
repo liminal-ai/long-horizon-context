@@ -49,10 +49,8 @@ From the repo root of a clean checkout:
 
 ```sh
 pnpm install --frozen-lockfile
-pnpm --filter lhc build && pnpm --filter claude-lhc build
+pnpm --filter lhc build && pnpm --filter claude-adapter build && pnpm --filter claude-lhc build
 ```
-
-`claude-lhc build` compiles `packages/claude-adapter` first.
 
 Launch for verification always goes through the harness, which spawns the
 sidecar against empty homes (usable from an empty data dir — `start`

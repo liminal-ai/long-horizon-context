@@ -1714,7 +1714,7 @@ const drives = {
 
 async function main() {
   if (!existsSync(ENTRY)) {
-    console.log(`VERIFY-CLAUDE-LHC preflight: FAIL dist missing (${ENTRY}); build: pnpm --filter lhc build && pnpm --filter claude-lhc build`);
+    console.log(`VERIFY-CLAUDE-LHC preflight: FAIL dist missing (${ENTRY}); build: pnpm --filter lhc build && pnpm --filter claude-adapter build && pnpm --filter claude-lhc build`);
     process.exit(1);
   }
   const which = process.argv[2] ?? "all";
