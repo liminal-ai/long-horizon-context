@@ -3,10 +3,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { formatRetrieval, recallClose, recallOpen } from "claude-adapter";
 import { createDeterministicInferenceCallbacks, initLhc, type Lhc, type ThreadRef } from "lhc";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-
-import { createRetrievalServer, formatRetrieval, recallClose, recallOpen } from "../src/retrieval.ts";
+import { createRetrievalServer } from "../src/retrieval.ts";
 
 let dir = "";
 let lhc: Lhc;

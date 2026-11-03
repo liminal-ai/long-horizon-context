@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const repoRoot = resolve(packageRoot, "..", "..");
 const lhcRoot = join(repoRoot, "packages", "lhc");
+const adapterRoot = join(repoRoot, "packages", "claude-adapter");
 
 function fail(message) {
   console.error(`claude-lhc npm assembly: ${message}`);
@@ -29,6 +30,7 @@ for (let i = 2; i < process.argv.length; i += 2) {
 const readJson = (path) => JSON.parse(readFileSync(path, "utf8"));
 const claudeManifest = readJson(join(packageRoot, "package.json"));
 const lhcManifest = readJson(join(lhcRoot, "package.json"));
+const adapterManifest = readJson(join(adapterRoot, "package.json"));
 
 const outputRoot = resolve(argValue("--out") ?? join(repoRoot, "build", "claude-lhc-npm"));
 const version = argValue("--version") ?? claudeManifest.version;
@@ -39,10 +41,12 @@ const rel = relative(repoRoot, outputRoot);
 if (!rel || rel.startsWith("..") || !rel.startsWith("build")) fail("--out must be under the repo's build/ directory");
 
 function requirePath(path, label) {
-  if (!existsSync(path)) fail(`missing ${label}: ${relative(repoRoot, path)} (build lhc and claude-lhc first)`);
+  if (!existsSync(path))
+    fail(`missing ${label}: ${relative(repoRoot, path)} (build lhc, claude-adapter and claude-lhc first)`);
 }
 requirePath(join(packageRoot, "dist", "sidecar.js"), "claude-lhc dist");
 requirePath(join(lhcRoot, "dist", "index.js"), "lhc dist");
+requirePath(join(adapterRoot, "dist", "index.js"), "claude-adapter dist");
 
 rmSync(outputRoot, { recursive: true, force: true });
 mkdirSync(join(outputRoot, "bin"), { recursive: true });
@@ -53,27 +57,31 @@ cpSync(join(packageRoot, "bin", "claude-lhc.js"), join(outputRoot, "bin", "claud
 cpSync(join(packageRoot, "README.md"), join(outputRoot, "README.md"));
 cpSync(join(repoRoot, "LICENSE"), join(outputRoot, "LICENSE"));
 
-const bundledLhcRoot = join(outputRoot, "node_modules", "lhc");
-cpSync(join(lhcRoot, "dist"), join(bundledLhcRoot, "dist"), { recursive: true, filter: jsAndTypes });
-writeFileSync(
-  join(bundledLhcRoot, "package.json"),
-  `${JSON.stringify(
-    {
-      name: "lhc",
-      version,
-      private: true,
-      type: "module",
-      main: "./dist/index.js",
-      types: lhcManifest.types,
-      exports: lhcManifest.exports,
-      engines: claudeManifest.engines,
-    },
-    null,
-    2,
-  )}\n`,
-);
+function bundle(root, manifest) {
+  const target = join(outputRoot, "node_modules", manifest.name);
+  cpSync(join(root, "dist"), join(target, "dist"), { recursive: true, filter: jsAndTypes });
+  writeFileSync(
+    join(target, "package.json"),
+    `${JSON.stringify(
+      {
+        name: manifest.name,
+        version,
+        private: true,
+        type: "module",
+        main: "./dist/index.js",
+        types: manifest.types,
+        exports: manifest.exports,
+        engines: claudeManifest.engines,
+      },
+      null,
+      2,
+    )}\n`,
+  );
+}
+bundle(lhcRoot, lhcManifest);
+bundle(adapterRoot, adapterManifest);
 
-const { lhc: _workspaceLhc, ...thirdParty } = claudeManifest.dependencies;
+const { lhc: _workspaceLhc, "claude-adapter": _workspaceAdapter, ...thirdParty } = claudeManifest.dependencies;
 const manifest = {
   name: "claude-lhc",
   version,
@@ -87,11 +95,12 @@ const manifest = {
   exports: claudeManifest.exports,
   sideEffects: claudeManifest.sideEffects,
   files: ["bin", "dist", "README.md", "LICENSE"],
-  bundledDependencies: ["lhc"],
+  bundledDependencies: ["claude-adapter", "lhc"],
   dependencies: {
     ...thirdParty,
     effect: lhcManifest.dependencies.effect,
     "js-tiktoken": lhcManifest.dependencies["js-tiktoken"],
+    "claude-adapter": version,
     lhc: version,
   },
   engines: claudeManifest.engines,

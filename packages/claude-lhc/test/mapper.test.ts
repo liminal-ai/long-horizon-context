@@ -1,5 +1,6 @@
+import { stringifyToolResultContent } from "claude-adapter";
 import { describe, expect, test } from "vitest";
-import { compactCommand, mapPrompt, mapSdkMessage, stringifyToolResultContent } from "../src/capture/mapper.ts";
+import { compactCommand, mapPrompt, mapSdkMessage } from "../src/capture/mapper.ts";
 
 const prompt = (text: string) =>
   ({
