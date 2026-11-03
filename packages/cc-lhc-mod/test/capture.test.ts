@@ -1,0 +1,105 @@
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { events, type Harness, harness, messages, record, recorder, Script, writeTranscript } from "./fixture.ts";
+
+let h: Harness;
+beforeEach(() => {
+  h = harness();
+});
+afterEach(() => h.cleanup());
+
+describe("capture", () => {
+  it("records rows in order, one turn per prompt", async () => {
+    const script = new Script();
+    script.toolTurn("turn-1", "first", "toolu_a");
+    script.toolTurn("turn-2", "second", "toolu_b");
+    const r = await recorder(h);
+    writeTranscript(h, script.lines);
+
+    await r.capture(script.entries);
+
+    expect(await messages(r)).toEqual([
+      "t1 user_prompt first",
+      "t1 tool_call toolu_a",
+      "t1 tool_result toolu_a",
+      "t1 assistant_text done turn-1",
+      "t2 user_prompt second",
+      "t2 tool_call toolu_b",
+      "t2 tool_result toolu_b",
+      "t2 assistant_text done turn-2",
+    ]);
+  });
+
+  it("drops queue rows, mechanical attachments, notices and the compact boundary, and keeps notes, notifications and steers", async () => {
+    const script = new Script();
+    script.queued("typed ahead");
+    script.prompt("go");
+    script.attachment("skill_listing", "<system-reminder>skills</system-reminder>");
+    script.attachment("hook_success", "", "hook-context");
+    script.turnStart("turn-1");
+    script.step("turn-1", 0);
+    script.steer("also this");
+    script.attachment("todo_reminder", "<system-reminder>a todo</system-reminder>");
+    script.answer({ type: "text", text: "ok" });
+    script.compactBoundary();
+    script.turnEnd("turn-1");
+    script.notification("<task-notification>job done</task-notification>");
+    const r = await recorder(h);
+    writeTranscript(h, script.lines);
+
+    await r.capture(script.entries);
+
+    expect(await messages(r)).toEqual([
+      "t1 user_prompt go",
+      "t1 user_prompt steer <system-reminder>The user sent: also this</system-reminder>",
+      "t1 runtime_note <system-reminder>a todo</system-reminder>",
+      "t1 assistant_text ok",
+      "t2 runtime_note <task-notification>job done</task-notification>",
+    ]);
+  });
+
+  it("records a resent batch once", async () => {
+    const script = new Script();
+    script.toolTurn("turn-1", "first", "toolu_a");
+    const r = await recorder(h);
+    writeTranscript(h, script.lines);
+
+    const first = await r.capture(script.entries);
+    const again = await r.capture(script.entries);
+
+    expect(first).toBe(5);
+    expect(again).toBe(0);
+    expect(await messages(r)).toHaveLength(4);
+  });
+
+  it("puts parallel tool calls and their results in the step that made them", async () => {
+    const script = new Script();
+    script.toolTurn("turn-1", "parallel", "toolu_a", "toolu_b");
+    const r = await recorder(h);
+    writeTranscript(h, script.lines);
+
+    await r.capture(script.entries);
+
+    const steps = [...(await events(r)).values()]
+      .filter((payload) => typeof payload.toolCallId === "string" || payload.text === "done turn-1")
+      .map((payload) => `${String(payload.toolCallId ?? payload.text)}@${String(payload.stepIndex)}`);
+    expect(steps).toEqual(["toolu_a@0", "toolu_b@0", "toolu_a@0", "toolu_b@0", "done turn-1@1"]);
+  });
+
+  it("refuses a second live Claude process on the same thread", async () => {
+    await recorder(h);
+
+    const second = await record(h, "resume", process.ppid);
+
+    expect(second).toMatchObject({ kind: "refused", notice: expect.stringContaining(`process ${process.pid}`) });
+  });
+
+  it("keeps the lease across a sidecar restart under the same Claude process", async () => {
+    await recorder(h);
+
+    expect((await record(h, "restart")).kind).toBe("recording");
+  });
+
+  it("refuses a forked session until fork is supported", async () => {
+    expect(await record(h, "fork")).toMatchObject({ kind: "refused", notice: expect.stringContaining("forked") });
+  });
+});
