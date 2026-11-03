@@ -159,3 +159,20 @@ describe("capture", () => {
     expect(await messages(recovered)).toEqual(["t1 user_prompt go", "t1 runtime_note background job finished"]);
   });
 });
+
+describe("slash command markup quoted in conversation", () => {
+  it("stays assistant text in a response and the person's words in a typed prompt", () => {
+    const script = new Script();
+    script.prompt("What does <command-name>/example</command-name> mean?");
+    script.answer({ type: "text", text: "It looks like <command-name>/example</command-name> in the transcript." });
+
+    const events = mapEntries(script.entries, SETTLED).events.map(
+      (event) => `${event.eventKind} ${(event.payload as { text?: string }).text}`,
+    );
+
+    expect(events).toEqual([
+      "user_prompt What does <command-name>/example</command-name> mean?",
+      "assistant_text It looks like <command-name>/example</command-name> in the transcript.",
+    ]);
+  });
+});

@@ -77,6 +77,8 @@ const isCommandNoise = (row: Row): boolean => {
 /** `/name args` for a slash command row, undefined for any other row. */
 function slashCommand(row: Row): string | undefined {
   const text = joinedText(row.message.content);
+  // A command row is a user row that starts with the markup; quoted markup elsewhere is conversation.
+  if (row.message.type !== "user" || !text.trimStart().startsWith("<command-")) return undefined;
   const name = COMMAND_NAME.exec(text)?.[1]?.trim();
   if (name === undefined) return undefined;
   const args = COMMAND_ARGS.exec(text)?.[1]?.trim();

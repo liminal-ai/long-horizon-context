@@ -27,11 +27,11 @@ const COMMAND_ARGS = /<command-args>([\s\S]*?)<\/command-args>/;
 const builtIn = new Set();
 let afterCaveat = false;
 for (const row of rows.filter((r) => r.type === "user")) {
-  if (afterCaveat && COMMAND_NAME.test(textOf(row))) builtIn.add(row.uuid);
+  if (afterCaveat && textOf(row).trimStart().startsWith("<command-")) builtIn.add(row.uuid);
   afterCaveat = textOf(row).trimStart().startsWith("<local-command-caveat>");
 }
 const promptCommand = (row) => {
-  if (row.type !== "user" || builtIn.has(row.uuid)) return undefined;
+  if (row.type !== "user" || builtIn.has(row.uuid) || !textOf(row).trimStart().startsWith("<command-")) return undefined;
   const name = COMMAND_NAME.exec(textOf(row))?.[1]?.trim();
   if (name === undefined) return undefined;
   const args = COMMAND_ARGS.exec(textOf(row))?.[1]?.trim();
