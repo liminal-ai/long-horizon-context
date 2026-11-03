@@ -95,8 +95,9 @@ To read a thread from the shell, run `node packages/lhc/dist/cli.js thread expor
 
 ## Limits
 
-- Thinking blocks and images in the live tail do not survive a compaction. Images and documents become `[image omitted by LHC: m<id>]`. Retrieval serves text only.
+- Thinking blocks and images in the live tail do not survive a compaction. An image becomes `[image omitted by LHC: m<id>]` and a document becomes `[document omitted by LHC: m<id>]`. Retrieval serves text only.
 - `tool_reference` blocks from ToolSearch are dropped from the view.
+- LHC cannot split one model step. If the tool results of a single step, such as six parallel 10k reads, plus the fixed context do not fit under the trigger, LHC refuses its view. Claude Code's own summary then runs once, with the `LHC could not compact (...)` notice and the `⚠ lhc: fell back to Claude Code's summary` line. That costs about 14 s of API time and about 70k cache-write tokens. It happens only when a step is large compared with the trigger, such as a 60k test trigger, and not at the default 800k.
 - On a 200k window the trigger is at most 167k, whatever the settings say.
 - Claude Code has no rewind event. The sidecar finds a rewind from the transcript at the next prompt.
 - If Claude Code exits in the middle of a tool call, its transcript can leave out that call and its result. The LHC thread keeps them, so it holds one call more than the transcript.
