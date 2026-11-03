@@ -119,7 +119,7 @@ Facts from the code. Read them before driving:
   process that spawned it reads that pipe, so this also catches a sidecar that
   a dying Claude respawned during a hangup.
 - Threads (`sidecar/src/bind.ts`): a bind answers the thread and how the
-  session came to it, and the status line shows `thread <id> (<how>)`. A session whose alias is known keeps its thread (`resumed`:
+  session came to it, and `/lhc status` and the panel show `thread <id> (<how>)`. A session whose alias is known keeps its thread (`resumed`:
   `/resume`, `--continue`, `--resume`, a reload). An unknown one gets a new
   thread (`new`: startup, `/clear`, whose new session id has no alias). A
   thread with `compact_continuation_boundary` rows, which only older hosts
@@ -184,10 +184,14 @@ Facts from the code. Read them before driving:
   the next bind's recovery when it does not (an interactive manual one).
   A killed sidecar is respawned on the next post and rebinds with source
   `restart`, so it answers the next compaction itself.
-- Status line and pressure: the status line reads `lhc: context <tokens> of
-  <trigger> (<pct>%) · thread <id> (<how>) · compacted <before> to <view>
-  (mid-turn|settled)`, each part once known; a fallback reads `last
-  compaction fell back to Claude Code's summary`. At the next main-loop step the mod reads the engine's
+- Status line and pressure (`statusLine` in `src/panel.ts`): the host draws
+  it as `⚠ lhc: <text>` on its own row above a custom `statusLine`. It is
+  empty until a compaction; Claude Code's own `<pct>% until auto-compact`
+  already counts down to the LHC trigger. After an LHC compaction it reads
+  `<before> → <view>` until a turn that began after the compaction ends. After
+  a fallback it reads `fell back to Claude Code's summary` until the next LHC
+  compaction. It never names the thread; `/lhc status` opens with `Context
+  <tokens> of <trigger> (<pct>%), thread <id> (<how>).` At the next main-loop step the mod reads the engine's
   own estimate (`breakdown.totalTokens`) and logs `post-compact context N
   trigger T target X ok|inadequate`; above 75 percent of the trigger it also
   shows a transcript notice, since Claude Code stops a turn after three
