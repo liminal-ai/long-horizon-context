@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
-work="${1:?usage: fixtures.sh <home>}/work"
+work="${1:?usage: fixtures.sh <home> [lines per file]}/work"
 mkdir -p "$work"
-node - "$work" <<'JS'
+node - "$work" "${2:-300}" <<'JS'
 const { writeFileSync } = require("node:fs");
 const { deflateSync, crc32 } = require("node:zlib");
-const work = process.argv[2];
+const [work, count] = process.argv.slice(2);
 const words = ["amber", "birch", "cobalt", "delta", "ember", "fjord", "garnet", "harbor", "indigo", "juniper"];
 const last = ["whiskey", "echo", "romeo", "xray", "tango", "kilo"];
 for (let f = 1; f <= 6; f++) {
-  const lines = Array.from({ length: 300 }, (_, l) =>
+  const lines = Array.from({ length: Number(count) }, (_, l) =>
     `line ${l}: ${Array.from({ length: 8 }, (_, k) => `${words[(l * 7 + k * 3 + f) % 10]}${(l * k + f) % 97}`).join(" ")}`,
   );
   writeFileSync(`${work}/f${f}.txt`, `${[...lines, `last word: ${last[f - 1]}`].join("\n")}\n`);
