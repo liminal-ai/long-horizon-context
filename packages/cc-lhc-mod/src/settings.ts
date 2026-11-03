@@ -33,7 +33,7 @@ export function resolveSettings(options: Readonly<Record<string, unknown>>): Res
     return DEFAULT_SETTINGS[key];
   };
   const isPercent = (value: unknown): value is number =>
-    typeof value === "number" && Number.isFinite(value) && value > 0 && value <= 100;
+    typeof value === "number" && Number.isFinite(value) && value >= 1 && value <= 100;
   return {
     settings: {
       lowerBound: pick("lowerBound", isPositiveInteger),

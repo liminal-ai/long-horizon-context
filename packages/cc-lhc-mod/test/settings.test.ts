@@ -66,6 +66,12 @@ describe("resolveSettings", () => {
     ]);
   });
 
+  it("refuses a percent below 1", () => {
+    const { settings, notices } = resolveSettings({ compactPercent: 0.0001 });
+    expect(settings.compactPercent).toBe(90);
+    expect(notices).toEqual(["compactPercent 0.0001 is invalid; using 90"]);
+  });
+
   it("keeps valid values, including a fractional percent", () => {
     expect(resolveSettings({ lowerBound: 100_000, upperBound: 600_000, compactPercent: 72.5 }).settings).toEqual({
       lowerBound: 100_000,
