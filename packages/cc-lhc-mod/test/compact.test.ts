@@ -111,3 +111,50 @@ describe("two manual compacts then a restart", () => {
     expect(s.state.recording.recorder.isTurnOpen).toBe(false);
   });
 });
+
+describe("a /compact the LHC panel runs", () => {
+  const recorded = async (ask: (script: Script) => void, isLive: boolean): Promise<string[]> => {
+    const script = new Script();
+    script.toolTurn("turn-1", "first", "toolu_a");
+    ask(script);
+    if (isLive) {
+      writeTranscript(h, []);
+      await s.call("/bind", { sessionId: SESSION, transcriptPath: h.transcript, source: "startup" });
+      await s.call("/capture", { entries: script.entries });
+    }
+    writeTranscript(h, script.lines);
+    await s.call("/bind", { sessionId: SESSION, transcriptPath: h.transcript, source: isLive ? "resume" : "startup" });
+    if (s.state.recording?.kind !== "recording") throw new Error("not recording");
+    return messages(s.state.recording.recorder);
+  };
+
+  it("is recorded live as a typed /compact is: a note, never the person's prompt", async () => {
+    expect(await recorded((script) => script.pluginCommand("/compact"), true)).toEqual([
+      "t1 user_prompt first",
+      "t1 tool_call toolu_a",
+      "t1 tool_result toolu_a",
+      "t1 assistant_text done turn-1",
+      "t2 runtime_note /compact",
+    ]);
+  });
+
+  it("is recorded the same by recovery", async () => {
+    expect(await recorded((script) => script.pluginCommand("/compact"), false)).toEqual([
+      "t1 user_prompt first",
+      "t1 tool_call toolu_a",
+      "t1 tool_result toolu_a",
+      "t1 assistant_text done turn-1",
+      "t1 runtime_note /compact",
+    ]);
+  });
+
+  it("matches a typed /compact, which Claude Code files by the note door", async () => {
+    expect(await recorded((script) => script.note("/compact"), true)).toEqual([
+      "t1 user_prompt first",
+      "t1 tool_call toolu_a",
+      "t1 tool_result toolu_a",
+      "t1 assistant_text done turn-1",
+      "t2 runtime_note /compact",
+    ]);
+  });
+});

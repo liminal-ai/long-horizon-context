@@ -59,7 +59,9 @@ export function registerCapture(on: On): void {
     const stored = await next(e);
     const started = performance.now();
     if (e.agentId === undefined && stored.deny === undefined) {
-      if (e.door === "prompt" || e.door === "command" || e.door === "delivery") {
+      // A plugin's command (the LHC panel's /compact) is never the person's: it opens no turn, live or recovered.
+      const isOpener = e.door === "prompt" || e.door === "command" || e.door === "delivery";
+      if (isOpener && e.origin.kind !== "plugin") {
         turns = { ...turns, pending: stored.uuid };
         saveTurns($);
       }

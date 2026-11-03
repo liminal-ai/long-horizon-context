@@ -20,6 +20,9 @@ await build({
   platform: "neutral",
   target: "es2023",
   external: ["claude-code"],
+  jsx: "transform",
+  jsxFactory: "h",
+  jsxFragment: "Fragment",
   logLevel: "warning",
 });
 // claude plugin validate reads the module's source: it wants `register` exported where it is declared.
@@ -44,5 +47,5 @@ await build({
 for (const file of [".claude-plugin/plugin.json", "hooks/hooks.json", "types/index.d.ts"]) {
   cpSync(join(root, "mod", file), join(out, file));
 }
-cpSync(join(root, "test", "mod.test.ts"), join(out, "test", "mod.test.ts"));
+for (const test of ["mod.test.ts", "panel.test.tsx"]) cpSync(join(root, "test", test), join(out, "test", test));
 console.log(`built ${out}`);

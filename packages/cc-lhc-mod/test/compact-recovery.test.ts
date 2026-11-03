@@ -73,7 +73,7 @@ it("a recovered large open turn either reduces or falls back", async () => {
   const sizes: number[] = [];
   for (let n = 0; n < 3; n++) {
     const answer = await answerCompact(r, { sessionId: SESSION, trigger: "auto", target: 10_000 }, () => {});
-    if (answer.kind === "native") return;
+    if (answer.kind !== "view") return;
     sizes.push(answer.viewTokens);
     const from = script.entries.length;
     script.compactBoundary();

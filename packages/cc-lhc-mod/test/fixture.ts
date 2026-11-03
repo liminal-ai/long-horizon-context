@@ -176,7 +176,11 @@ export class Script {
   }
 
   results(...ids: string[]): string {
-    const content = ids.map((id) => ({ type: "tool_result", tool_use_id: id, content: `out ${id}` }));
+    return this.resultsOf((id) => `out ${id}`, ...ids);
+  }
+
+  resultsOf(output: (id: string) => string, ...ids: string[]): string {
+    const content = ids.map((id) => ({ type: "tool_result", tool_use_id: id, content: output(id) }));
     return this.#row(
       "tool-result",
       { type: "user", role: "user", content },
@@ -248,6 +252,23 @@ export class Script {
       { type: "user", role: "user", content },
       { type: "user", message: { role: "user", content: text } },
       { origin: "engine" },
+    );
+  }
+
+  /** A command a plugin runs with `$.command.run`, as Claude Code 2.1.317 files and raises it (the panel's `/compact`). */
+  pluginCommand(text: string, plugin = "lhc"): string {
+    const content = [{ type: "text", text }];
+    return this.#row(
+      "prompt",
+      { type: "user", role: "user", content },
+      {
+        type: "user",
+        origin: { kind: "plugin", name: plugin },
+        promptId: randomUUID(),
+        queuePriority: "later",
+        message: { role: "user", content: text },
+      },
+      { origin: "plugin" },
     );
   }
 
