@@ -58,6 +58,7 @@ for (let t = 1; t <= turns; t++) {
   push(assistant([{ type: "tool_use", id, name: "Read", input: { file_path: file } }]));
   push({ type: "user", message: { role: "user", content: [{ tool_use_id: id, type: "tool_result", content: body }] } });
   push(assistant([{ type: "text", text: `Turn ${t}: the last line is line ${lines - 1}.` }]));
+  push({ type: "system", subtype: "turn_duration", durationMs: 1000, isMeta: false });
 }
 mkdirSync(dir, { recursive: true });
 writeFileSync(join(dir, `${sessionId}.jsonl`), rows.map((row) => `${JSON.stringify(row)}\n`).join(""));
