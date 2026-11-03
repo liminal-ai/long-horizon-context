@@ -1,6 +1,11 @@
 import { expect, it } from "vitest";
+import { NATIVE_SUMMARY_LABEL } from "../sidecar/src/capture/map.ts";
 import type { Recorder } from "../sidecar/src/capture/recorder.ts";
 import { events, harness, messages, recorder, Script, writeTranscript } from "./fixture.ts";
+
+/** Live hooks never see a native compaction's summary; recovery records it as one labeled note. */
+const summaries = (recorded: string[]): number => recorded.filter((x) => x.includes(NATIVE_SUMMARY_LABEL)).length;
+const withoutSummaries = (recorded: string[]): string[] => recorded.filter((x) => !x.includes(NATIVE_SUMMARY_LABEL));
 
 const prompts = async (r: Recorder) =>
   (await messages(r)).filter((x) => x.includes("user_prompt")).map((x) => x.split("user_prompt ")[1] ?? "");
@@ -46,9 +51,11 @@ for (const compactCount of [1, 2])
         expect(before.some((x) => x.includes("discard"))).toBe(false);
         r.release();
         const next = await recorder(h);
-        expect(await messages(next)).toEqual(before);
+        const recovered = await messages(next);
+        expect(withoutSummaries(recovered)).toEqual(before);
+        expect(summaries(recovered)).toBe(compactCount);
         await next.capture(s.entries.slice(n));
-        expect(await messages(next)).toEqual(before);
+        expect(await messages(next)).toEqual(recovered);
         next.release();
       } finally {
         h.cleanup();
@@ -85,7 +92,9 @@ it("round3: parallel tool siblings after compaction survive ordinary next prompt
     for (const id of ["p1", "p2", "p3"]) expect(before.filter((x) => x.endsWith(id))).toHaveLength(2);
     r.release();
     const next = await recorder(h);
-    expect(await messages(next)).toEqual(before);
+    const recovered = await messages(next);
+    expect(withoutSummaries(recovered)).toEqual(before);
+    expect(summaries(recovered)).toBe(1);
     next.release();
   } finally {
     h.cleanup();

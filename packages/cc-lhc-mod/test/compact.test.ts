@@ -1,0 +1,55 @@
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { INSTRUCTIONS_LABEL } from "../sidecar/src/capture/map.ts";
+import { type Harness, harness, messages, Script, SESSION, type Served, serve, writeTranscript } from "./fixture.ts";
+
+let h: Harness;
+let s: Served;
+beforeEach(async () => {
+  h = harness();
+  s = await serve(h);
+});
+afterEach(async () => {
+  await s.close();
+  h.cleanup();
+});
+
+describe("the compact route", () => {
+  it("answers with the view from a sidecar that restarted and never got a policy", async () => {
+    const script = new Script();
+    script.toolTurn("turn-1", "first", "toolu_a");
+    writeTranscript(h, script.lines);
+    await s.call("/bind", { sessionId: SESSION, transcriptPath: h.transcript, source: "restart" });
+    await s.call("/capture", { entries: script.entries });
+
+    const { json } = await s.call("/compact", { sessionId: SESSION, trigger: "auto", target: 10_000 });
+
+    expect(json.kind).toBe("view");
+    expect(json.isMidTurn).toBe(false);
+    expect((json.messages as Array<{ text: string }>).map((m) => m.text)).toContain("first");
+  });
+
+  it("answers native for a session it is not bound to", async () => {
+    await s.call("/bind", { sessionId: SESSION, transcriptPath: h.transcript, source: "startup" });
+
+    const { json } = await s.call("/compact", { sessionId: "other", trigger: "manual", target: 10_000 });
+
+    expect(json).toEqual({ kind: "native", reason: `the sidecar is bound to ${SESSION}` });
+  });
+});
+
+describe("a typed /compact with instructions", () => {
+  it("is one labeled note, live and after recovery", async () => {
+    const script = new Script();
+    script.toolTurn("turn-1", "first", "toolu_a");
+    script.note("/compact keep the plan");
+    writeTranscript(h, script.lines);
+    await s.call("/bind", { sessionId: SESSION, transcriptPath: h.transcript, source: "startup" });
+    await s.call("/capture", { entries: script.entries });
+    await s.call("/compact", { sessionId: SESSION, trigger: "manual", target: 10_000 });
+    await s.call("/bind", { sessionId: SESSION, transcriptPath: h.transcript, source: "compact" });
+
+    if (s.state.recording?.kind !== "recording") throw new Error("not recording");
+    const notes = (await messages(s.state.recording.recorder)).filter((m) => m.includes("keep the plan"));
+    expect(notes).toEqual([`t1 runtime_note ${INSTRUCTIONS_LABEL}keep the plan`]);
+  });
+});

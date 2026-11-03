@@ -36,7 +36,7 @@ writeFileSync(
       skipLibCheck: true,
     },
     files: [types],
-    include: [join(root, "mod"), join(root, "src"), join(root, "test", "mod.test.ts")],
+    include: [join(root, "mod"), join(root, "src"), join(root, "test", "mod.test.ts"), join(root, "test", "hooks")],
   }),
 );
 console.log(`cc-lhc-mod: mod typecheck against ${types}`);

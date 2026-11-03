@@ -1,7 +1,11 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { RETRIEVAL_MAX_IDS, type RetrievalOp, runRetrieval } from "claude-adapter";
 import type { Lhc } from "lhc";
 import type { CaptureEntry, CaptureReply } from "../../src/capture.ts";
-import { type Binding, openRecording, type Recording } from "./capture/recorder.ts";
+import type { CompactAnswer, CompactRequest, RetrieveAnswer, RetrieveRequest } from "../../src/compact.ts";
+import { answerCompact } from "./compact.ts";
+import { HARNESS } from "./capture/map.ts";
+import { type Binding, openRecording, type Recorder, type Recording } from "./capture/recorder.ts";
 
 export type { Binding };
 export type Policy = { window: number; trigger: number; target: number };
@@ -33,6 +37,32 @@ function parseEntries(body: unknown): CaptureEntry[] {
   const { entries } = (body ?? {}) as { entries?: unknown };
   if (!Array.isArray(entries)) throw new Error("capture needs entries");
   return entries as CaptureEntry[];
+}
+
+function parseCompact(body: unknown): CompactRequest {
+  const { sessionId, trigger, target } = (body ?? {}) as Record<string, unknown>;
+  if (!isString(sessionId) || !isString(trigger) || !isCount(target)) throw new Error("compact needs sessionId, trigger and target");
+  return { sessionId, trigger, target };
+}
+
+const OPS: ReadonlySet<string> = new Set<RetrievalOp>(["get_turns", "get_messages"]);
+
+function parseRetrieve(body: unknown): RetrieveRequest {
+  const { sessionId, op, ids, fromToken } = (body ?? {}) as Record<string, unknown>;
+  if (!isString(sessionId) || typeof op !== "string" || !OPS.has(op)) throw new Error("retrieve needs sessionId and op");
+  if (!Array.isArray(ids) || ids.length === 0 || ids.length > RETRIEVAL_MAX_IDS || !ids.every(isString)) {
+    throw new Error(`retrieve needs 1 to ${RETRIEVAL_MAX_IDS} ids`);
+  }
+  if (fromToken !== undefined && !(Number.isInteger(fromToken) && (fromToken as number) >= 0)) {
+    throw new Error("fromToken must be a non-negative integer");
+  }
+  return { sessionId, op: op as RetrievalOp, ids, ...(fromToken === undefined ? {} : { fromToken: fromToken as number }) };
+}
+
+function recorderFor(state: SidecarState, sessionId: string): Recorder | string {
+  if (state.binding?.sessionId !== sessionId) return `the sidecar is bound to ${state.binding?.sessionId ?? "no session"}`;
+  if (state.recording?.kind !== "recording") return state.recording?.notice ?? "the session is not recorded";
+  return state.recording.recorder;
 }
 
 function describe(recording: Recording | null): unknown {
@@ -89,6 +119,26 @@ const routes: Record<string, Route> = {
     const lag = Math.max(...entries.map((entry) => Date.now() - entry.at));
     deps.log(`captured ${entries.length} entries recorded ${recorded} events lag ${lag}ms`);
     return { recorded };
+  },
+  "POST /compact": async (body, state, deps): Promise<CompactAnswer> => {
+    const request = parseCompact(body);
+    const recorder = recorderFor(state, request.sessionId);
+    const answer: CompactAnswer =
+      typeof recorder === "string"
+        ? { kind: "native", reason: recorder }
+        : await answerCompact(recorder, request, deps.log).catch(
+            (error: unknown): CompactAnswer => ({ kind: "native", reason: String(error) }),
+          );
+    if (answer.kind === "native") deps.log(`compact ${request.trigger} answered native: ${answer.reason}`);
+    return answer;
+  },
+  "POST /retrieve": async (body, state, deps): Promise<RetrieveAnswer> => {
+    const request = parseRetrieve(body);
+    const recorder = recorderFor(state, request.sessionId);
+    if (typeof recorder === "string") return { text: `${request.op} unavailable: ${recorder}`, isError: true };
+    const answer = await runRetrieval(HARNESS, deps.lhc, recorder.thread, request.op, request.ids, request.fromToken);
+    deps.log(`${request.op} ${request.ids.join(",")} served ${answer.text.length} chars${answer.isError ? " error" : ""}`);
+    return answer;
   },
 };
 

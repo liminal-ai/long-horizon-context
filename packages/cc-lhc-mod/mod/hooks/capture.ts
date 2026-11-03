@@ -1,6 +1,7 @@
 import type { EngineInterface, On } from "claude-code";
 import type { CaptureEntry, CapturedMessage } from "../../src/capture.ts";
 import type { TurnNames } from "../types";
+import { measureAppend } from "./measure.ts";
 import { boundSession, enqueue, log } from "./sidecar.ts";
 
 type Captured = { [K in CaptureEntry["kind"]]: Omit<Extract<CaptureEntry, { kind: K }>, "sessionId" | "at"> }[CaptureEntry["kind"]];
@@ -48,6 +49,11 @@ async function turnName($: EngineInterface, turnId: string): Promise<string | un
   return turns.names[turnId];
 }
 
+export async function captureStep($: EngineInterface, turnId: string, index: number): Promise<void> {
+  const name = await turnName($, turnId);
+  if (name !== undefined) push($, { kind: "step", turnId: name, index });
+}
+
 export function registerCapture(on: On): void {
   on("session.append", async ($, e, next) => {
     const stored = await next(e);
@@ -57,6 +63,7 @@ export function registerCapture(on: On): void {
         turns = { ...turns, pending: stored.uuid };
         saveTurns($);
       }
+      if (e.door !== "queue") measureAppend(stored.message.content);
       push($, {
         kind: "row",
         uuid: stored.uuid,
@@ -68,12 +75,6 @@ export function registerCapture(on: On): void {
       hookMs.push(performance.now() - started);
     }
     return stored;
-  });
-
-  on("turn.step", async function* ($, e, next) {
-    const name = e.agentId === undefined ? await turnName($, e.turnId) : undefined;
-    if (name !== undefined) push($, { kind: "step", turnId: name, index: e.index });
-    return yield* next(e);
   });
 
   on("turn.complete", async ($, e, next) => {

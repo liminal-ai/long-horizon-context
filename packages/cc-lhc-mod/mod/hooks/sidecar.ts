@@ -35,8 +35,13 @@ export function log($: EngineInterface, line: string): void {
   logWrite = logWrite.then(async () => $.fs.write(modLogPath(await lhcHome($), LOAD_ID), text)).catch(() => {});
 }
 
-export function runInBackground($: EngineInterface, what: string, task: () => Promise<unknown>): void {
-  queue = queue.then(task).catch((error: unknown) => log($, `${what} failed: ${String(error)}`));
+export function runInBackground($: EngineInterface, what: string, task: () => Promise<unknown>): Promise<void> {
+  const ran = queue.then(task).then(
+    () => undefined,
+    (error: unknown) => log($, `${what} failed: ${String(error)}`),
+  );
+  queue = ran;
+  return ran;
 }
 
 export function startSidecar($: EngineInterface): Promise<string> {
@@ -127,33 +132,43 @@ async function sendBind($: EngineInterface, binding: Binding): Promise<void> {
   if (notice !== undefined) $.ui.log(notice);
 }
 
+async function send($: EngineInterface): Promise<void> {
+  for (let head = outbox[0]; head !== undefined; head = outbox[0]) {
+    await startSidecar($);
+    // A replacement sidecar whose replayed bind failed knows no session: replay it here first.
+    if (needsReplay) {
+      needsReplay = false;
+      if (sentBinding !== undefined) outbox.unshift({ kind: "bind", binding: { ...sentBinding, source: "restart" } });
+      continue;
+    }
+    if (head.kind === "bind") {
+      await sendBind($, head.binding);
+      outbox.shift();
+      failures = 0;
+      continue;
+    }
+    const barrier = outbox.findIndex((item) => item.kind === "bind");
+    const batch = outbox.slice(0, Math.min(MAX_BATCH, barrier === -1 ? outbox.length : barrier)) as CaptureEntry[];
+    await post($, "/capture", { entries: batch });
+    outbox.splice(0, batch.length);
+    failures = 0;
+  }
+}
+
+export async function drainOutbox($: EngineInterface): Promise<boolean> {
+  if (isStopped) return false;
+  await runInBackground($, "outbox drain", () => send($));
+  return outbox.length === 0;
+}
+
 function flush($: EngineInterface): void {
   if (isFlushQueued) return;
   isFlushQueued = true;
-  runInBackground($, "outbox", async () => {
+  void runInBackground($, "outbox", async () => {
     isFlushQueued = false;
     if (isStopped) return;
     try {
-      for (let head = outbox[0]; head !== undefined; head = outbox[0]) {
-        await startSidecar($);
-        // A replacement sidecar whose replayed bind failed knows no session: replay it here first.
-        if (needsReplay) {
-          needsReplay = false;
-          if (sentBinding !== undefined) outbox.unshift({ kind: "bind", binding: { ...sentBinding, source: "restart" } });
-          continue;
-        }
-        if (head.kind === "bind") {
-          await sendBind($, head.binding);
-          outbox.shift();
-          failures = 0;
-          continue;
-        }
-        const barrier = outbox.findIndex((item) => item.kind === "bind");
-        const batch = outbox.slice(0, Math.min(MAX_BATCH, barrier === -1 ? outbox.length : barrier)) as CaptureEntry[];
-        await post($, "/capture", { entries: batch });
-        outbox.splice(0, batch.length);
-        failures = 0;
-      }
+      await send($);
     } catch (error) {
       failures += 1;
       if (failures >= MAX_FAILURES) {

@@ -11,6 +11,7 @@ export type TranscriptLine = {
   isSidechain?: boolean;
   isMeta?: boolean;
   isCompactSummary?: boolean;
+  promptSource?: string;
   origin?: { kind?: string };
   message?: { id?: string; role?: string; content?: unknown; model?: string; stop_reason?: string | null };
   attachment?: { type?: string; prompt?: unknown; commandMode?: string; origin?: { kind?: string } };
@@ -166,6 +167,7 @@ function doorOf(line: TranscriptLine): string | undefined {
   const content = line.message?.content;
   if (line.type === "assistant") return "response";
   if (line.type !== "user") return undefined;
+  if (line.isCompactSummary === true) return "compaction";
   if (Array.isArray(content) && content.some((block) => (block as { type?: unknown }).type === "tool_result")) {
     return "tool-result";
   }
@@ -183,9 +185,16 @@ function doorOf(line: TranscriptLine): string | undefined {
   return "prompt";
 }
 
+/**
+ * A recovered user row with neither an origin nor a prompt source: a prompt
+ * from an older Claude Code, or a row of an installed LHC view, which in a
+ * `claude -p` session carries no other mark. Only an install receipt tells them apart.
+ */
+export const UNMARKED = "unmarked";
+
 export function rowOf(line: TranscriptLine): Row | undefined {
-  if (line.isSidechain === true || line.isCompactSummary === true) return undefined;
-  const origin = line.origin?.kind ?? "unclassified";
+  if (line.isSidechain === true) return undefined;
+  const origin = line.origin?.kind ?? (line.type === "user" && line.promptSource === undefined ? UNMARKED : "unclassified");
   if (line.type === "attachment" && line.attachment?.type === "queued_command") {
     const text = typeof line.attachment.prompt === "string" ? line.attachment.prompt : "";
     const message: CapturedMessage = { type: "attachment", name: "queued_command", role: "user", content: [{ type: "text", text }] };
