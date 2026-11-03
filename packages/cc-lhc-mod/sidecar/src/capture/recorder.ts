@@ -50,6 +50,8 @@ export async function openRecording(deps: Deps, binding: Binding, firstRow?: str
 
 export class Recorder {
   #state: TurnState = SETTLED;
+  /** Turns live capture ended: a transcript that has not caught up yet never reopens one. */
+  readonly #ended = new Set<string>();
   #answered = new Set<string>();
   readonly #parents: TranscriptTail;
   readonly receipts: Receipts;
@@ -128,12 +130,14 @@ export class Recorder {
         }
         // Recovery opens a turn after each prompt-looking row; an installed row opens none.
         if (entry.kind === "turn-start" && entry.turnId === installed) continue;
+        if (isTranscript && entry.kind === "turn-start" && this.#ended.has(entry.turnId)) continue;
         if (entry.kind === "row" && isRecorded(entry) && opensTurn(entry, this.#state)) {
           recorded += await this.#write(pending);
           pending = await this.#rewind(entry.uuid);
         }
         const { events, state } = mapEntries([entry], this.#state, answered);
         this.#state = state;
+        if (!isTranscript && entry.kind === "turn-end") this.#ended.add(entry.turnId);
         pending.push(...events);
       }
       recorded += await this.#write(pending);

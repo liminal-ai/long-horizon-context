@@ -71,7 +71,9 @@ Facts from the code. Read them before driving:
   transcript shows: a prompt opens a turn, each model response (one message
   id) is a step with its tool results, and a turn's duration row settles it,
   so a sidecar reloaded mid-turn knows the turn is open and keeps live step
-  indices. A branch off the
+  indices. Recovery never moves turn state backwards: a turn live capture has
+  ended stays settled when a later recovery reads a transcript that has not
+  caught up yet (a `/compact` run the instant a turn ends). A branch off the
   transcript's active chain (from its last row by parent) that holds a
   person's prompt is abandoned: recovery never records it, and a new prompt
   whose path back to the nearest recorded row passes one writes core
