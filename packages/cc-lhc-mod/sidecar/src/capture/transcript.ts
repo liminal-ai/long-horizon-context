@@ -22,6 +22,8 @@ export class TranscriptTail {
   readonly parents = new Map<string, string | null>();
   readonly compactBoundaries = new Set<string>();
   readonly prompts = new Set<string>();
+  /** The summary and the command rows a native compaction writes after it, which no hook ever sees. */
+  readonly compactionRows = new Set<string>();
   readonly #logicalParents = new Map<string, string>();
   #offset: number;
   #pending = Buffer.alloc(0);
@@ -100,6 +102,13 @@ export class TranscriptTail {
             this.parents.set(line.uuid, line.parentUuid);
             if (line.subtype === "compact_boundary") this.compactBoundaries.add(line.uuid);
             if (typeof line.logicalParentUuid === "string") this.#logicalParents.set(line.uuid, line.logicalParentUuid);
+            const isCompactionRow =
+              line.isCompactSummary === true ||
+              (line.type === "user" &&
+                line.origin === undefined &&
+                line.parentUuid !== null &&
+                this.compactionRows.has(line.parentUuid));
+            if (isCompactionRow) this.compactionRows.add(line.uuid);
             const row = rowOf(line);
             if (row !== undefined && isUserPrompt(row)) this.prompts.add(line.uuid);
             lines.push({ line, end: this.#offset });
@@ -150,7 +159,8 @@ function doorOf(line: TranscriptLine): string | undefined {
   }
   const text = textOf(content).trimStart();
   if (line.isMeta === true || NOTE_PREFIXES.some((prefix) => text.startsWith(prefix))) return "note";
-  return "prompt";
+  // Claude Code stamps an origin on a submitted prompt; a row without one (the /compact line) came by the note door.
+  return line.origin === undefined ? "note" : "prompt";
 }
 
 export function rowOf(line: TranscriptLine): Row | undefined {

@@ -154,7 +154,7 @@ export class Recorder {
     const orders = await Promise.all(branches.map((id) => this.#capturedFrom(id)));
     const firstAbandoned = Math.min(...orders.filter((order) => order !== undefined));
     if (firstAbandoned === Number.POSITIVE_INFINITY) return [];
-    keep ??= firstAbandoned - 1;
+    keep = Math.min(keep ?? Number.POSITIVE_INFINITY, firstAbandoned - 1);
     this.deps.log(`rewind before prompt ${promptUuid}: rollback keeps through event ${keep}`);
     return [
       {

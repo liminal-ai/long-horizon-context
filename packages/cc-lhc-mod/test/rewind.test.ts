@@ -114,3 +114,30 @@ it("rolls back a rewind whose new prompt only recovery records, though its answe
   expect([...(await events(next)).keys()]).toContain(`claude-code:${prompt}:rollback`);
   expect((await messages(next)).some((message) => message.includes("discarded"))).toBe(false);
 });
+
+it("rolls back a discarded turn even when the rewind's nearest recorded row was recorded after it", async () => {
+  const script = new Script();
+  script.toolTurn("turn-1", "first", "toolu_a");
+  const late = script.notification("<task-notification>late</task-notification>");
+  script.toolTurn("turn-2", "discarded", "toolu_b");
+  const discardedEnd = script.entries.length;
+  const transcriptBefore = script.lines.length;
+  script.rewindTo(late);
+  script.toolTurn("turn-3", "replacement", "toolu_c");
+  const live = await recorder(h);
+  writeTranscript(h, script.lines.slice(0, transcriptBefore));
+  await live.capture(
+    script.entries.slice(0, discardedEnd).filter((entry) => entry.kind !== "row" || entry.uuid !== late),
+  );
+  live.release();
+  const restarted = await recorder(h);
+  writeTranscript(h, script.lines);
+
+  await restarted.capture(script.entries.slice(discardedEnd));
+
+  const prompts = (await messages(restarted)).filter((message) => message.includes("user_prompt"));
+  expect(prompts.map((message) => message.slice(message.indexOf("user_prompt")))).toEqual([
+    "user_prompt first",
+    "user_prompt replacement",
+  ]);
+});

@@ -24,7 +24,7 @@ export async function recoverTranscript(input: {
 }): Promise<Recovered> {
   const tail = new TranscriptTail(input.transcriptPath, readCursor(input.home, input.sessionId));
   const lines = tail.read();
-  const rows = lines.flatMap(({ line }) => rowOf(line) ?? []);
+  const rows = lines.flatMap(({ line }) => (tail.compactionRows.has(line.uuid) ? [] : (rowOf(line) ?? [])));
   const recorded = await input.capture(rows);
   mkdirSync(join(input.home, "cursors"), { recursive: true });
   writeFileSync(cursorPath(input.home, input.sessionId), JSON.stringify({ offset: tail.offset }));

@@ -46,7 +46,7 @@ export class Script {
     return this.#row(
       "prompt",
       { type: "user", role: "user", content },
-      { type: "user", message: { role: "user", content: text } },
+      { type: "user", origin: { kind: "human" }, message: { role: "user", content: text } },
     );
   }
 
@@ -140,6 +140,15 @@ export class Script {
       message: { role: "user", content: "Summary of the conversation so far" },
     });
     this.#parent = summary;
+    for (const content of [
+      "<local-command-caveat>The command below was run by the user.</local-command-caveat>",
+      "<command-name>/compact</command-name>",
+      "<local-command-stdout>Compacted</local-command-stdout>",
+    ]) {
+      const uuid = randomUUID();
+      this.lines.push({ uuid, parentUuid: this.#parent, type: "user", message: { role: "user", content } });
+      this.#parent = uuid;
+    }
   }
 
   compactBoundary(): string {
