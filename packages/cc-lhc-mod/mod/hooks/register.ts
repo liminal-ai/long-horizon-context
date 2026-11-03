@@ -1,13 +1,17 @@
 import type { Register } from "claude-code";
+import { inferenceLane } from "../../src/inference.ts";
 import { captureStep, captureTurnStart, registerCapture } from "./capture.ts";
 import { checkPressureOnce, registerCompact } from "./compact.ts";
+import { startInferencePump } from "./inference.ts";
 import { measureCheck, measureResponse } from "./measure.ts";
 import { applySettings, appliedPolicy, hasModelChanged, setOption, setOptions } from "./policy.ts";
 import { registerRetrieval, registerRetrievalTools } from "./retrieval.ts";
-import { bind, boundSession, startSidecar } from "./sidecar.ts";
+import { bind, boundSession, setInference, startSidecar } from "./sidecar.ts";
 
 export const register: Register = (on, initial) => {
   setOptions(initial);
+  const lane = inferenceLane(initial);
+  setInference(lane);
   registerCapture(on);
   registerCompact(on);
   registerRetrieval(on);
@@ -15,6 +19,7 @@ export const register: Register = (on, initial) => {
   on("session.start", async ($, e, next) => {
     const started = await next(e);
     void startSidecar($).catch(() => {});
+    if (lane === "bridge") startInferencePump($);
     await registerRetrievalTools($);
     const { value: binding } = await $.state.get({ plugin: "lhc", key: "binding" });
     if (binding !== undefined && boundSession() === undefined && binding.sessionId === (await $.session.id())) {

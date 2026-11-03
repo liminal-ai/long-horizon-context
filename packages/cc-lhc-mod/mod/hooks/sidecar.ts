@@ -1,11 +1,13 @@
 import type { EngineInterface } from "claude-code";
 import { modLogPath, socketPath } from "../../src/paths.ts";
 import type { CaptureEntry } from "../../src/capture.ts";
+import type { InferenceLane } from "../../src/inference.ts";
 import type { Binding } from "../types";
 
 const LOAD_ID = Math.random().toString(36).slice(2, 10);
 
 let sidecar: Promise<string> | undefined;
+let inference: InferenceLane = "bridge";
 let sidecarStarts = 0;
 let boundSessionId: string | undefined;
 let sentBinding: Binding | undefined;
@@ -23,6 +25,10 @@ const logLines: string[] = [];
 let logWrite: Promise<unknown> = Promise.resolve();
 
 export const boundSession = (): string | undefined => boundSessionId;
+
+export function setInference(lane: InferenceLane): void {
+  inference = lane;
+}
 
 async function lhcHome($: EngineInterface): Promise<string> {
   return (await $.env.get("LHC_HOME")) ?? `${await $.env.get("HOME")}/.lhc`;
@@ -50,7 +56,7 @@ export function startSidecar($: EngineInterface): Promise<string> {
       const home = await lhcHome($);
       const socket = socketPath(home, LOAD_ID);
       const child = $.process.spawn({
-        argv: ["node", `${$.plugin.root}/sidecar/main.js`, "--home", home, "--id", LOAD_ID],
+        argv: ["node", `${$.plugin.root}/sidecar/main.js`, "--home", home, "--id", LOAD_ID, "--inference", inference],
       });
       const isReplacement = sidecarStarts++ > 0;
       let pending = "";

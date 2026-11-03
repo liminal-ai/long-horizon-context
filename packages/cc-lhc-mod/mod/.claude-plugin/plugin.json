@@ -21,6 +21,16 @@
       "title": "Compact at percent of window",
       "description": "Compaction starts at this percentage of the model's window, if lower than the cap.",
       "default": 90
+    },
+    "inferenceWorker": {
+      "type": "string",
+      "title": "Derivation worker",
+      "description": "bridge runs LHC's summaries on this session's own model client; sdk runs them in a separate Agent SDK process.",
+      "options": [
+        "bridge",
+        "sdk"
+      ],
+      "default": "bridge"
     }
   }
 }
