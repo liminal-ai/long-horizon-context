@@ -1,10 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createDeterministicInferenceCallbacks, initLhc, type Lhc, resolveTokenFamily, threads } from "lhc";
 import { type Binding, openRecording, type Recorder, type Recording } from "../sidecar/src/capture/recorder.ts";
+import { createSidecarServer, type SidecarState } from "../sidecar/src/server.ts";
 import type { CapturedMessage, CaptureEntry } from "../src/capture.ts";
+import type { BuiltMessage } from "../src/compact.ts";
 
 export const SESSION = "11111111-2222-3333-4444-555555555555";
 
@@ -158,7 +161,7 @@ export class Script {
     return this.#row(
       "compaction",
       { type: "system", name: "compact_boundary", content: [{ type: "text", text: "Conversation compacted" }] },
-      { type: "system", subtype: "compact_boundary" },
+      { type: "system", subtype: "compact_boundary", parentUuid: null, logicalParentUuid: this.#parent },
     );
   }
 
@@ -194,6 +197,68 @@ export class Script {
    */
   turnId(name: string): string {
     return this.#turns.get(name) ?? name;
+  }
+
+  installed(messages: readonly BuiltMessage[]): string[] {
+    return messages.map((message) => {
+      if (message.role === "assistant") {
+        const content = [
+          ...(message.text === "" ? [] : [{ type: "text", text: message.text }]),
+          ...message.toolUses.map((use) => ({
+            type: "tool_use",
+            id: use.tool_use_id,
+            name: use.tool,
+            input: use.input,
+          })),
+        ];
+        return this.#row(
+          "response",
+          { type: "assistant", role: "assistant", content },
+          { type: "assistant", message: { role: "assistant", content } },
+          { origin: "model" },
+        );
+      }
+      if (message.toolResults !== undefined) {
+        const content = message.toolResults.map((r) => ({
+          type: "tool_result",
+          tool_use_id: r.tool_use_id,
+          content: r.text,
+        }));
+        return this.#row(
+          "tool-result",
+          { type: "user", role: "user", content },
+          { type: "user", message: { role: "user", content } },
+        );
+      }
+      const content = [{ type: "text", text: message.text }];
+      return this.#row(
+        "note",
+        { type: "user", role: "user", content },
+        { type: "user", message: { role: "user", content: message.text } },
+        { origin: "engine" },
+      );
+    });
+  }
+
+  /** A line Claude Code files by the note door, such as the plain text of a typed `/compact`. */
+  note(text: string): string {
+    const content = [{ type: "text", text }];
+    return this.#row(
+      "note",
+      { type: "user", role: "user", content },
+      { type: "user", message: { role: "user", content: text } },
+      { origin: "engine" },
+    );
+  }
+
+  nativeSummary(text: string): string {
+    const content = [{ type: "text", text }];
+    return this.#row(
+      "compaction",
+      { type: "user", role: "user", content },
+      { type: "user", isCompactSummary: true, message: { role: "user", content: text } },
+      { origin: "engine" },
+    );
   }
 
   turnStart(name: string): void {
@@ -281,4 +346,40 @@ export async function events(r: Recorder): Promise<Map<string, Record<string, un
   const all = await r.deps.lhc.intakeStream.listEvents(r.thread);
   if (!all.ok) throw new Error(all.error.reason);
   return new Map(all.value.map((event) => [event.idempotencyKey, event.payload as Record<string, unknown>]));
+}
+
+export type Served = {
+  state: SidecarState;
+  call: (path: string, body?: unknown) => Promise<{ status: number; json: Record<string, unknown> }>;
+  close: () => Promise<void>;
+};
+
+export async function serve(h: Harness): Promise<Served> {
+  const socketPath = join(h.home, "test.sock");
+  const { server, state } = createSidecarServer({
+    lhc: h.lhc,
+    home: h.home,
+    ownerPid: process.pid,
+    log: (line) => h.log.push(line),
+  });
+  await new Promise<void>((resolve) => server.listen(socketPath, resolve));
+  const call: Served["call"] = (path, body) =>
+    new Promise((resolve, reject) => {
+      const req = request({ socketPath, method: body === undefined ? "GET" : "POST", path }, (res) => {
+        let text = "";
+        res.on("data", (chunk: Buffer) => {
+          text += chunk;
+        });
+        res.on("end", () =>
+          resolve({ status: res.statusCode ?? 0, json: JSON.parse(text) as Record<string, unknown> }),
+        );
+      });
+      req.on("error", reject);
+      req.end(body === undefined ? undefined : JSON.stringify(body));
+    });
+  const close = async (): Promise<void> => {
+    if (state.recording?.kind === "recording") state.recording.recorder.release();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  };
+  return { state, call, close };
 }

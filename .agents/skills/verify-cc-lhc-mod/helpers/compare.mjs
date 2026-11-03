@@ -33,7 +33,8 @@ for (const row of rows.filter((r) => r.type === "user")) {
 const promptCommand = (row) => {
   if (row.type !== "user" || builtIn.has(row.uuid) || !textOf(row).trimStart().startsWith("<command-")) return undefined;
   const name = COMMAND_NAME.exec(textOf(row))?.[1]?.trim();
-  if (name === undefined) return undefined;
+  // A typed /compact files its own plain line, recorded as the note; capture records its command row as nothing.
+  if (name === undefined || name === "/compact") return undefined;
   const args = COMMAND_ARGS.exec(textOf(row))?.[1]?.trim();
   return args ? `${name} ${args}` : name;
 };
@@ -46,7 +47,8 @@ const isPrompt = (row) =>
   row.origin?.kind !== "task-notification" &&
   blocksOf(row.message?.content).some(
     (block) =>
-      block.type === "text" && !/^(\[Request interrupted|\[runtime note\]|<command-|<local-command-)/.test(block.text.trimStart()),
+      block.type === "text" &&
+      !/^(\[Request interrupted|\[runtime note\]|<command-|<local-command-|\/compact(\s|$))/.test(block.text.trimStart()),
   ));
 
 // The live branch: the parent chain from the last row (across a compaction's
@@ -57,7 +59,14 @@ const children = new Map();
 for (const row of rows) children.set(row.parentUuid, [...(children.get(row.parentUuid) ?? []), row]);
 const subtree = (row) => [row, ...(children.get(row.uuid) ?? []).flatMap(subtree)];
 const live = new Set();
-for (let row = rows.at(-1); row !== undefined; row = byUuid.get(row.parentUuid ?? row.logicalParentUuid)) {
+// A compact that follows another with no prompt between can name a logical parent the file never got; the
+// chain before it ends at the last message row written ahead of the boundary.
+const parentOf = (row) => {
+  const parent = byUuid.get(row.parentUuid ?? row.logicalParentUuid);
+  if (parent !== undefined || row.subtype !== "compact_boundary") return parent;
+  return rows.slice(0, rows.indexOf(row)).findLast((r) => r.type === "user" || r.type === "assistant");
+};
+for (let row = rows.at(-1); row !== undefined && !live.has(row.uuid); row = parentOf(row)) {
   live.add(row.uuid);
 }
 for (const uuid of [...live]) {
@@ -67,18 +76,45 @@ for (const uuid of [...live]) {
   }
 }
 
-const expected = [];
-for (const row of rows.filter((r) => live.has(r.uuid) && r.isCompactSummary !== true)) {
+function itemsOf(row) {
   const command = promptCommand(row);
-  if (command !== undefined) {
-    expected.push(`prompt ${command}`);
+  if (command !== undefined) return [`prompt ${command}`];
+  const items = [];
+  for (const block of blocksOf(row.message?.content)) {
+    if (row.type === "assistant" && block.type === "text" && block.text !== "") items.push(`text ${block.text}`);
+    if (row.type === "assistant" && block.type === "tool_use") items.push(`call ${block.id}`);
+    if (row.type === "user" && block.type === "tool_result") items.push(`result ${block.tool_use_id}`);
+    if (block.type === "text" && isPrompt(row)) items.push(`prompt ${block.text}`);
+  }
+  return items;
+}
+
+// After an LHC compaction's boundary Claude Code appends the installed view:
+// LHC's labeled bands and runtime notes, and messages the record already holds.
+// A prompt the person typed or sent by claude -p carries an origin or a prompt source; an installed row has neither.
+const isPersons = (row) => row.origin !== undefined || row.promptSource !== undefined;
+const isInstalled = (row, item, seen) =>
+  !isPersons(row) && (seen.has(item) || /^prompt \[(context · |runtime note\])/.test(item));
+
+const expected = [];
+const seen = new Set();
+let isInstalling = false;
+// Capture records neither a native summary as a prompt nor Claude Code's own synthetic messages (the refill breaker's).
+// An installed view's row that carries a call stands for it: the original can sit behind the boundary.
+const isSynthetic = (row) =>
+  row.message?.model === "<synthetic>" && !blocksOf(row.message?.content).some((block) => block.type === "tool_use");
+for (const row of rows.filter((r) => live.has(r.uuid) && r.isCompactSummary !== true && !isSynthetic(r))) {
+  if (row.subtype === "compact_boundary") {
+    isInstalling = true;
     continue;
   }
-  for (const block of blocksOf(row.message?.content)) {
-    if (row.type === "assistant" && block.type === "text" && block.text !== "") expected.push(`text ${block.text}`);
-    if (row.type === "assistant" && block.type === "tool_use") expected.push(`call ${block.id}`);
-    if (row.type === "user" && block.type === "tool_result") expected.push(`result ${block.tool_use_id}`);
-    if (block.type === "text" && isPrompt(row)) expected.push(`prompt ${block.text}`);
+  const items = itemsOf(row);
+  if (items.length === 0) continue;
+  if (isInstalling && items.every((item) => isInstalled(row, item, seen))) continue;
+  isInstalling = false;
+  for (const item of items) {
+    expected.push(item);
+    seen.add(item);
   }
 }
 

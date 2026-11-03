@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, it } from "vitest";
-import { mapEntries, SETTLED } from "../sidecar/src/capture/map.ts";
+import { mapEntries, NATIVE_SUMMARY_LABEL, SETTLED } from "../sidecar/src/capture/map.ts";
 import { rowOf, type TranscriptLine } from "../sidecar/src/capture/transcript.ts";
 import type { CaptureEntry } from "../src/capture.ts";
 import { events, type Harness, harness, messages, recorder, writeTranscript } from "./fixture.ts";
@@ -157,6 +157,15 @@ it("maps live claude -p command rows, which all arrive unclassified, the same wa
   expect(kinds("print-model-command-transcript.jsonl")).toEqual(["runtime_note /model sonnet"]);
 });
 
+it("records the native summary of a fallback after an LHC compaction as one labeled note, and no installed view", async () => {
+  const record = await recovered("lhc-then-native-compact-transcript.jsonl");
+
+  const summaries = record.filter((message) => message.includes(NATIVE_SUMMARY_LABEL));
+  expect(summaries).toHaveLength(1);
+  expect(summaries[0]).toContain("This session is being continued from a previous conversation");
+  expect(record.some((message) => message.includes("[context ·"))).toBe(false);
+});
+
 it("recovers typed, pasted and custom-command input as prompts and built-in commands as notes, across a /compact", async () => {
   const recorded = await recovered("commands-and-compact-transcript.jsonl");
   const of = (kind: string) =>
@@ -168,7 +177,9 @@ it("recovers typed, pasted and custom-command input as prompts and built-in comm
     "R4_PASTED",
     "/r4-echo",
   ]);
-  expect(of("runtime_note")).toEqual(["/clear", "/model", "/compact"]);
+  const notes = of("runtime_note");
+  expect(notes.filter((text) => !text.startsWith(NATIVE_SUMMARY_LABEL))).toEqual(["/clear", "/model", "/compact"]);
+  expect(notes.filter((text) => text.startsWith(NATIVE_SUMMARY_LABEL))).toHaveLength(1);
   expect(recorded.some((m) => m.includes("printf R4_SKILL"))).toBe(false);
 });
 

@@ -57,7 +57,9 @@ const MECHANICAL_ATTACHMENTS = new Set([
 
 const STEP_KINDS = new Set(["assistant_text", "assistant_thinking", "tool_call", "tool_result"]);
 
-const DROPPED_DOORS = new Set(["queue", "compaction", "notice"]);
+const DROPPED_DOORS = new Set(["queue", "notice"]);
+
+export const NATIVE_SUMMARY_LABEL = "[Claude Code compaction summary: LHC fell back to native compaction] ";
 
 const COMMAND_NAME = /<command-name>([\s\S]*?)<\/command-name>/;
 const COMMAND_ARGS = /<command-args>([\s\S]*?)<\/command-args>/;
@@ -88,6 +90,7 @@ function slashCommand(row: Row): string | undefined {
 }
 
 export function isRecorded(row: Row): boolean {
+  // Installed view rows are written as <synthetic>, so dropping them keeps an unclaimed installed copy out of the record.
   if (DROPPED_DOORS.has(row.door) || row.message.role === undefined || row.model === "<synthetic>") return false;
   if (isCommandNoise(row)) return false;
   if (row.door === "attachment" || row.door === "hook-context") {
@@ -131,11 +134,18 @@ function withStep(events: MessageEventInput[], step: number | undefined): Messag
 
 const kindlessTextKey = (row: Row): string => idempotencyKey(HARNESS, row.uuid, 0, "text");
 
-function note(row: Row): MessageEventInput[] {
+/** `/compact <text>`: LHC compaction assembles the record and does not summarize by instruction. */
+const COMPACT_INSTRUCTIONS = /^\/compact\s+(\S[\s\S]*)$/;
+export const INSTRUCTIONS_LABEL =
+  "[/compact instructions, recorded only: LHC builds the view from its record and did not apply them] ";
+
+function note(row: Row, label = ""): MessageEventInput[] {
   const joined = joinedText(row.message.content);
   const text = isTaskNotification(row) ? (NOTIFICATION.exec(joined)?.[0] ?? joined) : joined;
   if (text.trim() === "") return [];
-  return [textEvent(HARNESS, "runtime_note", text, "system", kindlessTextKey(row))];
+  const instructions = COMPACT_INSTRUCTIONS.exec(text.trim())?.[1];
+  const body = instructions === undefined ? `${label}${text}` : `${INSTRUCTIONS_LABEL}${instructions}`;
+  return [textEvent(HARNESS, "runtime_note", body, "system", kindlessTextKey(row))];
 }
 
 function prompt(row: Row, isSteer: boolean): MessageEventInput[] {
@@ -162,21 +172,40 @@ function mapRow(row: Row, state: TurnState): MessageEventInput[] {
     case "tool-result":
     case "tool-message":
       return withStep(mapUserBlocks(HARNESS, row.uuid, row.message.content), state.step);
+    case "compaction":
+      return note(row, NATIVE_SUMMARY_LABEL);
     default:
       return note(row);
   }
 }
 
+/**
+ * The record holds one result per tool call: the first recorded. A later row
+ * answering the same call, such as the replacement Claude Code writes on resume
+ * for a result that never reached the transcript, is dropped.
+ */
+function firstResults(events: MessageEventInput[], answered: Set<string>): MessageEventInput[] {
+  return events.filter((event) => {
+    if (event.eventKind !== "tool_result") return true;
+    const { toolCallId } = event.payload as { toolCallId: string };
+    if (answered.has(toolCallId)) return false;
+    answered.add(toolCallId);
+    return true;
+  });
+}
+
+/** `answered` holds the tool calls the record already has a result for, and gains each one mapped here. */
 export function mapEntries(
   entries: readonly Entry[],
   from: TurnState,
+  answered = new Set<string>(),
 ): { events: MessageEventInput[]; state: TurnState } {
   const events: MessageEventInput[] = [];
   let state = from;
   for (const entry of entries) {
     switch (entry.kind) {
       case "row":
-        events.push(...mapRow(entry, state));
+        events.push(...firstResults(mapRow(entry, state), answered));
         state = {
           ...state,
           afterCaveat: caveatAfter(entry, state.afterCaveat),
