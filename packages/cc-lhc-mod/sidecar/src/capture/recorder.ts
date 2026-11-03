@@ -71,6 +71,7 @@ export async function openRecording(deps: Deps, binding: Binding): Promise<Recor
 
 export class Recorder {
   #state: TurnState = SETTLED;
+  #afterAbandoned = false;
   readonly #parents: TranscriptTail;
 
   readonly deps: Deps;
@@ -103,11 +104,11 @@ export class Recorder {
     // Rows on a branch a rewind left are never recorded, whether live, replayed from the mod's outbox, or recovered.
     this.#parents.read();
     const abandoned = new Set([...this.#parents.abandoned().values()].flat());
-    // A turn marker belongs to the row before it, so a discarded turn's markers go with its rows.
-    let isAbandoned = false;
+    // A turn marker belongs to the row before it, even across batches, so a discarded turn's markers go with its rows.
+    const wasAfterAbandoned = this.#afterAbandoned;
     const entries = all.filter((entry) => {
-      if (entry.kind === "row") isAbandoned = abandoned.has(entry.uuid);
-      return entry.kind === "settle" || !isAbandoned;
+      if (entry.kind === "row") this.#afterAbandoned = abandoned.has(entry.uuid);
+      return entry.kind === "settle" || !this.#afterAbandoned;
     });
     const before = this.#state;
     let recorded = 0;
@@ -125,6 +126,7 @@ export class Recorder {
       return recorded + (await this.#write(pending));
     } catch (error) {
       this.#state = before;
+      this.#afterAbandoned = wasAfterAbandoned;
       throw error;
     }
   }

@@ -349,3 +349,47 @@ it("finds a long abandoned branch without running out of stack", () => {
 
   expect(tail.abandoned().get("root")).toHaveLength(20_000);
 });
+
+it("a real 65-tool discarded turn cannot split replacement across 200-entry batches", async () => {
+  const s = new Script();
+  s.toolTurn("a", "first", "a");
+  const anchor = s.lines.at(-1)?.uuid ?? "";
+  const kept = s.entries.length;
+  s.prompt("discarded");
+  s.turnStart("b");
+  s.attachment("date", "context");
+  for (let i = 0; i < 65; i++) {
+    s.step("b", i);
+    s.answer({ type: "tool_use", id: `discarded-${i}`, name: "Bash", input: { command: `echo ${i}` } });
+    s.results(`discarded-${i}`);
+  }
+  s.step("b", 65);
+  s.answer({ type: "text", text: "discarded answer" });
+  s.turnEnd("b");
+  const outbox = s.entries.slice(kept);
+  s.rewindTo(anchor);
+  s.prompt("replacement");
+  s.turnStart("c");
+  s.step("c", 0);
+  s.answer({ type: "tool_use", id: "c1", name: "Bash", input: {} });
+  s.results("c1");
+  const recoveredLines = s.lines.length;
+  const later = s.entries.length;
+  s.step("c", 1);
+  s.answer({ type: "text", text: "replacement done" });
+  const r = await recorder(h);
+  writeTranscript(h, s.lines.slice(0, recoveredLines));
+  await r.capture(s.entries.slice(0, kept));
+  r.release();
+
+  const next = await recorder(h);
+  expect(outbox).toHaveLength(201);
+  for (let i = 0; i < outbox.length; i += 200) await next.capture(outbox.slice(i, i + 200));
+  writeTranscript(h, s.lines);
+  await next.capture(s.entries.slice(later));
+
+  const observed = await messages(next);
+  const replacement = observed.filter((m) => !m.startsWith("t1 "));
+  expect(new Set(replacement.map((m) => m.split(" ")[0])).size).toBe(1);
+  expect(replacement.at(-1)).toMatch(/assistant_text replacement done$/);
+});
