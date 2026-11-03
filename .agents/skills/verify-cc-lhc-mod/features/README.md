@@ -17,6 +17,11 @@ and `S` the tmux session name. Run every drive from the repo root with
 | [Thread lease](#thread-lease) | a second `claude --resume` of a recorded session | `launch.sh` twice on one home |
 | [Rewind](#rewind) | double Escape or `/rewind`, then a new prompt | the picker in tmux |
 | [Capture cost](#capture-cost) | every row | `capture-perf.sh` |
+| [LHC compaction](#lhc-compaction) | auto mid-turn, auto settled, `/compact`, `/compact <text>`, a background job's notification turn | `fixtures.sh`, `say.sh`, `compare.mjs` |
+| [Resume after a compaction](#resume-after-a-compaction) | exit, then `claude --resume <id>` | `stop.sh`, `launch.sh` |
+| [Compaction fallback](#compaction-fallback) | sidecar killed, compaction failing, outbox not drained | `kill` the sidecar PID, `chmod 000` the thread file |
+| [Compaction cost](#compaction-cost) | a 300k-token session, LHC and native | `synth-transcript.mjs`, `claude -p --resume` |
+| [Retrieval](#retrieval) | `get_turns`, `get_messages`, any permission mode | `say.sh` |
 
 ## Session binding
 
@@ -162,3 +167,113 @@ VERIFY_ENV="LHC_NO_INFERENCE=1" $V/helpers/capture-perf.sh 3
 
 Pass when every mod run's `hook_p95` is at most 5 ms and `lag_p95` at most
 2000 ms. Wall times compare the two modes; model latency dominates them.
+
+## LHC compaction
+
+A small window makes compactions come quickly. Trigger 60000 and target
+12000 leave room for Claude Code's own prompt (about 27k tokens), so the
+post-compact check reads `ok` unless an open turn cannot split.
+
+```sh
+. $V/helpers/lib.sh; H=$(new_home); $V/helpers/fixtures.sh "$H"
+VERIFY_ENV="CLAUDE_CODE_AUTO_COMPACT_WINDOW=100000 LHC_NO_INFERENCE=1" $V/helpers/launch.sh "$S" "$H" -- \
+  --model sonnet --allowedTools Read Bash \
+  --settings '{"pluginConfigs":{"lhc@inline":{"options":{"upperBound":60000,"lowerBound":12000}}}}'
+$V/helpers/say.sh "$S" "Remember this for later: the ticket is LH-4412. Reply with just OK."
+$V/helpers/say.sh "$S" "Read pic.png and name its color. Then read f1.txt to f6.txt one at a time, one Read per step, and give me the last word of each."
+$V/helpers/wait.sh "$H" 'compact auto mid-turn' 240
+$V/helpers/say.sh "$S" "/compact keep the plan"
+$V/helpers/say.sh "$S" "Reply with just: after"   # the manual install reaches session.append here, or never
+$V/helpers/stop.sh "$S" pane.txt
+$V/helpers/launch.sh "$S" "$H" -- --model sonnet --resume <id>   # a later bind: recovery claims the rest by receipt
+```
+
+Pass when the mod logs `compact auto mid-turn view ...` per crossing with no
+`fell back`, the pane's status line reads `LHC compacted ... (mid-turn)`, the
+answers are whiskey, echo, romeo, xray, tango, kilo, the debug log has no
+`source=compact` request, the receipt's claimed count equals its expected
+count after the resume bind (`jq '[.claimed, .expected] | map(length)'
+"$H"/lhc/receipts/<id>.json`; claimed live or by that recovery), the export holds the `[/compact instructions, recorded only: ...]`
+note, `grep -c '\[context ·' export.json` is 0, the sidecar logs no
+`rollback`, and `compare.mjs` passes.
+
+The background notification turn, on a fresh home and the same launch:
+
+```sh
+$V/helpers/say.sh "$S" "Start this in the background with the Bash tool's run_in_background option: sleep 75; echo DONE-55 > marker.txt. Do not wait for it. Then read f1.txt to f6.txt one at a time, one Read per step, and give me the last word of each. When the job's notification arrives, read marker.txt and tell me what it says."
+$V/helpers/wait.sh "$H" 'compact auto mid-turn' 240
+$V/helpers/wait.sh "$H" 'DONE-55' 180      # or watch the pane for "marker.txt says DONE-55"
+```
+
+Pass when the notification arrives after the compacts, the model reports
+DONE-55, and the installed rows after the last compact (the transcript rows
+following its `compact_boundary`) open with the person's request, with the
+notification as a `[runtime note]`.
+
+## Resume after a compaction
+
+```sh
+$V/helpers/stop.sh "$S" pane.txt
+$V/helpers/launch.sh "$S" "$H" -- --model sonnet --permission-mode default --resume <id>
+$V/helpers/say.sh "$S" "Use get_messages to fetch m1, then tell me the ticket id in one line."
+```
+
+Pass when the first request after the resume (the next assistant row's
+`message.usage`, input plus cache tokens) is about the post-compact context,
+not the whole history, the installed rows carry no `thinking` block and hold
+`[image omitted by LHC: m<id>]` where the image was, and the answer names
+LH-4412.
+
+## Compaction fallback
+
+```sh
+kill <the sidecar pid the sidecar log's listening line names>    # yours only
+$V/helpers/say.sh "$S" "/compact"          # respawned sidecar: LHC answers, bind source restart
+chmod 000 "$H"/lhc/threads/*.sqlite
+$V/helpers/say.sh "$S" "/compact"          # falls back
+chmod 600 "$H"/lhc/threads/*.sqlite
+$V/helpers/say.sh "$S" "Reply with just: back"
+$V/helpers/stop.sh "$S" pane.txt   # capture stops after 5 failed sends, so the later bind is a resume
+$V/helpers/launch.sh "$S" "$H" -- --model sonnet --resume <id>
+$V/helpers/say.sh "$S" "Reply with just: again"
+```
+
+Pass when the first compact is an LHC view after `bind ... source restart`,
+the second logs `compact manual fell back to native after <ms>ms: ...`, shows
+`LHC could not compact (...)` and a status line naming the fallback, the debug
+log shows the `source=compact` request, the export after the resume bind holds
+exactly one `[Claude Code compaction summary: LHC fell back to native
+compaction] ...` note for the transcript's one `isCompactSummary` row and no
+note for that compaction's caveat, command or stdout rows, and no turn
+recorded before the fallback is rolled back.
+
+## Retrieval
+
+```sh
+$V/helpers/say.sh "$S" "Quote my very first message in this session word for word. Use get_turns or get_messages."
+```
+
+Pass when the pane shows `lhc - get_turns (MCP)` or `get_messages` with no
+permission dialog in `--permission-mode default`, the result opens
+`<recalled-history op=...>`, the model quotes the first prompt exactly, and the
+sidecar logs `<op> <ids> served N chars`. Each result stays under 50000
+characters, so Claude Code passes it to the model whole.
+
+## Compaction cost
+
+```sh
+. $V/helpers/lib.sh; H=$(new_home)
+SID=$(node $V/helpers/synth-transcript.mjs "$H/work" 77)          # about 300k tokens
+cd "$H/work"; for i in $(seq 10); do
+  env DISABLE_AUTOUPDATER=1 LHC_HOME="$H/lhc" LHC_NO_INFERENCE=1 claude -p --model sonnet \
+    --plugin-dir "$OLDPWD/packages/cc-lhc-mod/dist/plugin" --resume "$SID" "/compact"
+done; cd -
+grep -h 'compact manual settled' "$H"/lhc/logs/mod-*.log      # "took Nms" per run
+```
+
+Native at trunk on the same shape: a fresh `synth-transcript.mjs` session per
+run, `claude -p --debug-file <log> --resume <id> "/compact"` with no plugin, timed
+from `source=compact` to `compact] finished` in the debug log. Pass when the hook's
+p95 is at most 10 s and below native's median, and the next request's input
+after an LHC compact is at most the target plus 40k.
+
