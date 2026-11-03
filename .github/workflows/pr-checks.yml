@@ -91,6 +91,12 @@ jobs:
       - name: Build lhc
         run: pnpm --filter lhc run build
 
+      - name: Build claude-adapter
+        run: pnpm --filter claude-adapter run build
+
+      - name: Test claude-adapter
+        run: pnpm --filter claude-adapter run test
+
       - name: Typecheck claude-lhc
         run: pnpm --filter claude-lhc run typecheck
 
