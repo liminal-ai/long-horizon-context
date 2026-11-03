@@ -24,27 +24,36 @@ Facts from the code. Read them before driving:
   lease, holding the Claude process pid) and `cursors/<session id>.json` (the
   committed transcript offset). `forks/<session id>` marks a refused fork,
   which stays refused across a sidecar restart and a reload.
-- Capture (`mod/hooks/capture.ts`, `sidecar/src/capture/`): the mod queues
-  every main-loop `session.append` row and `turn.start`, `turn.step` and
-  `turn.complete` in one outbox and posts it to `/capture` in order; it drops
-  an entry only when the sidecar answers after the commit. The sidecar records
-  into the thread under alias `claude-code:<session id>`. It drops `queue`,
-  `compaction` and `notice` rows, rows with no role, and mechanical attachments
-  by name (`MECHANICAL_ATTACHMENTS` in `sidecar/src/capture/map.ts`). A task
-  notification, at a turn's start or delivered mid-turn as a `queued_command`,
-  is a `runtime_note` holding its `<task-notification>` element; any other
-  `queued_command` is the person's steer. The lease outlives a sidecar that
-  exits under a live Claude process (a reload, a kill); a dead owner's lease
-  is taken over at the next bind.
+- Capture (`mod/hooks/capture.ts`, `mod/hooks/sidecar.ts`,
+  `sidecar/src/capture/`): the mod puts every main-loop `session.append` row,
+  `turn.start`, `turn.step`, `turn.complete` and every bind in one ordered
+  outbox. A flush sends entries in order, executes a bind itself as a barrier,
+  and drops an entry only when the sidecar answers after the commit. The
+  sidecar refuses entries for a session it is not bound to. It records into
+  the thread under alias `claude-code:<session id>`, dropping `queue`,
+  `compaction` and `notice` rows, rows with no role, and mechanical
+  attachments by name (`MECHANICAL_ATTACHMENTS` in
+  `sidecar/src/capture/map.ts`). A row whose origin is `task-notification`
+  (live: the `session.append` origin; recovered: the attachment's origin or
+  command mode) is a `runtime_note` holding its `<task-notification>` element;
+  any other `queued_command` is the person's steer.
+- Recovery and rewind: at each bind the sidecar records transcript rows past
+  the committed cursor through the same path as live rows. A prompt on the
+  transcript's active chain (from its last row by parent) whose path back to
+  the nearest recorded row passes a branch holding recorded rows is a rewind:
+  core `rollback` keeps through that recorded row. A path that reaches a
+  compact boundary is no rewind. A fork is refused for the session's life
+  (`forks/<session id>`).
+- Lease: a second live Claude process on the same thread is refused with a
+  notice in the transcript. The lease outlives a sidecar that exits under a
+  live Claude process (a reload, a kill); a dead owner's lease is taken over
+  at the next bind. `LHC_NO_INFERENCE=1` in the pane's env swaps the Agent SDK
+  summary worker for deterministic derivations.
 - Capture limits, accepted for v2. A row live capture missed and recovery
-  later records lands at the end of the record, not in its place. A refused
+  later records lands at the end of the record, not in its place; a rewind
+  found only by recovery also hides rows recorded live after it. A refused
   second session still writes to the shared transcript, so the owner's next
-  recovery records its rows. Recovered rows carry no step index. At bind it
-  recovers missed rows from the transcript JSONL past the cursor. A prompt
-  whose transcript parent is not the end of the record writes core `rollback`.
-  A second live Claude process on the same thread, and a fork, are refused
-  with a notice in the transcript. `LHC_NO_INFERENCE=1` in the pane's env
-  swaps the Agent SDK summary worker for deterministic derivations.
+  recovery records its rows. Recovered rows carry no step index.
 - Binding: `classic.SessionStart` (startup, clear, resume, fork, and
   `compact` after each compaction) posts `/bind`. A reload re-runs `session.start` only, so the mod keeps the binding
   in `$.state` and rebinds with source `reload`. The sidecar answers
