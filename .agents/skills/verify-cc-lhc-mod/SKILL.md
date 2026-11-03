@@ -63,7 +63,7 @@ Build from the repo root:
 
 ```sh
 pnpm install --frozen-lockfile
-pnpm --filter lhc build && pnpm --filter cc-lhc-mod build
+pnpm --filter lhc build && pnpm --filter claude-adapter build && pnpm --filter cc-lhc-mod build
 claude --version   # record it; every drive pins it with DISABLE_AUTOUPDATER=1
 ```
 
