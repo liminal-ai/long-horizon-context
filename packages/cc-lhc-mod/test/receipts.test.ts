@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import type { Row } from "../sidecar/src/capture/map.ts";
 import { NATIVE_SUMMARY_LABEL } from "../sidecar/src/capture/map.ts";
 import type { Recorder } from "../sidecar/src/capture/recorder.ts";
 import { answerCompact } from "../sidecar/src/compact.ts";
+import { fingerprintOf, Receipts } from "../sidecar/src/receipts.ts";
 import type { BuiltMessage } from "../src/compact.ts";
 import { events, type Harness, harness, messages, recorder, Script, SESSION, writeTranscript } from "./fixture.ts";
 
@@ -251,5 +253,31 @@ describe("recovered install rows and step indices", () => {
     const call = [...(await events(restarted)).values()].find((payload) => payload.toolCallId === "toolu_next");
     expect(restarted.receipts.current?.claimed).toHaveLength(answer.messages.length);
     expect(call?.stepIndex).toBe(4);
+  });
+});
+
+describe("rows an earlier install claimed", () => {
+  it("stay projection when live capture delivers them after the next install begins", () => {
+    const receipts = new Receipts(h.home, SESSION);
+    const row = (uuid: string, text: string): Row => ({
+      kind: "row",
+      sessionId: SESSION,
+      uuid,
+      door: "note",
+      origin: "engine",
+      message: { type: "user", role: "user", content: [{ type: "text", text }] },
+      at: 0,
+    });
+    const view = (text: string): BuiltMessage => ({ role: "user", text, toolUses: [] });
+    receipts.begin({ sessionId: SESSION, cursor: 0, expected: [fingerprintOf(view("[context · brief]\nfirst view"))] });
+    expect(receipts.isProjection(row("install-1", "[context · brief]\nfirst view"))).toBe(true);
+    receipts.begin({
+      sessionId: SESSION,
+      cursor: 0,
+      expected: [fingerprintOf(view("[context · brief]\nsecond view"))],
+    });
+
+    expect(receipts.isProjection(row("install-1", "[context · brief]\nfirst view"))).toBe(true);
+    expect(receipts.current?.claimed).toEqual([]);
   });
 });

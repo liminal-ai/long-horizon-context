@@ -47,7 +47,7 @@ function rowFingerprint(row: Row): string | undefined {
 }
 
 export function claim(receipt: Receipt, row: Row): Receipt | undefined {
-  if (receipt.claimed.includes(row.uuid)) return receipt;
+  if (receipt.claimed.includes(row.uuid) || receipt.earlier.includes(row.uuid)) return receipt;
   const next = receipt.expected[receipt.claimed.length];
   // A prompt the person typed is never installed; only an unmarked recovered row may be.
   if (next === undefined || (row.door === "prompt" && row.origin !== UNMARKED) || rowFingerprint(row) !== next) {
