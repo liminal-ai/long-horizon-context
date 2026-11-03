@@ -1,6 +1,6 @@
 ---
 name: verify-cc-lhc-mod
-description: "Verify cc-lhc-mod (packages/cc-lhc-mod, the Claude Code mod plus per-process Node sidecar for LHC) the way a user runs it: plain claude with --plugin-dir in an isolated tmux session, a throwaway LHC home and a pinned Claude Code version. Use when proving the mod's sidecar, session binding, settings and compact trigger, reload, capture into the LHC thread (rows, recovery, lease, rewind), compaction answered with the LHC view (mid-turn, manual, fallback, resume, install receipts), /clear, /resume, --continue and --fork-session threads, older-host thread adoption, derivations on the session's own model client or the Agent SDK worker, get_turns and get_messages retrieval, or the seam check on a new Claude Code release."
+description: "Verify cc-lhc-mod (packages/cc-lhc-mod, the Claude Code mod plus per-process Node sidecar for LHC) the way a user runs it: plain claude with --plugin-dir in an isolated tmux session, a throwaway LHC home and a pinned Claude Code version. Use when proving the mod's sidecar, session binding, settings and compact trigger, reload, capture into the LHC thread (rows, recovery, lease, rewind), compaction answered with the LHC view (mid-turn, manual, fallback, resume, install receipts), /clear, /resume, --continue and --fork-session threads, older-host thread adoption, derivations on the session's own model client or the Agent SDK worker, get_turns and get_messages retrieval, the LHC panel, /lhc commands and status line, or the seam check on a new Claude Code release."
 ---
 
 # Verify cc-lhc-mod
@@ -10,8 +10,8 @@ with the plugin loaded. The mod (`mod/hooks/register.ts`, bundled to
 `dist/plugin/hooks/register.js`) runs inside Claude Code with no Node. On load
 it spawns one Node 24 sidecar (`sidecar/src/`, bundled to
 `dist/plugin/sidecar/main.js`) and talks to it over a Unix socket. The user
-touches the Claude Code UI, `/config` rows for the mod's three settings, and
-(later PRs) the LHC panel and commands.
+touches the Claude Code UI, `/config` rows for the mod's three settings, the
+LHC panel (`/lhc`), its subcommands and the status line.
 
 Facts from the code. Read them before driving:
 
@@ -40,7 +40,11 @@ Facts from the code. Read them before driving:
   `sidecar/src/capture/map.ts`). A row whose origin is `task-notification`
   (live: the `session.append` origin; recovered: the attachment's origin or
   command mode) is a `runtime_note` holding its `<task-notification>` element;
-  any other `queued_command` is the person's steer. Claude Code's own
+  any other `queued_command` is the person's steer. A row a plugin sent
+  (origin `plugin`, such as the LHC panel's `/compact` through `$.command.run`)
+  is never the person's prompt and never a turn's opener: it maps as the same
+  command typed does, so the panel's plain `/compact` is a `runtime_note`,
+  live and recovered, and the engine turn that runs it sends no turn markers. Claude Code's own
   compaction summary (a `compaction` row live, an `isCompactSummary` row in
   the transcript) is a `runtime_note` starting `[Claude Code compaction
   summary: LHC fell back to native compaction]`.
@@ -109,8 +113,7 @@ Facts from the code. Read them before driving:
   Nothing waits for `session.end`: `/exit` kills the sidecar first, and each
   capture batch is committed before the sidecar answers it.
 - Threads (`sidecar/src/bind.ts`): a bind answers the thread and how the
-  session came to it, and the mod pins `LHC thread <id> (<how>)` as its
-  status line. A session whose alias is known keeps its thread (`resumed`:
+  session came to it, and the status line shows `thread <id> (<how>)`. A session whose alias is known keeps its thread (`resumed`:
   `/resume`, `--continue`, `--resume`, a reload). An unknown one gets a new
   thread (`new`: startup, `/clear`, whose new session id has no alias). A
   thread with `compact_continuation_boundary` rows, which only older hosts
@@ -175,12 +178,52 @@ Facts from the code. Read them before driving:
   the next bind's recovery when it does not (an interactive manual one).
   A killed sidecar is respawned on the next post and rebinds with source
   `restart`, so it answers the next compaction itself.
-- Status line and pressure: a view sets `LHC compacted <before> to <view>
-  (mid-turn|settled)`. At the next main-loop step the mod reads the engine's
+- Status line and pressure: the status line reads `lhc: context <tokens> of
+  <trigger> (<pct>%) · thread <id> (<how>) · compacted <before> to <view>
+  (mid-turn|settled)`, each part once known; a fallback reads `last
+  compaction fell back to Claude Code's summary`. At the next main-loop step the mod reads the engine's
   own estimate (`breakdown.totalTokens`) and logs `post-compact context N
   trigger T target X ok|inadequate`; above 75 percent of the trigger it also
   shows a transcript notice, since Claude Code stops a turn after three
   refills within three turns.
+- Panel (`mod/hooks/panel.tsx`, `commands.ts`, `state.ts`, `src/panel.ts`):
+  `/lhc` opens pane `lhc` (focused; inline above the prompt, docked as a
+  sidebar under `/tui fullscreen` from 110 columns). It draws from one `$.state`
+  atom, `lhc.panel` (shape `panel-1`), which `publish` writes and the status
+  line is drawn from: the context (the mod's measure after each main-loop
+  step, the view plus the fixed context after a compaction, and the engine
+  breakdown's `totalTokens` at every refresh) as a
+  bar against the trigger, the last compaction (when,
+  trigger, compact or prune, before and after, mid-turn or settled, or the
+  fallback's reason), derivation counts from the sidecar's `GET /health`
+  (core `inspect.health`, refreshed on open and every 5 s while shown), the
+  three settings as Inputs with the effective trigger, target, window and a
+  `Clamped:` line, and Buttons `compact` (hotkey c), `prune` (p) and `export`
+  (e) with a result line (`✓`, `✗`). `ctrl+x tab` focuses it, `ctrl+x x`
+  (focused) closes it. Compact now and Prune run `/compact` through
+  `$.command.run`, one at a time, each with its own op: `$.session.compact`
+  skips the calling plugin's own hooks, so it would get Claude Code's
+  summary. A fallback is recorded only when Claude Code's summary ran. Prune posts `/compact` with `op:
+  "prune"`: core `threadView.prune` moves the visibility boundary and the
+  view is installed with no core compact. It carries the same `guard` as a
+  compaction, checked in the same place: a pruned view that would not get below
+  the trigger with the fixed context is refused before any receipt is begun.
+  Nothing to shorten answers `unchanged` and the hook skips, keeping the
+  install receipt (`✓ Nothing to prune`); a refusal or failure shows `✗ LHC
+  did not prune: <reason>`. The op attaches only to the manual
+  `/compact` the panel runs, never to an auto compaction during a turn. Export posts
+  `/export`, which writes core `exportHistory` JSON to
+  `<LHC home>/exports/<thread>-<time>.json`. `/lhc status|compact|prune|
+  export|bounds <lower> <upper> [percent]` do the same from the prompt; a
+  command hook cannot run `/compact` itself, so `/lhc compact` and `/lhc
+  prune` start it on a zero timer once the command ends. Numbers take `k`
+  and `m`; each bound is at least 10k (`MIN_BOUND` in `src/settings.ts`, the
+  one rule `/config` values follow too), so `140` is refused, not saved. A settings edit applies at once (the mod logs `panel window W
+  trigger T ...`), then writes `lhc.<field>` with `$.config.set`; the write
+  reloads the plugin, whose start applies the same settings again. The mod's
+  own `config.set` hook skips writes from the panel. A `config.set` hook on
+  the built-in `autoCompact` row shows a toast and a transcript line
+  `Auto-compact is off, so LHC stops compacting ...` when it is turned off.
 - Retrieval (`mod/hooks/retrieval.ts`, the sidecar's `/retrieve` route):
   `mcp__lhc__get_turns` and `mcp__lhc__get_messages` are registered at
   `session.start` in the prompt's tool list and answered by a `tool.call`
@@ -207,6 +250,18 @@ pnpm install --frozen-lockfile
 pnpm --filter lhc build && pnpm --filter claude-adapter build && pnpm --filter cc-lhc-mod build
 claude --version   # record it; every drive pins it with DISABLE_AUTOUPDATER=1
 ```
+
+Every drive that runs alongside other agents sets its own evidence dir,
+`VERIFY_EVIDENCE=<your run folder>/evidence`. The default lists sit in the main
+checkout and are shared, so another agent's `cleanup.sh` kills your sessions
+and removes your homes.
+
+A drive that writes settings (the panel, `/lhc bounds`, `/config`) also sets
+`VERIFY_ISOLATED_CONFIG=1`: the session gets its own Claude config dir,
+`<home>/claude`, signed in with the operator's current access token, read at
+launch. Without it the write lands in `~/.claude/settings.json` and every
+other `lhc` session on the machine picks it up. Transcripts then land in
+`<home>/claude/projects/`.
 
 Launch one interactive session:
 
@@ -247,6 +302,9 @@ validate`, and that the scratch root sits outside any repo. Pass line:
 | `helpers/fixtures.sh <home>` | Writes the compaction drives' inputs into `<home>/work`: `f1.txt` to `f6.txt` (about 8k tokens each, last line `last word: whiskey`, `echo`, `romeo`, `xray`, `tango`, `kilo`) and `pic.png`, a red square |
 | `helpers/derive-perf.sh [runs]` | The same ten-turn interactive session on each model lane, interleaved: turn time, time to drain after the last turn, sidecar RSS and peak, `thread health` |
 | `helpers/capture-perf.sh [runs]` | The same headless 40-call session with and without the plugin, interleaved: wall time, the append hook's p95 own time, commit lag p95 |
+| `helpers/shot.mjs png <session> <out.png>` | Screenshots the session's tmux screen with its colors (capture-pane to HTML, headless Chrome) |
+| `helpers/shot.mjs record <session> <out.mp4> <seconds>` | Records the screen every 200 ms while you drive it, then encodes the changed frames with ffmpeg |
+| `helpers/pane-perf.sh <session> [runs]` | On a launched session in the default renderer (not `/tui fullscreen`, where `/context`'s output never reaches tmux history; it refuses there), with `VERIFY_ISOLATED_CONFIG=1` set, since it writes the plugin's settings (it refuses without it): `/context` draw time (the baseline), `/lhc` to the pane drawn, and the pane's redraw after `/lhc bounds`, each a median over the runs |
 | `helpers/cleanup.sh` | Kills the tmux sessions the helpers recorded, removes recorded homes |
 
 Seam check, headless, run on every Claude Code release:
@@ -302,16 +360,18 @@ Interactive seams (`/clear`, reload, a real crossing) are the drives below.
 Unverified anywhere: the live re-apply after `/model`. There is no seam for
 it and no drive has run it, so report it as unverified, not passed.
 
-Unit checks: `pnpm --filter cc-lhc-mod test` (settings, sidecar, capture, recovery, rewind, projector, receipts, the compact route, retrieval, the model bridge). CI runs it.
+Unit checks: `pnpm --filter cc-lhc-mod test` (settings, sidecar, capture, recovery, rewind, projector, receipts, the compact route, retrieval, the model bridge, the panel model, prune, export and health). CI runs it.
 
-Local-only checks. CI has no Claude Code, so its typecheck logs `SKIP mod
-type-check and claude plugin test` and runs neither. Run both locally before
-every code-ready or fix-round push:
+CI installs Claude Code 2.1.317 and runs `test:mod` (`claude plugin test`
+over `test/mod.test.ts` and `test/panel.test.tsx`, which mounts the pane on
+`terminal` and `desktop`). The mod type-check needs the `claude-code.d.ts` a
+local Claude Code lays down, so CI logs `SKIP mod type-check`. Run both
+locally before every code-ready or fix-round push:
 
 ```sh
 helpers/launch.sh <session> && helpers/stop.sh <session>   # Claude Code lays dist/plugin/.claude-plugin/types
 pnpm --filter cc-lhc-mod typecheck   # expect "mod typecheck against .../claude-code/index.d.ts", not SKIP
-pnpm --filter cc-lhc-mod test:mod    # test/mod.test.ts under claude plugin test dist/plugin
+pnpm --filter cc-lhc-mod test:mod    # test/mod.test.ts and test/panel.test.tsx under claude plugin test dist/plugin
 ```
 
 The build keeps `dist/plugin/.claude-plugin/types`, so one launch per Claude
@@ -357,7 +417,7 @@ Read-only diagnostics, per home:
   Nms`. Core's own failures are in `thread health` (`failed=`).
 - Compaction lines. Sidecar: `compact <trigger> mid-turn|settled view V
   tokens (target X) messages M compact point P degraded D gaps G recovered R
-  took Tms`, `compact <trigger> answered native: <reason>`, `<op> <ids>
+  took Tms`, `compact|prune <trigger> answered native: <reason>`, `<op> <ids>
   served N chars`. Mod: `compact <trigger> mid-turn|settled view V messages
   M`, `compact <trigger> fell back to native after <ms>ms: <reason>`, `post-compact context
   ...`, `<op> [ids] answered N chars`. The receipt: `jq '.claimed | length'
