@@ -52,7 +52,18 @@ export function isRecorded(row: Row): boolean {
 }
 
 /** The person's own prompt. A background task's notification arrives by the same door and is a note. */
-const isUserPrompt = (row: Row): boolean => row.door === "prompt" && row.origin !== "task-notification";
+const NOTIFICATION = /<task-notification>[\s\S]*<\/task-notification>/;
+
+/**
+ * A background task's notification is not something the person said. It comes
+ * by the prompt door at a turn's start, or as a queued command into a running
+ * turn, wrapped in a reminder the transcript does not keep.
+ */
+const isTaskNotification = (row: Row): boolean =>
+  row.origin === "task-notification" ||
+  (row.message.name === "queued_command" && NOTIFICATION.test(joinedText(row.message.content)));
+
+const isUserPrompt = (row: Row): boolean => row.door === "prompt" && !isTaskNotification(row);
 
 export function opensTurn(row: Row, state: TurnState): boolean {
   return isUserPrompt(row) && !state.isOpen;
@@ -68,7 +79,8 @@ function withStep(events: MessageEventInput[], step: number | undefined): Messag
 const kindlessTextKey = (row: Row): string => idempotencyKey(HARNESS, row.uuid, 0, "text");
 
 function note(row: Row): MessageEventInput[] {
-  const text = joinedText(row.message.content);
+  const joined = joinedText(row.message.content);
+  const text = isTaskNotification(row) ? (NOTIFICATION.exec(joined)?.[0] ?? joined) : joined;
   if (text.trim() === "") return [];
   return [textEvent(HARNESS, "runtime_note", text, "system", kindlessTextKey(row))];
 }
@@ -84,7 +96,7 @@ function prompt(row: Row, isSteer: boolean): MessageEventInput[] {
 function mapRow(row: Row, state: TurnState): MessageEventInput[] {
   if (!isRecorded(row)) return [];
   if (isUserPrompt(row)) return prompt(row, state.isOpen);
-  if (row.message.name === "queued_command") return prompt(row, true);
+  if (row.message.name === "queued_command" && !isTaskNotification(row)) return prompt(row, true);
   switch (row.door) {
     case "response":
       return withStep(mapAssistantBlocks(HARNESS, row.uuid, { content: row.message.content, model: row.model }), state.step);

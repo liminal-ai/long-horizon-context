@@ -104,4 +104,36 @@ describe("capture", () => {
     expect(await record(h, "restart")).toMatchObject({ kind: "refused", notice: expect.stringContaining("forked") });
     expect(await record(h, "reload")).toMatchObject({ kind: "refused", notice: expect.stringContaining("forked") });
   });
+
+  it("records a task notification delivered mid-turn as a runtime note, live and recovered alike", async () => {
+    const notification =
+      "<task-notification>\n<task-id>b2iz2kpm0</task-id>\n<status>completed</status>\n</task-notification>";
+    const script = new Script();
+    script.prompt("go");
+    script.turnStart("turn-1");
+    script.step("turn-1", 0);
+    script.delivery(notification);
+    script.steer("also this");
+    script.answer({ type: "text", text: "ok" });
+    script.turnEnd("turn-1");
+    const live = await recorder(h);
+    writeTranscript(h, script.lines);
+    await live.capture(script.entries);
+    const liveMessages = await messages(live);
+    live.release();
+    h.cleanup();
+    h = harness();
+    writeTranscript(h, script.lines);
+
+    const recovered = await recorder(h);
+
+    const expected = [
+      "t1 user_prompt go",
+      `t1 runtime_note ${notification}`,
+      "t1 user_prompt steer <system-reminder>The user sent: also this</system-reminder>",
+      "t1 assistant_text ok",
+    ];
+    expect(liveMessages).toEqual(expected);
+    expect((await messages(recovered)).slice(0, 2)).toEqual(expected.slice(0, 2));
+  });
 });

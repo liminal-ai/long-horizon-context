@@ -31,7 +31,9 @@ Facts from the code. Read them before driving:
   into the thread under alias `claude-code:<session id>`. It drops `queue`,
   `compaction` and `notice` rows, rows with no role, and mechanical attachments
   by name (`MECHANICAL_ATTACHMENTS` in `sidecar/src/capture/map.ts`). A task
-  notification is a note, a `queued_command` attachment is a steer. At bind it
+  notification, at a turn's start or delivered mid-turn as a `queued_command`,
+  is a `runtime_note` holding its `<task-notification>` element; any other
+  `queued_command` is the person's steer. At bind it
   recovers missed rows from the transcript JSONL past the cursor. A prompt
   whose transcript parent is not the end of the record writes core `rollback`.
   A second live Claude process on the same thread, and a fork, are refused

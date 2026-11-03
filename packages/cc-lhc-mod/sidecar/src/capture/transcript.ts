@@ -11,7 +11,7 @@ export type TranscriptLine = {
   isCompactSummary?: boolean;
   origin?: { kind?: string };
   message?: { role?: string; content?: unknown; model?: string };
-  attachment?: { type?: string; prompt?: unknown };
+  attachment?: { type?: string; prompt?: unknown; origin?: { kind?: string } };
 };
 
 const CHUNK = 1 << 20;
@@ -113,7 +113,8 @@ export function rowOf(line: TranscriptLine): Row | undefined {
   if (line.type === "attachment" && line.attachment?.type === "queued_command") {
     const text = typeof line.attachment.prompt === "string" ? line.attachment.prompt : "";
     const message: CapturedMessage = { type: "attachment", name: "queued_command", role: "user", content: [{ type: "text", text }] };
-    return { kind: "row", sessionId: "", uuid: line.uuid, door: "attachment", origin, message, at: 0 };
+    const queuedBy = line.attachment.origin?.kind ?? origin;
+    return { kind: "row", sessionId: "", uuid: line.uuid, door: "attachment", origin: queuedBy, message, at: 0 };
   }
   const door = line.message === undefined ? undefined : doorOf(line);
   if (door === undefined || line.message === undefined) return undefined;
