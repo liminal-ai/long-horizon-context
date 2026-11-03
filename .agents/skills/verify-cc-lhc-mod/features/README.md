@@ -103,6 +103,13 @@ node $V/helpers/compare.mjs export.json <transcript path from the bind line>
 node packages/lhc/dist/cli.js thread health --home "$H/lhc" --thread-id "$T"
 ```
 
+A slash-command check adds `$V/helpers/say.sh "$S" "/bro hello"` (any skill),
+then `$V/helpers/say.sh "$S" "/clear"` as the built-in local command; never
+`/model` or `/config`, which write the real `~/.claude/settings.json`, and
+not `/cost`, which writes no transcript rows. Pass when the skill is one
+`user_prompt` `/bro hello` with no expanded body and the new session's
+thread starts with one `runtime_note` `/clear`.
+
 Pass when `compare: PASS`, the export holds the steer as a `user_prompt`
 with `steer: true` and the task notification as a `runtime_note`, no
 mechanical attachment (`date`, `skill_listing`, `auto_mode`, ...) is in the

@@ -47,7 +47,7 @@ Facts from the code. Read them before driving:
   (typed, `claude -p`, or an old row with no `origin`), the native `/compact`
   line is a note, and the summary and command rows a native compaction
   writes, which no hook sees, are dropped. A slash command is recorded once as
-  `/name args`: a built-in local command (`/model`, `/clear`), which
+  `/name args`: a built-in local command (`/clear`, `/model`), which
   Claude Code files right after a `<local-command-caveat>` row, is a
   `runtime_note`; any other command (a skill, a plugin or custom command,
   typed or by `claude -p`) prompts the model and is a `user_prompt` that
@@ -93,7 +93,10 @@ Facts from the code. Read them before driving:
   `--settings '{"pluginConfigs":{"lhc@inline":{"options":{...}}}}'`.
 - Auth: drives run the real `claude` with the operator's own login or env
   auth, from a throwaway work dir. `HOME` stays real because the login lives
-  there. Transcripts land in `~/.claude/projects/<encoded work dir>/`.
+  there. So never run `/model` or `/config` in a drive that uses the real
+  Claude home: they write `~/.claude/settings.json`. Pick the model with
+  `--model`, and check a built-in local command with `/clear`.
+  Transcripts land in `~/.claude/projects/<encoded work dir>/`.
 
 ## Launch
 
