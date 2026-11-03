@@ -1,5 +1,7 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { afterEach, beforeEach, expect, it } from "vitest";
-import { events, type Harness, harness, recorder, Script, SESSION, writeTranscript } from "./fixture.ts";
+import { events, type Harness, harness, messages, recorder, Script, SESSION, writeTranscript } from "./fixture.ts";
 
 let h: Harness;
 beforeEach(() => {
@@ -63,4 +65,26 @@ it("a recovered open turn gets the step indices live capture would have given it
   } finally {
     reloaded.cleanup();
   }
+});
+
+it("a recovered claude -p turn, which has no duration row, is settled so the next prompt opens a turn", async () => {
+  const lines = readFileSync(join(import.meta.dirname, "fixtures", "print-mode-transcript.jsonl"), "utf8")
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line) as Record<string, unknown> & { uuid: string; parentUuid: string | null });
+  writeTranscript(h, lines);
+  const r = await recorder(h);
+  const next = new Script();
+  next.rewindTo(lines.at(-1)?.uuid ?? "");
+  next.prompt("an independent next prompt");
+  writeTranscript(h, [...lines, ...next.lines]);
+
+  await r.capture(next.entries);
+
+  expect(r.isTurnOpen).toBe(false);
+  expect(await messages(r)).toEqual([
+    "t1 user_prompt Reply with just PONG.",
+    "t1 assistant_text PONG",
+    "t2 user_prompt an independent next prompt",
+  ]);
 });

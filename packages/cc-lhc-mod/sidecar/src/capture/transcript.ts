@@ -12,7 +12,7 @@ export type TranscriptLine = {
   isMeta?: boolean;
   isCompactSummary?: boolean;
   origin?: { kind?: string };
-  message?: { id?: string; role?: string; content?: unknown; model?: string };
+  message?: { id?: string; role?: string; content?: unknown; model?: string; stop_reason?: string | null };
   attachment?: { type?: string; prompt?: unknown; commandMode?: string; origin?: { kind?: string } };
 };
 
@@ -211,7 +211,8 @@ export function rowOf(line: TranscriptLine): Row | undefined {
  * The entries live capture would have sent for transcript lines: each row past
  * `from`, and, from every line, the turn starts, steps and ends that set the
  * turn state. A prompt opens a turn, each model response (one message id) is
- * one step with its tool results, and a turn's duration row settles it.
+ * one step with its tool results, and a response that ends the turn or a
+ * turn's duration row settles it.
  */
 export function entriesOf(
   lines: ReadonlyArray<{ line: TranscriptLine; end: number }>,
@@ -235,6 +236,8 @@ export function entriesOf(
       entries.push({ kind: "step", sessionId: "", turnId: "", index: step, at: 0 });
     }
     if (end > from) entries.push(row);
+    // A response that ends the turn settles it; print-mode transcripts write no duration row.
+    if (line.type === "assistant" && line.message?.stop_reason === "end_turn") entries.push({ kind: "settle" });
     if (row.door === "prompt" || isUserPrompt(row, afterCaveat)) {
       entries.push({ kind: "turn-start", sessionId: "", turnId: line.uuid, at: 0 });
       step = -1;
