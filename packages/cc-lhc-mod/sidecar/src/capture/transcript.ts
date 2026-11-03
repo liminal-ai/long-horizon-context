@@ -5,6 +5,7 @@ import type { Row } from "./map.ts";
 export type TranscriptLine = {
   uuid: string;
   parentUuid: string | null;
+  subtype?: string;
   type: string;
   isSidechain?: boolean;
   isMeta?: boolean;
@@ -18,6 +19,7 @@ const CHUNK = 1 << 20;
 
 export class TranscriptTail {
   readonly parents = new Map<string, string | null>();
+  readonly compactBoundaries = new Set<string>();
   #offset: number;
   #pending = Buffer.alloc(0);
 
@@ -56,6 +58,7 @@ export class TranscriptTail {
           this.#pending = this.#pending.subarray(end + 1);
           if (line !== undefined) {
             this.parents.set(line.uuid, line.parentUuid);
+            if (line.subtype === "compact_boundary") this.compactBoundaries.add(line.uuid);
             lines.push({ line, end: this.#offset });
           }
           end = this.#pending.indexOf(10);

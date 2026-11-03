@@ -108,6 +108,36 @@ export class Script {
     });
   }
 
+  /**
+   * A native `/compact` as the transcript files it: the command note, then a
+   * boundary with no parent whose logical parent skips the note, then the summary.
+   */
+  nativeCompaction(): void {
+    const before = this.#parent;
+    this.#row(
+      "note",
+      { type: "user", role: "user", content: [{ type: "text", text: "/compact" }] },
+      { type: "user", message: { role: "user", content: "/compact" } },
+    );
+    const boundary = randomUUID();
+    this.lines.push({
+      uuid: boundary,
+      parentUuid: null,
+      logicalParentUuid: before,
+      type: "system",
+      subtype: "compact_boundary",
+    });
+    const summary = randomUUID();
+    this.lines.push({
+      uuid: summary,
+      parentUuid: boundary,
+      type: "user",
+      isCompactSummary: true,
+      message: { role: "user", content: "Summary of the conversation so far" },
+    });
+    this.#parent = summary;
+  }
+
   compactBoundary(): string {
     return this.#row(
       "compaction",

@@ -138,6 +138,8 @@ export class Recorder {
     if (await this.#hasRecordedDescendant(promptUuid)) return [];
     let keep = 0;
     for (let id: string | null | undefined = parent; typeof id === "string"; id = this.#parents.parents.get(id)) {
+      // The chain ends at a compaction, and a rewind cannot reach past one.
+      if (this.#parents.compactBoundaries.has(id)) return [];
       const order = await this.#capturedThrough(id);
       if (order !== undefined) {
         keep = order;

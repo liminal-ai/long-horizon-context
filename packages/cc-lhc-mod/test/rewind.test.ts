@@ -76,3 +76,18 @@ it("rolls back a rewind that only recovery sees, after a restart", async () => {
     "t3 user_prompt third",
   ]);
 });
+
+it("writes no rollback for the first prompt after a native compaction", async () => {
+  const script = new Script();
+  script.toolTurn("turn-1", "first", "toolu_a");
+  script.nativeCompaction();
+  script.toolTurn("turn-2", "second", "toolu_b");
+  const r = await recorder(h);
+  writeTranscript(h, script.lines);
+
+  await r.capture(script.entries);
+
+  expect([...(await events(r)).keys()].filter((key) => key.endsWith(":rollback"))).toEqual([]);
+  expect((await messages(r)).some((message) => message.endsWith("runtime_note /compact"))).toBe(true);
+  expect(await messages(r)).toHaveLength(9);
+});
