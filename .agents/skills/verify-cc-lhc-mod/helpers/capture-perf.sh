@@ -15,7 +15,7 @@ run() {
   t0=$(date +%s%N)
   bash -c "$cmd" >"$home/out.txt" 2>&1
   t1=$(date +%s%N)
-  transcript="$(ls -t "$HOME"/.claude/projects/*"$(basename "$home")"-work/*.jsonl 2>/dev/null | head -1)"
+  transcript="$(ls -t "$home"/claude/projects/*-work/*.jsonl "$HOME"/.claude/projects/*"$(basename "$home")"-work/*.jsonl 2>/dev/null | head -1 || true)"
   rows="$(grep -c '"uuid"' "$transcript" 2>/dev/null || echo 0)"
   if [ "$mode" = mod ]; then
     local hook lag

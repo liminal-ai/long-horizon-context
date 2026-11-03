@@ -12,14 +12,14 @@ and `S` the tmux session name. Run every drive from the repo root with
 | [Session threads](#session-threads) | `/clear`, `/resume`, `--continue`, `--resume --fork-session`, an older host's thread | `launch.sh`, `say.sh`, `compare.mjs` |
 | [Reload](#reload) | a save to the loaded mod | edit `dist/plugin/hooks/register.js` |
 | [Hangup](#hangup) | a closed terminal or killed tmux pane, idle, mid-turn or right after Escape | `tmux kill-session`, `stop.sh` |
-| [Settings and trigger](#settings-and-trigger) | `userConfig` from settings or `/config`, model window, compact window | seam check `settings-*`, `override-*`, crossing drive |
+| [Settings and trigger](#settings-and-trigger) | `userConfig` from settings or `/config`, model window, compact window, `/model` | seam check `settings-*`, `override-*`, crossing drive, `/model` drive |
 | [Launch cost](#launch-cost) | every launch | `perf.sh` |
 | [Capture](#capture) | every main-loop row, interactive and `-p` | `say.sh`, `compare.mjs` |
 | [Capture recovery](#capture-recovery) | sidecar crash, reload, any later bind | `kill -9` the sidecar PID |
 | [Thread lease](#thread-lease) | a second `claude --resume` of a recorded session | `launch.sh` twice on one home |
 | [Rewind](#rewind) | double Escape or `/rewind`, then a new prompt | the picker in tmux |
 | [Capture cost](#capture-cost) | every row | `capture-perf.sh` |
-| [LHC panel](#lhc-panel) | `/lhc`, its buttons and fields, `/lhc status\|compact\|prune\|export\|bounds`, the status line, `/config` auto-compact | `launch.sh` with `VERIFY_ISOLATED_CONFIG=1`, `shot.mjs`, `pane-perf.sh` |
+| [LHC panel](#lhc-panel) | `/lhc`, its buttons and fields, `/lhc status\|compact\|prune\|export\|bounds`, the status line, `/config` auto-compact | `launch.sh`, `shot.mjs`, `pane-perf.sh` |
 | [LHC compaction](#lhc-compaction) | auto mid-turn, auto settled, `/compact`, `/compact <text>`, a background job's notification turn | `fixtures.sh`, `say.sh`, `compare.mjs` |
 | [Resume after a compaction](#resume-after-a-compaction) | exit, then `claude --resume <id>` | `stop.sh`, `launch.sh` |
 | [Compaction fallback](#compaction-fallback) | sidecar killed, compaction failing, outbox not drained | `kill` the sidecar PID, `chmod 000` the thread file |
@@ -100,6 +100,14 @@ pnpm --filter cc-lhc-mod build                    # restore the bundle
 Pass when the old sidecar log ends `exit SIGTERM`, a new sidecar log binds
 the same id with source `reload`, and `run/` holds only the new socket.
 
+Claude Code 2.1.317 holds a file-triggered reload until the turn ends, so a
+save during a turn cannot test a reload mid-turn. To see the hold, save while
+a foreground tool runs (Bash `python3 -c "import time; time.sleep(20)"`; a
+bare `sleep` is blocked): the debug log's `hooks module lhc@inline reloaded`
+and the bind with source `reload` come after the turn's `capture hook rows`
+line, not at the save (measured 20.7 s later). A sidecar that must die
+mid-turn is `kill`ed instead; see Capture recovery.
+
 ## Hangup
 
 A hangup (a closed terminal, a killed tmux pane) sends SIGHUP to Claude and
@@ -145,10 +153,28 @@ the debug log shows `level=ok` or `level=warn` checks before the first
 40000 and below the 67000 default. Later compacts may trip Claude Code's
 refill breaker; that is native compaction, not this feature.
 
-Unverified: the live re-apply on `/model`. The mod re-applies at the next
-turn when `$.session.model()` changes, and no drive or seam has switched the
-model mid-session and watched the trigger follow. A `/config` change is not
-driven live either.
+A `/model` switch re-applies at the next main-loop turn, when
+`$.session.model()` differs from the model of the last apply. Drive it on the
+isolated config (the default), since `/model` saves the default model:
+
+```sh
+$V/helpers/launch.sh "$S" -- --model haiku
+$V/helpers/say.sh "$S" "Reply with just: one"
+$V/helpers/say.sh "$S" "/lhc status"          # Context ... of <trigger>
+$V/helpers/say.sh "$S" "/model fable"
+tmux send-keys -t "=$S:" Enter                 # "1. Yes, switch to Fable 5.1"
+$V/helpers/say.sh "$S" "Reply with just: two"
+$V/helpers/wait.sh "$H" ' model window' 60
+$V/helpers/say.sh "$S" "/lhc status"
+```
+
+Pass when the mod log gains exactly one `model window W trigger T ...` line
+per switch, at the next prompt and not at the switch, `/lhc status` before
+and after names the trigger for the window of each model,
+`<H>/claude/settings.json` holds the new model, and `~/.claude/settings.json`
+is byte-identical to before the drive. Haiku, Sonnet and Fable 5.x each
+measured a 1M window, so the trigger stays 800000 across those switches.
+Only a model with another window moves it. A `/config` change is not driven live.
 
 ## Launch cost
 
@@ -176,10 +202,12 @@ node $V/helpers/compare.mjs export.json <transcript path from the bind line>
 node packages/lhc/dist/cli.js thread health --home "$H/lhc" --thread-id "$T"
 ```
 
-A slash-command check adds `$V/helpers/say.sh "$S" "/bro hello"` (any skill),
-then `$V/helpers/say.sh "$S" "/clear"` as the built-in local command; never
-`/model` or `/config`, which write the real `~/.claude/settings.json`, and
-not `/cost`, which writes no transcript rows. Pass when the skill is one
+A slash-command check adds `$V/helpers/say.sh "$S" "/bro hello"`, then
+`$V/helpers/say.sh "$S" "/clear"` as the built-in local command, not `/cost`,
+which writes no transcript rows. The isolated config loads none of the
+operator's skills, so write one into the work dir before the launch:
+`mkdir -p "$H/work/.claude/skills/bro"` and a `SKILL.md` there with `name:
+bro` and a one-line body. Pass when the skill is one
 `user_prompt` `/bro hello` with no expanded body and the new session's
 thread starts with one `runtime_note` `/clear`.
 
@@ -240,7 +268,12 @@ Pass when every mod run's `hook_p95` is at most 5 ms and `lag_p95` at most
 
 A small window makes compactions come quickly. Trigger 60000 and target
 12000 leave room for Claude Code's own prompt (about 27k tokens), so the
-post-compact check reads `ok` unless an open turn cannot split.
+post-compact check reads `ok` unless an open turn cannot split. Keep each
+step near the fixtures' 8k tokens. Claude Code stops a turn after three
+refills within three turns. In the v2 run, before a mid-turn view over the
+trigger was installed, 15k reads at a 60k trigger tripped that breaker. 8k
+reads compact once mid-turn (dispatch about 59k, post-compact about 30k
+`ok`).
 
 ```sh
 . $V/helpers/lib.sh; H=$(new_home); $V/helpers/fixtures.sh "$H"
@@ -279,23 +312,43 @@ following its `compact_boundary`) open with the person's request, with the
 notification as a `[runtime note]`.
 
 One step over the trigger: a fresh home whose fixtures are written with
-`fixtures.sh "$H" 250`, then the same launch and:
+`fixtures.sh "$H" 350`, then the same launch and:
 
 ```sh
 $V/helpers/say.sh "$S" "Remember this for later: the ticket is LH-4412. Reply with just OK."
-$V/helpers/say.sh "$S" "Read f1.txt, f2.txt, f3.txt, f4.txt, f5.txt and f6.txt in parallel: all six Read calls in one response, each file whole. Then give me the last word of each file, one per line."
+$V/helpers/say.sh "$S" "Read pic.png, f1.txt, f2.txt, f3.txt, f4.txt, f5.txt and f6.txt in parallel: all seven Read calls in one response, each file whole. Then name the color of pic.png and give me the last word of each text file, one per line."
 $V/helpers/wait.sh "$H" 'compact auto mid-turn' 240
 $V/helpers/say.sh "$S" "Which of those last words comes first alphabetically? Reply with just the word."
+jq -s -c -f $V/helpers/installed-rows.jq <transcript>   # per boundary: placeholders, images, thinking
 ```
 
+Claude Code checks the context once the seven results are in. At 350 lines
+it counts that step over the trigger (`autocompact: ... level=compact`), so
+the compaction lands while the step is open. The mid-turn view keeps the step
+whole and is installed although it is over the trigger: view 87983 plus fixed
+context 20286 in both runs with the image, and 85142 or 85151 plus 20286 in
+three six-file runs. The mod logs no `post-compact` line for that view, and
+measures about 110k at the next seam; the window is forced to 100k, and the
+model's real one is 1M. At the next seam the step is history: a view of about
+2400 to 3300 and `post-compact context ... ok`. At 250 lines Claude Code's
+count sits near the trigger. Two of four runs logged `level=warn` there, sent
+the step uncompacted and compacted only after the reply, so their first view was
+about 2400 and nothing over the trigger was installed.
+
 Pass when the first compaction logs `compact auto mid-turn view N` with N
-plus the fixed context at or over 60000 and no `fell back`. The answers must
-be whiskey, echo, romeo, xray, tango, kilo, then echo. The next seam must log
-a small `mid-turn view` and `post-compact context ... ok`. The transcript must
-have no `isCompactSummary` row, the debug log no `source=compact` request, and
-`compare.mjs` must pass. Before this host installed such a view, the first
-compaction logged `fell back to native ... would not get below the 60k
-trigger` and Claude Code's summary ran.
+plus the logged `fixed context` at or over 60000, no `fell back`, and no
+`post-compact` line before the next compaction. That next compaction logs a
+view below the target and `post-compact context ... ok`. The answers must be
+red, whiskey, echo, romeo, xray, tango, kilo, then echo. The first boundary's
+installed rows must hold one `[image omitted by LHC: m<id>]` and no image or
+`thinking` block. The transcript must have no `isCompactSummary` row, the
+debug log no `source=compact` request, and `compare.mjs` must pass. A first
+view below the trigger means Claude Code compacted after the reply: the case
+was not reached, so rerun it. The model may re-read the files after the second
+seam, which installs another view over the trigger; the pass holds. Before
+this host installed such a view, the first compaction logged `fell back to
+native ... would not get below the 60k trigger` and Claude Code's summary
+ran.
 
 ## Resume after a compaction
 
@@ -307,9 +360,11 @@ $V/helpers/say.sh "$S" "Use get_messages to fetch m1, then tell me the ticket id
 
 Pass when the first request after the resume (the next assistant row's
 `message.usage`, input plus cache tokens) is about the post-compact context,
-not the whole history, the installed rows carry no `thinking` block and hold
-`[image omitted by LHC: m<id>]` where the image was, and the answer names
-LH-4412.
+not the whole history, `jq -s -c -f $V/helpers/installed-rows.jq <transcript>`
+gives `thinking` 0 and `images` 0 for every boundary, and the answer names
+LH-4412. This drive's image is compacted into history before any view
+installs it, so its rows hold no placeholder. The one-step-over drive checks
+the placeholder.
 
 ## Compaction fallback
 
@@ -326,8 +381,11 @@ $V/helpers/say.sh "$S" "Reply with just: again"
 ```
 
 Pass when the first compact is an LHC view after `bind ... source restart`,
-the second logs `compact manual fell back to native after <ms>ms: ...`, shows
-`LHC could not compact (...)` and a status line naming the fallback, the debug
+the second logs `compact manual fell back to native after <ms>ms: ...` (with
+the thread file unreadable, the reason is `capture could not be flushed to
+the sidecar`), the debug log has `$.ui.log: LHC could not compact (...)` (the
+saved pane did not hold it), the status line names the
+fallback, the debug
 log shows the `source=compact` request, the export after the resume bind holds
 exactly one `[Claude Code compaction summary: LHC fell back to native
 compaction] ...` note for the transcript's one `isCompactSummary` row and no
@@ -406,11 +464,11 @@ after an LHC compact is at most the target plus 40k.
 ## LHC panel
 
 The pane, the `/lhc` subcommands, the status line and the auto-compact
-warning. Every drive here writes settings, so launch with an isolated config
-and your own evidence dir, and use a cheap model:
+warning. Every drive here writes settings, so never opt out of the isolated
+config, set your own evidence dir, and use a cheap model:
 
 ```sh
-export VERIFY_ISOLATED_CONFIG=1 VERIFY_EVIDENCE=<run folder>/evidence
+export VERIFY_EVIDENCE=<run folder>/evidence
 $V/helpers/launch.sh "$S" -- --model haiku
 $V/helpers/say.sh "$S" "/lhc"
 node $V/helpers/shot.mjs png "$S" panel.png
@@ -459,8 +517,8 @@ Pass when a toast and a transcript line read `Auto-compact is off, so LHC
 stops compacting: ...`. Turn it back on.
 
 Cost. `$V/helpers/pane-perf.sh "$S" 10` on a session with the pane closed,
-in the default renderer (`/tui default`), with `VERIFY_ISOLATED_CONFIG=1`; it
-refuses a fullscreen session and a run without that variable.
+in the default renderer (`/tui default`), with the config isolated; it
+refuses a fullscreen session and a run under `VERIFY_ISOLATED_CONFIG=0`.
 Pass when the `/lhc` open median is at or below the `/context` median and the
 redraw max is at most 200 ms. Each figure runs from Enter to the text on
 screen, polled every 10 ms, so it includes the command's own run.

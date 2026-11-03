@@ -247,12 +247,11 @@ Facts from the code. Read them before driving:
 - Claude Code reads the plugin's options from settings `pluginConfigs`
   under `lhc@inline` for a `--plugin-dir` load. A drive passes them with
   `--settings '{"pluginConfigs":{"lhc@inline":{"options":{...}}}}'`.
-- Auth: drives run the real `claude` with the operator's own login or env
-  auth, from a throwaway work dir. `HOME` stays real because the login lives
-  there. So never run `/model` or `/config` in a drive that uses the real
-  Claude home: they write `~/.claude/settings.json`. Pick the model with
-  `--model`, and check a built-in local command with `/clear`.
-  Transcripts land in `~/.claude/projects/<encoded work dir>/`.
+- Auth: drives run the real `claude` with the operator's own login, from a
+  throwaway work dir, in a Claude config dir of their own (`<home>/claude`,
+  see Launch). `HOME` stays real. `/model`, `/config` and the panel write
+  that dir's `settings.json`, never `~/.claude/settings.json`.
+  Transcripts land in `<home>/claude/projects/<encoded work dir>/`.
 
 ## Launch
 
@@ -269,12 +268,16 @@ Every drive that runs alongside other agents sets its own evidence dir,
 checkout and are shared, so another agent's `cleanup.sh` kills your sessions
 and removes your homes.
 
-A drive that writes settings (the panel, `/lhc bounds`, `/config`) also sets
-`VERIFY_ISOLATED_CONFIG=1`: the session gets its own Claude config dir,
-`<home>/claude`, signed in with the operator's current access token, read at
-launch. Without it the write lands in `~/.claude/settings.json` and every
-other `lhc` session on the machine picks it up. Transcripts then land in
-`<home>/claude/projects/`.
+Every session gets its own Claude config dir, `<home>/claude`, signed in with
+the operator's current access token from `~/.claude/.credentials.json`, read
+at launch. So `/model`, `/config`, the panel and `/lhc bounds` write
+`<home>/claude/settings.json`. A drive once wrote the operator's real default
+model when this was opt-in. The isolated dir has none of the operator's
+settings, skills or plugins. `VERIFY_ISOLATED_CONFIG=0` opts out, for auth
+that only works from the real `~/.claude` (env auth with no credentials
+file). Never run `/model`, `/config` or the panel under it: they write
+`~/.claude/settings.json`, and every other session on the machine picks it
+up.
 
 Launch one interactive session:
 
@@ -310,14 +313,16 @@ validate`, and that the scratch root sits outside any repo. Pass line:
 | `helpers/wait.sh <home> <regex> [timeout]` | Waits for a line in the home's mod, sidecar or debug logs |
 | `helpers/stop.sh <session> [pane file]` | Saves the pane, sends `/exit`, kills that exact tmux session |
 | `helpers/perf.sh [runs]` | Interleaved launches with and without the plugin, launch-to-prompt-box time and sidecar RSS |
-| `helpers/compare.mjs <export.json> <transcript.jsonl> [<source transcript.jsonl>...]` | Diffs a thread export against the transcript's live branch. For a fork, pass the source's transcript (oldest source first) so the rows the copied thread inherits count: prompts, tool calls, tool results, assistant text. Rows an LHC install appends after a boundary (labeled bands and notes, messages already seen) are skipped. So are Claude Code's own `<synthetic>` messages, such as the refill breaker's, which capture never records. Pass line `compare: PASS` |
+| `helpers/compare.mjs <export.json> <transcript.jsonl> [<source transcript.jsonl>...]` | Diffs a thread export against the transcript's live branch. For a fork, pass the source's transcript (oldest source first) so the rows the copied thread inherits count: prompts, tool calls, tool results, assistant text. Rows an LHC install appends after a boundary (labeled bands and notes, messages already seen) are skipped. So are Claude Code's own `<synthetic>` messages, such as the refill breaker's, which capture never records. An exit mid-tool can drop the cut-off call and its result from the transcript after capture recorded them. Each turn closed `aborted`/`interrupted` may have at most one such extra pair, since each active exit can drop its own cut-off call. The pair must end the turn, and the transcript must go straight from that turn's last shared item to what the export records after the pair. Each such pair prints `dropped at exit <id>` and passes. Any other extra fails: a pair earlier in the turn, two pairs in one turn, and a pair in a completed turn or one still open (a source whose process exited mid-tool, until a later bind closes the turn). Pass line `compare: PASS` |
 | `helpers/synth-transcript.mjs <work dir> <turns> [lines]` | Writes a resumable Claude Code transcript for `<work dir>` (one Read per turn, about 3.9k tokens each; 77 turns is about 300k) and prints its session id, for the compaction cost drive |
+| `helpers/compare-cases.sh` | Runs `compare.mjs` on the fixtures in `helpers/compare-cases/` and checks each exit against `cases.tsv`: one exit and two exits in separate turns pass, a pair earlier in its turn and two pairs in one turn fail. Pass line `compare-cases: PASS` |
+| `helpers/installed-rows.jq` | `jq -s -c -f helpers/installed-rows.jq <transcript>`: for each `compact_boundary`, the rows it installs (up to the first live response or a person's row) with their counts of image placeholders, image blocks and `thinking` blocks |
 | `helpers/fixtures.sh <home> [lines]` | Writes the compaction drives' inputs into `<home>/work`: `f1.txt` to `f6.txt` (300 lines by default, about 8k tokens each; 250 lines measured about 10k each, last line `last word: whiskey`, `echo`, `romeo`, `xray`, `tango`, `kilo`) and `pic.png`, a red square |
 | `helpers/derive-perf.sh [runs]` | The same ten-turn interactive session on each model lane, interleaved: turn time, time to drain after the last turn, sidecar RSS and peak, `thread health` |
 | `helpers/capture-perf.sh [runs]` | The same headless 40-call session with and without the plugin, interleaved: wall time, the append hook's p95 own time, commit lag p95 |
 | `helpers/shot.mjs png <session> <out.png>` | Screenshots the session's tmux screen with its colors (capture-pane to HTML, headless Chrome) |
 | `helpers/shot.mjs record <session> <out.mp4> <seconds>` | Records the screen every 200 ms while you drive it, then encodes the changed frames with ffmpeg |
-| `helpers/pane-perf.sh <session> [runs]` | On a launched session in the default renderer (not `/tui fullscreen`, where `/context`'s output never reaches tmux history; it refuses there), with `VERIFY_ISOLATED_CONFIG=1` set, since it writes the plugin's settings (it refuses without it): `/context` draw time (the baseline), `/lhc` to the pane drawn, and the pane's redraw after `/lhc bounds`, each a median over the runs |
+| `helpers/pane-perf.sh <session> [runs]` | On a launched session in the default renderer (not `/tui fullscreen`, where `/context`'s output never reaches tmux history; it refuses there), with the config isolated, since it writes the plugin's settings (it refuses under `VERIFY_ISOLATED_CONFIG=0`): `/context` draw time (the baseline), `/lhc` to the pane drawn, and the pane's redraw after `/lhc bounds`, each a median over the runs |
 | `helpers/cleanup.sh` | Kills the tmux sessions the helpers recorded, removes recorded homes |
 
 Seam check, headless, run on every Claude Code release:
@@ -369,9 +374,8 @@ the built mod. Each seam observes what its name says:
 
 Pass line: `seam-check: PASS`.
 It removes its scratch dir on a pass and keeps it, with the debug logs, on a fail.
-Interactive seams (`/clear`, reload, a real crossing) are the drives below.
-Unverified anywhere: the live re-apply after `/model`. There is no seam for
-it and no drive has run it, so report it as unverified, not passed.
+Interactive seams (`/clear`, reload, a real crossing, the re-apply after
+`/model`) are the drives below.
 
 Unit checks: `pnpm --filter cc-lhc-mod test` (settings, sidecar, capture, recovery, rewind, projector, receipts, the compact route, retrieval, the model bridge, the panel model, prune, export and health). CI runs it.
 
@@ -442,8 +446,9 @@ Read-only diagnostics, per home:
 - Transcript JSONL at the path the bind line names. `compact_boundary` rows
   carry `preTokens`.
 
-Save the pane (`stop.sh <session> <file>`) and copy the logs a verdict cites
-into the evidence dir before cleanup.
+Save the pane (`stop.sh <session> <file>`) and copy the logs and transcripts
+a verdict cites into the evidence dir before cleanup: the transcripts live in
+the home, so cleanup removes them.
 
 ## Cleanup
 
@@ -458,14 +463,19 @@ run's sessions or homes. Never kill by a name pattern, and never point
 It kills only the tmux sessions the helpers recorded in `tmux.txt`, by exact
 name, and removes only `h-*` homes under the scratch root recorded in
 `homes.txt`. A session you started by hand is yours to kill by its name.
-Never kill a `claude` or `node` process by pattern. Transcripts under
-`~/.claude/projects/` stay; list the session ids you made in your report.
+Never kill a `claude` or `node` process by pattern. List the session ids you
+made in your report. Only an opted-out session leaves its transcript under
+`~/.claude/projects/`.
 
 ## Re-verification
 
 - Reruns every drive and the seam check: a change under `packages/cc-lhc-mod/`
-  outside `test/` and Markdown, a Claude Code version change, or a change to
-  `helpers/lib.sh` or `helpers/launch.sh`.
+  outside `test/` and Markdown, or a Claude Code version change.
+- Reruns every drive: a change to `helpers/lib.sh` or `helpers/launch.sh`. The
+  seam check runs `claude -p` itself and does not read them.
+- Reruns `helpers/compare-cases.sh`, `compare.mjs` on a saved export that
+  passed and on one it must fail, then the drives that call it: a change to
+  `helpers/compare.mjs` or `helpers/compare-cases/`.
 - Reruns the perf drive: a change to the mod's `session.start` or
   `classic.SessionStart` hooks, the sidecar's startup, or `helpers/perf.sh`.
 - Reruns the compaction and retrieval drives: a change to

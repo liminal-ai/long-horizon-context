@@ -1,0 +1,50 @@
+{
+  "turns": [
+    {
+      "outcome": "aborted",
+      "outcomeReason": "interrupted",
+      "messages": [
+        {
+          "kind": "user_prompt",
+          "blocks": [
+            {
+              "content": {
+                "text": "one"
+              }
+            }
+          ]
+        },
+        {
+          "kind": "assistant_text",
+          "blocks": [
+            {
+              "content": {
+                "text": "two"
+              }
+            }
+          ]
+        },
+        {
+          "kind": "tool_call",
+          "blocks": [
+            {
+              "content": {
+                "toolCallId": "extra"
+              }
+            }
+          ]
+        },
+        {
+          "kind": "tool_result",
+          "blocks": [
+            {
+              "content": {
+                "toolCallId": "extra"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
