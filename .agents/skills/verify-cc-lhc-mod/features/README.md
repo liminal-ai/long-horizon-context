@@ -9,6 +9,7 @@ and `S` the tmux session name. Run every drive from the repo root with
 | Feature | Entry points | Drive |
 | --- | --- | --- |
 | [Session binding](#session-binding) | startup, `/clear`, `/resume`, `--continue`, `--resume`, `-p` | `launch.sh`, `say.sh`, seam check `bind-*` |
+| [Session threads](#session-threads) | `/clear`, `/resume`, `--continue`, `--resume --fork-session`, an older host's thread | `launch.sh`, `say.sh`, `compare.mjs` |
 | [Reload](#reload) | a save to the loaded mod | edit `dist/plugin/hooks/register.js` |
 | [Settings and trigger](#settings-and-trigger) | `userConfig` from settings or `/config`, model window, compact window | seam check `settings-*`, `override-*`, crossing drive |
 | [Launch cost](#launch-cost) | every launch | `perf.sh` |
@@ -38,8 +39,48 @@ $V/helpers/launch.sh "$S" "$H" -- --model sonnet --continue   # bind source resu
 ```
 
 Pass when the sidecar logs one `bound session <id> transcript <path> source
-<source>` per session, each path is `<id>.jsonl` and exists. Not yet driven:
-interactive `/resume` and `--fork-session` (CCV2-6 owns fork).
+<source>` per session, each path is `<id>.jsonl` and exists.
+
+## Session threads
+
+Each session id records to one thread, shown in the status line as `LHC
+thread <id> (<how>)`. The sidecar log says `recording session <id> thread
+<thread> (<how>)`.
+
+```sh
+$V/helpers/launch.sh "$S" -- --model sonnet
+$V/helpers/say.sh "$S" "Reply with just: alpha"         # thread A (new)
+$V/helpers/say.sh "$S" "/clear"
+$V/helpers/say.sh "$S" "Reply with just: bravo"         # thread B (new)
+$V/helpers/say.sh "$S" "/resume"                        # pick the alpha session: thread A (resumed)
+$V/helpers/say.sh "$S" "Reply with just: charlie"
+$V/helpers/stop.sh "$S" pane-1.txt
+$V/helpers/launch.sh "$S" "$H" -- --model sonnet --continue   # thread A (resumed)
+$V/helpers/say.sh "$S" "Reply with just: delta"
+$V/helpers/stop.sh "$S" pane-2.txt
+$V/helpers/launch.sh "$S" "$H" -- --model sonnet --resume <alpha session id> --fork-session
+$V/helpers/say.sh "$S" "Reply with just: echo"          # thread C (forked) once this first prompt lands
+```
+
+Export each thread with `node packages/lhc/dist/cli.js thread export --home
+"$H/lhc" --thread-id <id> --out <name>.json` and run `compare.mjs` on it
+against its session's transcript, and for C also the alpha session's
+transcript as a third argument (`compare.mjs C.json <C transcript> <alpha
+transcript>`): a fork of a compacted session no longer carries the rows the
+copied thread holds from before the compaction. Pass when each prints `compare: PASS`, A
+holds alpha, charlie and delta, B holds bravo only, C holds A's history up to
+delta then echo, and A gains nothing after the fork. The fork's sidecar log says `fork <id>
+waits for its first row`, then `forked thread <A> of session <alpha id> to
+<C> at <uuid>`. Fork a session that was compacted by LHC too: C must not hold
+the installed view's rows.
+
+Adoption. Point a session's alias at a thread with a
+`compact_continuation_boundary` row (an older host's thread, or one made by
+inserting a row into a copy with `sqlite3`), then `--resume` it. Pass when the
+pane shows `LHC thread <old> has <n> forced compact boundaries from an older
+host and is not adopted. This session records to new thread <new>.`, the
+status line names `<new> (replaced)`, `<new>` holds the session's transcript,
+and `<old>` is unchanged. A later `--resume` binds `<new> (resumed)`.
 
 ## Reload
 
