@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -150,5 +150,6 @@ check(
   "trigger 67000 leaves the first check ok",
 );
 
-console.log(failures === 0 ? "seam-check: PASS" : `seam-check: FAIL (${failures} seams)`);
+if (failures === 0) rmSync(home, { recursive: true, force: true });
+console.log(failures === 0 ? "seam-check: PASS" : `seam-check: FAIL (${failures} seams), logs kept in ${home}`);
 process.exit(failures === 0 ? 0 : 1);
