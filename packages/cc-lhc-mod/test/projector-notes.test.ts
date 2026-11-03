@@ -79,3 +79,43 @@ it("settles a call that never got a result before a later turn's prompt and answ
     ["assistant", "next answer", null],
   ]);
 });
+
+it("keeps a streamed response's calls together when one result lands before a later call", () => {
+  const src = (messageId: string) => [{ messageId, idempotencyKey: null }];
+  const call = (id: string, message: string) => ({
+    role: "assistant" as const,
+    content: [{ type: "toolCall" as const, toolCallId: id, toolName: "Read", arguments: {} }],
+    sourceMessages: src(message),
+  });
+  const result = (id: string, message: string) => ({
+    role: "toolResult" as const,
+    toolCallId: id,
+    content: `${id} body`,
+    sourceMessages: src(message),
+  });
+  const built = projectView({
+    threadId: "th",
+    entries: [
+      {
+        role: "assistant",
+        content: [
+          { type: "toolCall", toolCallId: "toolu_a", toolName: "Read", arguments: {} },
+          { type: "toolCall", toolCallId: "toolu_b", toolName: "Read", arguments: {} },
+        ],
+        sourceMessages: src("m2"),
+      },
+      result("toolu_a", "m3"),
+      call("toolu_c", "m4"),
+      result("toolu_b", "m5"),
+      result("toolu_c", "m6"),
+    ],
+  });
+  expect(built.flatMap((m) => m.toolResults ?? []).map((r) => [r.tool_use_id, r.isError])).toEqual([
+    ["toolu_a", false],
+    ["toolu_b", false],
+    ["toolu_c", false],
+  ]);
+  expect(built.filter((m) => m.role === "assistant").map((m) => m.toolUses.map((u) => u.tool_use_id))).toEqual([
+    ["toolu_a", "toolu_b", "toolu_c"],
+  ]);
+});

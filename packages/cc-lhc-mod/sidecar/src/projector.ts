@@ -79,8 +79,9 @@ export function projectView(view: SessionThreadView): BuiltMessage[] {
         : [],
     );
     if (text === "" && toolUses.length === 0) continue;
-    // A note recorded mid-response splits it; until any of its calls has a result, the next part is the same response.
-    if (openMessage !== undefined && isAwaiting() && open.every((use) => use.text === undefined)) {
+    // While a call of the open response still has a result coming, a later part is that same response:
+    // a note can split it, and a streamed tool can answer before the response's next call.
+    if (openMessage !== undefined && isAwaiting()) {
       openMessage.text = [openMessage.text, text].filter((part) => part !== "").join("\n");
       openMessage.toolUses.push(...toolUses);
       continue;
