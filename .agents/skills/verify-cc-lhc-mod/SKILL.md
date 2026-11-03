@@ -30,7 +30,9 @@ Facts from the code. Read them before driving:
   changes), else the model window. Trigger `min(upperBound, percent x window,
   window - 33000)`, target `min(lowerBound, 0.4 x window)`. A target not below
   the trigger falls back to the defaults with a notice. The mod sets
-  `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` to `100 x trigger / (window - 20000)`.
+  `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` to `100 x trigger / (window - 20000)`, nudged
+  up by the smallest float step until the engine's floor of it equals the
+  trigger (on 200k it logs `92.77777777777779`, not `92.77777777777777`).
 - Claude Code reads the plugin's options from settings `pluginConfigs`
   under `lhc@inline` for a `--plugin-dir` load. A drive passes them with
   `--settings '{"pluginConfigs":{"lhc@inline":{"options":{...}}}}'`.

@@ -3,7 +3,8 @@
 Each section is one behavior a user reaches, with the drive that proves it
 through [../SKILL.md](../SKILL.md)'s helpers. A proof through one entry point
 is incomplete when a section lists others. `H` is the home `launch.sh` prints
-and `S` the tmux session name. Helpers are under `../helpers/`.
+and `S` the tmux session name. Run every drive from the repo root with
+`V=.agents/skills/verify-cc-lhc-mod`.
 
 | Feature | Entry points | Drive |
 | --- | --- | --- |
@@ -17,12 +18,12 @@ and `S` the tmux session name. Helpers are under `../helpers/`.
 The sidecar is bound to the live session id and its transcript path.
 
 ```sh
-helpers/launch.sh "$S" -- --model sonnet          # bind source startup
-helpers/say.sh "$S" "Reply with just: alpha"
-helpers/say.sh "$S" "/clear"
-helpers/wait.sh "$H" 'source clear' 30            # a new id and a new transcript path
-helpers/stop.sh "$S" pane-1.txt
-helpers/launch.sh "$S" "$H" -- --model sonnet --continue   # bind source resume, the cleared session's id
+$V/helpers/launch.sh "$S" -- --model sonnet          # bind source startup
+$V/helpers/say.sh "$S" "Reply with just: alpha"
+$V/helpers/say.sh "$S" "/clear"
+$V/helpers/wait.sh "$H" 'source clear' 30            # a new id and a new transcript path
+$V/helpers/stop.sh "$S" pane-1.txt
+$V/helpers/launch.sh "$S" "$H" -- --model sonnet --continue   # bind source resume, the cleared session's id
 ```
 
 Pass when the sidecar logs one `bound session <id> transcript <path> source
@@ -35,9 +36,9 @@ A save to a loaded mod reloads it. Claude Code kills the old sidecar, and
 the new module spawns a new one and rebinds the same session.
 
 ```sh
-helpers/launch.sh "$S" -- --model sonnet
+$V/helpers/launch.sh "$S" -- --model sonnet
 echo "// reload" >> packages/cc-lhc-mod/dist/plugin/hooks/register.js
-helpers/wait.sh "$H" 'source reload' 30
+$V/helpers/wait.sh "$H" 'source reload' 30
 ls -la "$H/lhc/run"                               # one socket, the new load id
 pnpm --filter cc-lhc-mod build                    # restore the bundle
 ```
@@ -53,10 +54,10 @@ on a model change at the next turn, and after a `config.set` on its keys.
 Crossing drive, 100k compact window, trigger 40000 (pct 50):
 
 ```sh
-VERIFY_ENV="CLAUDE_CODE_AUTO_COMPACT_WINDOW=100000" helpers/launch.sh "$S" "$H" -- --model sonnet --allowedTools Read \
+VERIFY_ENV="CLAUDE_CODE_AUTO_COMPACT_WINDOW=100000" $V/helpers/launch.sh "$S" "$H" -- --model sonnet --allowedTools Read \
   --settings '{"pluginConfigs":{"lhc@inline":{"options":{"compactPercent":40,"lowerBound":20000}}}}'
-helpers/say.sh "$S" "Read f1.txt in chunks of 150 lines (offset 1, 151, 301, 451, 601), one Read call at a time, then reply DONE."
-helpers/wait.sh "$H" 'level=compact' 240
+$V/helpers/say.sh "$S" "Read f1.txt in chunks of 150 lines (offset 1, 151, 301, 451, 601), one Read call at a time, then reply DONE."
+$V/helpers/wait.sh "$H" 'level=compact' 240
 ```
 
 Put a text file of about 60 KB as `f1.txt` in `$H/work` first. Keep the
@@ -76,7 +77,7 @@ driven live either.
 ## Launch cost
 
 ```sh
-VERIFY_TMUX_PREFIX=ccv2-lane-<pr> helpers/perf.sh 10
+VERIFY_TMUX_PREFIX=ccv2-lane-<pr> $V/helpers/perf.sh 10
 ```
 
 Pass when the median launch-to-prompt-box time with the mod is at most 300

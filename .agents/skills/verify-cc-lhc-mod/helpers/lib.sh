@@ -51,9 +51,9 @@ accept_trust() {
   local session="$1" deadline=$((SECONDS + 30))
   while [ "$SECONDS" -lt "$deadline" ]; do
     local pane
-    pane="$(tmux capture-pane -p -t "$session")"
+    pane="$(tmux capture-pane -p -t "=$session:")"
     if grep -q "Yes, I trust this folder" <<<"$pane"; then
-      tmux send-keys -t "$session" Down Enter
+      tmux send-keys -t "=$session:" Down Enter
       sleep 0.5
       continue
     fi
@@ -65,7 +65,7 @@ accept_trust() {
 
 say() {
   local session="$1" text="$2"
-  tmux send-keys -t "$session" -l "$text"
+  tmux send-keys -t "=$session:" -l "$text"
   sleep 0.3
-  tmux send-keys -t "$session" Enter
+  tmux send-keys -t "=$session:" Enter
 }

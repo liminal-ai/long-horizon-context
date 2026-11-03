@@ -10,7 +10,7 @@ if [ $# -gt 0 ] && [ "$1" != "--" ]; then home="$1"; shift; fi
 [ -f "$PLUGIN/hooks/register.js" ] || { echo "no built plugin at $PLUGIN; run pnpm --filter cc-lhc-mod build" >&2; exit 2; }
 binds_before="$(cat "$home"/lhc/logs/sidecar-*.log 2>/dev/null | grep -c 'bound session' || true)"
 start_tmux "$session" "$(claude_cmd "$home" "$session" "$@")"
-accept_trust "$session" || { echo "no prompt box in $session" >&2; tmux capture-pane -p -t "$session" >&2; exit 1; }
+accept_trust "$session" || { echo "no prompt box in $session" >&2; tmux capture-pane -p -t "=$session:" >&2; exit 1; }
 deadline=$((SECONDS + 30))
 while [ "$(cat "$home"/lhc/logs/sidecar-*.log 2>/dev/null | grep -c 'bound session' || true)" -le "$binds_before" ]; do
   [ "$SECONDS" -lt "$deadline" ] || { echo "no bind within 30s" >&2; exit 1; }
