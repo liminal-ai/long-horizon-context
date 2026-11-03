@@ -242,3 +242,24 @@ it("round2: second live rewind does not let recovery resurrect a missed first re
 
   expect((await human(next)).map((x) => x.split("user_prompt ")[1])).toEqual(["first", "second replacement"]);
 });
+
+it("recovery rolls back a rewind made before the latest compaction", async () => {
+  const s = new Script();
+  s.toolTurn("a", "first", "a");
+  const anchor = s.lines.at(-1)?.uuid ?? "";
+  s.toolTurn("b", "discarded", "b");
+  const discarded = s.entries.length;
+  s.rewindTo(anchor);
+  s.toolTurn("c", "replacement", "c");
+  s.nativeCompaction();
+  s.toolTurn("d", "after compact", "d");
+  const r = await recorder(h);
+  writeTranscript(h, s.lines);
+  await r.capture(s.entries.slice(0, discarded));
+  r.release();
+
+  const next = await recorder(h);
+
+  expect((await human(next)).map((x) => x.split("user_prompt ")[1])).toEqual(["first", "replacement", "after compact"]);
+  expect(await rollbacks(next)).toHaveLength(1);
+});

@@ -6,6 +6,7 @@ export type TranscriptLine = {
   uuid: string;
   parentUuid: string | null;
   subtype?: string;
+  logicalParentUuid?: string | null;
   type: string;
   isSidechain?: boolean;
   isMeta?: boolean;
@@ -21,6 +22,7 @@ export class TranscriptTail {
   readonly parents = new Map<string, string | null>();
   readonly compactBoundaries = new Set<string>();
   readonly prompts = new Set<string>();
+  readonly #logicalParents = new Map<string, string>();
   #offset: number;
   #pending = Buffer.alloc(0);
 
@@ -35,14 +37,13 @@ export class TranscriptTail {
     return this.#offset;
   }
 
-  /** The live branch: the parent chain from the transcript's last row back to the root or a compaction. */
+  /** The live branch: the parent chain from the transcript's last row back to its root, across compactions. */
   activeChain(): Set<string> {
     const chain = new Set<string>();
     let id = [...this.parents.keys()].at(-1);
     while (id !== undefined && !chain.has(id)) {
       chain.add(id);
-      if (this.compactBoundaries.has(id)) break;
-      id = this.parents.get(id) ?? undefined;
+      id = this.parents.get(id) ?? this.#logicalParents.get(id);
     }
     return chain;
   }
@@ -62,7 +63,7 @@ export class TranscriptTail {
     }
     const subtree = (id: string): string[] => [id, ...(children.get(id) ?? []).flatMap(subtree)];
     const found = new Map<string | null, string[]>();
-    const reachesRoot = ![...chain].some((id) => this.compactBoundaries.has(id));
+    const reachesRoot = this.parents.get([...chain].at(-1) ?? "") === null && !this.compactBoundaries.has([...chain].at(-1) ?? "");
     for (const fork of reachesRoot ? [null, ...chain] : chain) {
       for (const child of children.get(fork) ?? []) {
         if (chain.has(child)) continue;
@@ -98,6 +99,7 @@ export class TranscriptTail {
           if (line !== undefined) {
             this.parents.set(line.uuid, line.parentUuid);
             if (line.subtype === "compact_boundary") this.compactBoundaries.add(line.uuid);
+            if (typeof line.logicalParentUuid === "string") this.#logicalParents.set(line.uuid, line.logicalParentUuid);
             const row = rowOf(line);
             if (row !== undefined && isUserPrompt(row)) this.prompts.add(line.uuid);
             lines.push({ line, end: this.#offset });
