@@ -22,7 +22,8 @@ Facts from the code. Read them before driving:
   One load id per module load, so a hot reload starts a new pair. Capture
   adds `registry.sqlite` and `threads/` (core), `owners/<thread id>.json` (the
   lease, holding the Claude process pid) and `cursors/<session id>.json` (the
-  committed transcript offset).
+  committed transcript offset). `forks/<session id>` marks a refused fork,
+  which stays refused across a sidecar restart and a reload.
 - Capture (`mod/hooks/capture.ts`, `sidecar/src/capture/`): the mod queues
   every main-loop `session.append` row and `turn.start`, `turn.step` and
   `turn.complete` in one outbox and posts it to `/capture` in order; it drops
