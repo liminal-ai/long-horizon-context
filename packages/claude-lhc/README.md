@@ -196,10 +196,10 @@ names the `method` (`forkSession`, `getSessionMessages`, `getSubagentMessages` o
 
 ## Build from source
 
-`dist/` is not in git. Build both packages:
+`dist/` is not in git. Build the core, the shared adapter, and the package:
 
 ```sh
-pnpm --filter lhc build && pnpm --filter claude-lhc build
+pnpm --filter lhc build && pnpm --filter claude-adapter build && pnpm --filter claude-lhc build
 ```
 
 Node 24.3 or later. Bun is not used.

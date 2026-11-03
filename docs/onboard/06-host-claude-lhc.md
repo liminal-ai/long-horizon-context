@@ -16,10 +16,10 @@ This host differs from [cc-lhc](05-host-cc-lhc.md) in position. cc-lhc owns the 
 
 A host calls `query({ prompt, options })` from the package entry, `dist/index.js`, with an `lhc` block in the options. By default the client spawns `process.execPath` running the package's own `dist/sidecar.js`. A host that stages and pins its own copy passes `lhc.spawn: { command, args?, env? }`. `close()` closes the sidecar's stdin. The `bin/claude-lhc` wrapper exists for humans on PATH.
 
-From source, build the core first, then the package (`dist/` is not in git):
+From source, build the core and the shared adapter first, then the package (`dist/` is not in git):
 
 ```sh
-pnpm --filter lhc build && pnpm --filter claude-lhc build
+pnpm --filter lhc build && pnpm --filter claude-adapter build && pnpm --filter claude-lhc build
 ```
 
 Hosts that are not in Node can spawn `node packages/claude-lhc/dist/sidecar.js` and speak the wire below. `src/client.ts` is the reference client.
