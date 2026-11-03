@@ -432,3 +432,29 @@ for (const withRows of [true, false]) {
     expect(next.isTurnOpen).toBe(true);
   });
 }
+
+it("recovery opens no turn for a discarded prompt whose turn never ended", async () => {
+  const s = new Script();
+  s.toolTurn("a", "first", "a");
+  const anchor = s.lines.at(-1)?.uuid ?? "";
+  s.prompt("discarded");
+  s.turnStart("b");
+  s.step("b", 0);
+  s.answer({ type: "tool_use", id: "b1", name: "Bash", input: {} });
+  const live = s.entries.length;
+  s.rewindTo(anchor);
+  s.prompt("replacement");
+  const r = await recorder(h);
+  writeTranscript(h, s.lines.slice(0, -1));
+  await r.capture(s.entries.slice(0, live));
+  r.release();
+  writeTranscript(h, s.lines);
+
+  const next = await recorder(h);
+
+  expect((await human(next)).map((x) => x.slice(x.indexOf("user_prompt")))).toEqual([
+    "user_prompt first",
+    "user_prompt replacement",
+  ]);
+  expect((await messages(next)).some((m) => m.includes("tool_call b1"))).toBe(false);
+});

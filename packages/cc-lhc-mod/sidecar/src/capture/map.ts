@@ -52,6 +52,7 @@ const MECHANICAL_ATTACHMENTS = new Set([
   "remote_session_change",
   "session_context",
   "skill_listing",
+  "total_tokens_reminder",
 ]);
 
 const STEP_KINDS = new Set(["assistant_text", "assistant_thinking", "tool_call", "tool_result"]);

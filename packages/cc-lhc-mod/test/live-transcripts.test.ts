@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, expect, it } from "vitest";
 import { mapEntries, SETTLED } from "../sidecar/src/capture/map.ts";
 import { rowOf, type TranscriptLine } from "../sidecar/src/capture/transcript.ts";
+import type { CaptureEntry } from "../src/capture.ts";
 import { events, type Harness, harness, messages, recorder, writeTranscript } from "./fixture.ts";
 
 const fixture = (name: string): TranscriptLine[] =>
@@ -187,4 +188,28 @@ it("recovers a plugin's [runtime note] row as a note, as live capture records it
   const recorded = await recovered("compact-fallback-transcript.jsonl");
 
   expect(recorded.filter((m) => m.includes("[runtime note]"))).toEqual(["t2 runtime_note [runtime note] /compact"]);
+});
+
+it("drops the engine's total-tokens reminder, live and recovered", () => {
+  const [line] = fixture("total-tokens-reminder.jsonl") as Array<
+    TranscriptLine & { attachment: { type: string; text: string } }
+  >;
+  if (line === undefined) throw new Error("fixture is empty");
+  const live: CaptureEntry = {
+    kind: "row",
+    sessionId: "s",
+    uuid: line.uuid,
+    door: "attachment",
+    origin: "engine",
+    message: {
+      type: "attachment",
+      name: line.attachment.type,
+      role: "user",
+      content: [{ type: "text", text: `<system-reminder>${line.attachment.text}</system-reminder>` }],
+    },
+    at: 0,
+  };
+
+  expect(mapEntries([live], SETTLED).events).toEqual([]);
+  expect(rowOf(line)).toBeUndefined();
 });

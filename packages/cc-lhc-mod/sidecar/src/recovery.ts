@@ -25,7 +25,10 @@ export async function recoverTranscript(input: {
   const cursor = readCursor(input.home, input.sessionId);
   const tail = new TranscriptTail(input.transcriptPath);
   const lines = tail.read();
-  const recorded = await input.capture(entriesOf(lines, (uuid) => tail.compactionRows.has(uuid), cursor));
+  // A row a native compaction wrote, or one on a branch a rewind left, yields no entry, not even its turn's markers.
+  const abandoned = new Set([...tail.abandoned().values()].flat());
+  const skip = (uuid: string): boolean => tail.compactionRows.has(uuid) || abandoned.has(uuid);
+  const recorded = await input.capture(entriesOf(lines, skip, cursor));
   mkdirSync(join(input.home, "cursors"), { recursive: true });
   writeFileSync(cursorPath(input.home, input.sessionId), JSON.stringify({ offset: tail.offset }));
   return { scanned: lines.filter(({ end }) => end > cursor).length, recorded, offset: tail.offset };
