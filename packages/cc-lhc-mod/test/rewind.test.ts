@@ -36,6 +36,8 @@ it("rolls back to the last recorded row before the rewound prompt", async () => 
   const firstAnswer = all.ok
     ? all.value.find((event) => event.payload && (event.payload as { text?: string }).text === "done turn-1")
     : undefined;
+  expect(rollback).toBeDefined();
+  expect(firstAnswer).toBeDefined();
   expect(rollback?.keepThroughEventOrder).toBe(firstAnswer?.eventOrder);
 });
 

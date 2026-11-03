@@ -47,7 +47,6 @@ it.each([
   live.release();
 
   const reopened = await recorder(h);
-  await reopened.capture(script.entries);
 
   const withoutTurn = (items: string[]) => items.map((item) => item.slice(item.indexOf(" ") + 1)).sort();
   expect(withoutTurn(await messages(reopened))).toEqual(withoutTurn(ALL));
@@ -57,6 +56,8 @@ it("reads only past the committed cursor on the next bind", async () => {
   const script = session();
   writeTranscript(h, script.lines);
   (await recorder(h)).release();
+  expect(h.log.at(-1)).toMatch(new RegExp(`recovered \\d+ of ${script.lines.length} transcript rows`));
+  expect(h.log.at(-1)).not.toMatch(/recovered 0 of/);
 
   await recorder(h);
 
