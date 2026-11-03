@@ -135,20 +135,33 @@ export class Recorder {
       this.deps.log(`rewind check skipped: prompt ${promptUuid} not in the transcript`);
       return [];
     }
-    if (await this.#hasRecordedDescendant(promptUuid)) return [];
+    const transcript = this.#parents;
+    const chain = transcript.activeChain();
+    if (!chain.has(promptUuid)) return [];
+    const forks: Array<string | null> = [];
     let keep = 0;
-    for (let id: string | null | undefined = parent; typeof id === "string"; id = this.#parents.parents.get(id)) {
+    for (let id: string | null = parent; ; id = transcript.parents.get(id) ?? null) {
+      if (id === null) {
+        forks.push(null);
+        break;
+      }
       // The chain ends at a compaction, and a rewind cannot reach past one.
-      if (this.#parents.compactBoundaries.has(id)) return [];
+      if (transcript.compactBoundaries.has(id)) return [];
+      forks.push(id);
       const order = await this.#capturedThrough(id);
       if (order !== undefined) {
         keep = order;
         break;
       }
     }
-    const later = await this.deps.lhc.messages.list(this.thread, { from: keep + 1, limit: 1 });
-    if (!later.ok) throw new Error(`message read failed: ${later.error.reason}`);
-    if (later.value.length === 0) return [];
+    const abandoned = transcript.branchesOff(forks, chain);
+    if (abandoned.length === 0) return [];
+    const counts = await this.deps.lhc.intakeStream.eventKeyPrefixCounts(
+      this.thread,
+      abandoned.map((id) => messageKeyPrefix(HARNESS, id)),
+    );
+    if (!counts.ok) throw new Error(`key lookup failed: ${counts.error.reason}`);
+    if (!counts.value.some((row) => row.exists)) return [];
     this.deps.log(`rewind before prompt ${promptUuid}: rollback keeps through event ${keep}`);
     return [
       {
@@ -159,20 +172,6 @@ export class Recorder {
         payload: { keepThroughEventOrder: keep, reason: "rewind" },
       },
     ];
-  }
-
-  /** Recovery backfilling a missed prompt finds its answer already recorded; a rewound prompt has none. */
-  async #hasRecordedDescendant(uuid: string): Promise<boolean> {
-    const below = new Set([uuid]);
-    for (const [child, parent] of this.#parents.parents) if (parent !== null && below.has(parent)) below.add(child);
-    below.delete(uuid);
-    if (below.size === 0) return false;
-    const counts = await this.deps.lhc.intakeStream.eventKeyPrefixCounts(
-      this.thread,
-      [...below].map((id) => messageKeyPrefix(HARNESS, id)),
-    );
-    if (!counts.ok) throw new Error(`key lookup failed: ${counts.error.reason}`);
-    return counts.value.some((row) => row.exists);
   }
 
   async #parentOf(uuid: string): Promise<string | null | undefined> {

@@ -79,7 +79,10 @@ export class Script {
   }
 
   /** A background task's notification delivered into a running turn, as Claude Code renders and files it. */
-  delivery(notification: string): string {
+  delivery(
+    notification: string,
+    attachmentOrigin: Record<string, unknown> = { kind: "task-notification", producer: "session-task" },
+  ): string {
     const rendered = `<system-reminder>\n[SYSTEM NOTIFICATION - NOT USER INPUT]\nThis is an automated background-task event, NOT a message from the user.\n\n${notification}\n</system-reminder>`;
     return this.#row(
       "attachment",
@@ -89,10 +92,11 @@ export class Script {
         attachment: {
           type: "queued_command",
           commandMode: "task-notification",
-          origin: { kind: "task-notification", producer: "session-task" },
+          origin: attachmentOrigin,
           prompt: notification,
         },
       },
+      { origin: "task-notification" },
     );
   }
 

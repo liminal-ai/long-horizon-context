@@ -54,14 +54,8 @@ export function isRecorded(row: Row): boolean {
 /** The person's own prompt. A background task's notification arrives by the same door and is a note. */
 const NOTIFICATION = /<task-notification>[\s\S]*<\/task-notification>/;
 
-/**
- * A background task's notification is not something the person said. It comes
- * by the prompt door at a turn's start, or as a queued command into a running
- * turn, wrapped in a reminder the transcript does not keep.
- */
-const isTaskNotification = (row: Row): boolean =>
-  row.origin === "task-notification" ||
-  (row.message.name === "queued_command" && NOTIFICATION.test(joinedText(row.message.content)));
+/** A background task's notification is not something the person said, whichever door it came by. */
+const isTaskNotification = (row: Row): boolean => row.origin === "task-notification";
 
 const isUserPrompt = (row: Row): boolean => row.door === "prompt" && !isTaskNotification(row);
 

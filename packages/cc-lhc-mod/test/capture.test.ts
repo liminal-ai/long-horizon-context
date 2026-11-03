@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { mapEntries, SETTLED } from "../sidecar/src/capture/map.ts";
 import { events, type Harness, harness, messages, record, recorder, Script, writeTranscript } from "./fixture.ts";
 
 let h: Harness;
@@ -135,5 +136,26 @@ describe("capture", () => {
     ];
     expect(liveMessages).toEqual(expected);
     expect((await messages(recovered)).slice(0, 2)).toEqual(expected.slice(0, 2));
+  });
+
+  it("keeps a steer that quotes a task-notification element as the person's request", () => {
+    const script = new Script();
+    script.steer("Explain why <task-notification>hello</task-notification> appears in the logs");
+
+    const [event] = mapEntries(script.entries, SETTLED).events;
+
+    expect(event?.eventKind).toBe("user_prompt");
+    expect(event?.payload).toMatchObject({ steer: true });
+  });
+
+  it("recovers a delivery as a runtime note from the attachment's origin alone", async () => {
+    const script = new Script();
+    script.prompt("go");
+    script.delivery("background job finished", { kind: "task-notification" });
+    writeTranscript(h, script.lines);
+
+    const recovered = await recorder(h);
+
+    expect(await messages(recovered)).toEqual(["t1 user_prompt go", "t1 runtime_note background job finished"]);
   });
 });

@@ -12,7 +12,7 @@ export type TranscriptLine = {
   isCompactSummary?: boolean;
   origin?: { kind?: string };
   message?: { role?: string; content?: unknown; model?: string };
-  attachment?: { type?: string; prompt?: unknown; origin?: { kind?: string } };
+  attachment?: { type?: string; prompt?: unknown; commandMode?: string; origin?: { kind?: string } };
 };
 
 const CHUNK = 1 << 20;
@@ -32,6 +32,35 @@ export class TranscriptTail {
 
   get offset(): number {
     return this.#offset;
+  }
+
+  /** The live branch: the parent chain from the transcript's last row back to the root or a compaction. */
+  activeChain(): Set<string> {
+    const chain = new Set<string>();
+    let id = [...this.parents.keys()].at(-1);
+    while (id !== undefined && !chain.has(id)) {
+      chain.add(id);
+      if (this.compactBoundaries.has(id)) break;
+      id = this.parents.get(id) ?? undefined;
+    }
+    return chain;
+  }
+
+  /** Every row below the given chain rows (null for the root) on a branch off the chain. */
+  branchesOff(forks: ReadonlyArray<string | null>, chain: ReadonlySet<string>): string[] {
+    const children = new Map<string | null, string[]>();
+    for (const [child, parent] of this.parents) {
+      const siblings = children.get(parent);
+      if (siblings === undefined) children.set(parent, [child]);
+      else siblings.push(child);
+    }
+    const found: string[] = [];
+    const queue = forks.flatMap((fork) => (children.get(fork) ?? []).filter((child) => !chain.has(child)));
+    for (let id = queue.shift(); id !== undefined; id = queue.shift()) {
+      found.push(id);
+      queue.push(...(children.get(id) ?? []));
+    }
+    return found;
   }
 
   read(): Array<{ line: TranscriptLine; end: number }> {
@@ -116,7 +145,7 @@ export function rowOf(line: TranscriptLine): Row | undefined {
   if (line.type === "attachment" && line.attachment?.type === "queued_command") {
     const text = typeof line.attachment.prompt === "string" ? line.attachment.prompt : "";
     const message: CapturedMessage = { type: "attachment", name: "queued_command", role: "user", content: [{ type: "text", text }] };
-    const queuedBy = line.attachment.origin?.kind ?? origin;
+    const queuedBy = line.attachment.origin?.kind ?? line.attachment.commandMode ?? origin;
     return { kind: "row", sessionId: "", uuid: line.uuid, door: "attachment", origin: queuedBy, message, at: 0 };
   }
   const door = line.message === undefined ? undefined : doorOf(line);

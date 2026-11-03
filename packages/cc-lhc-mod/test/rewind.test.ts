@@ -91,3 +91,26 @@ it("writes no rollback for the first prompt after a native compaction", async ()
   expect((await messages(r)).some((message) => message.endsWith("runtime_note /compact"))).toBe(true);
   expect(await messages(r)).toHaveLength(9);
 });
+
+it("rolls back a rewind whose new prompt only recovery records, though its answer was recorded live", async () => {
+  const script = new Script();
+  script.toolTurn("turn-1", "first", "toolu_a");
+  const anchor = script.lines.at(-1)?.uuid ?? "";
+  script.toolTurn("turn-2", "discarded", "toolu_b");
+  const original = script.entries.length;
+  script.rewindTo(anchor);
+  const prompt = script.prompt("replacement");
+  script.turnStart("turn-3");
+  script.answer({ type: "text", text: "replacement answer" });
+  script.turnEnd("turn-3");
+  const live = await recorder(h);
+  writeTranscript(h, script.lines);
+  await live.capture(script.entries.slice(0, original));
+  await live.capture(script.entries.slice(original).filter((entry) => entry.kind !== "row" || entry.uuid !== prompt));
+  live.release();
+
+  const next = await recorder(h);
+
+  expect([...(await events(next)).keys()]).toContain(`claude-code:${prompt}:rollback`);
+  expect((await messages(next)).some((message) => message.includes("discarded"))).toBe(false);
+});
