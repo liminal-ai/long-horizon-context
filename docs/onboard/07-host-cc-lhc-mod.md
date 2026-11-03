@@ -132,6 +132,6 @@ Later work a user would notice, from the plan's Later work list:
 
 ## Certification
 
-On 2026-11-03 one scripted long task ran under cc-lhc 0.4.5 and under this host, twice each and interleaved, on `claude-sonnet-5-5` with the same bounds. The record is `.pstack/runs/ccv2/proof/CCV2-8/certification.md` in the main checkout. Its table compares task completion, compactions, mid-turn compactions, background jobs, capture completeness, retrieval, wall time, and billed tokens.
+On 2026-11-03 one scripted long task ran under cc-lhc 0.4.5 and under this host, twice each and interleaved, on `claude-sonnet-5-5` with the same bounds. The record is `.pstack/runs/ccv2/proof/CCV2-8/certification.md` in the main checkout. Its table compares task completion, compactions, mid-turn compactions, background jobs, capture completeness, retrieval, wall time, and billed tokens. Both hosts completed the task in every run, with the background job intact, complete capture, and exact retrieval. v2 compacted 4 times per run, all mid-turn. cc-lhc compacted twice, at settled seams, after each turn overshot the trigger by about 25k. v2 billed 8 percent fewer tokens. Its median wall time was 39 percent longer, and the record traces that gap to the shared API upstream's time to first byte, not to host time.
 
 The seam check (`pnpm --filter cc-lhc-mod seam-check`) proves the trigger and the bind seams against each Claude Code release. Run it after every update. The drives are in `.agents/skills/verify-cc-lhc-mod`.

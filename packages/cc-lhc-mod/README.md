@@ -28,9 +28,9 @@ The design and its limits are in [docs/onboard/07-host-cc-lhc-mod.md](../../docs
 	claude --plugin-dir <repo>/packages/cc-lhc-mod/dist/plugin
 	```
 
-3. Send any prompt. After the reply, the status line reads `lhc: context <tokens> of <trigger> (<pct>%) · thread th_<id> (new)`.
+3. Send any prompt. After the reply, the status line under the prompt box reads `⚠ lhc: context <tokens> of <trigger> (<pct>%) · thread th_<id> (new)`. Claude Code adds the `⚠` to a plugin's status line.
 
-4. Run `/compact`. LHC answers it with its view. The status line gains `compacted <before> to <view> (settled)`, and the transcript shows no Claude Code summary. If LHC cannot answer, Claude Code's own summary runs, the transcript shows `LHC could not compact (...)`, and the status line reads `last compaction fell back to Claude Code's summary`.
+4. Run `/compact`. LHC answers it with its view, and Claude Code prints `Compacted`. The status line gains `compacted <before> to <after> (settled)`, where both numbers are the context in tokens. If LHC cannot answer, Claude Code's own summary runs, the transcript shows `LHC could not compact (...)`, and the status line reads `last compaction fell back to Claude Code's summary`.
 
 5. Run `/lhc` to open the LHC panel. It shows the context against the trigger, the last compaction, derivation counts, and the settings. `ctrl+x x` closes it.
 
