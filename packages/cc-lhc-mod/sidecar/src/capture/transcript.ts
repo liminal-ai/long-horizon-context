@@ -64,7 +64,11 @@ export class TranscriptTail {
       if (siblings === undefined) children.set(parent, [child]);
       else siblings.push(child);
     }
-    const subtree = (id: string): string[] => [id, ...(children.get(id) ?? []).flatMap(subtree)];
+    const subtree = (id: string): string[] => {
+      const found = [id];
+      for (let index = 0; index < found.length; index++) found.push(...(children.get(found[index] ?? "") ?? []));
+      return found;
+    };
     const found = new Map<string | null, string[]>();
     const reachesRoot = this.parents.get([...chain].at(-1) ?? "") === null && !this.compactBoundaries.has([...chain].at(-1) ?? "");
     for (const fork of reachesRoot ? [null, ...chain] : chain) {

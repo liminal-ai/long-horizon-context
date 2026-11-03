@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, expect, it } from "vitest";
 import { mapEntries, SETTLED } from "../sidecar/src/capture/map.ts";
-import { rowOf, type TranscriptLine } from "../sidecar/src/capture/transcript.ts";
+import { rowOf, type TranscriptLine, TranscriptTail } from "../sidecar/src/capture/transcript.ts";
 import { events, type Harness, harness, messages, recorder, Script, writeTranscript } from "./fixture.ts";
 
 let h: Harness;
@@ -296,4 +296,56 @@ it("a replayed outbox cannot record a turn that a rewind discarded while the sid
 
   expect((await human(next)).map((x) => x.split("user_prompt ")[1])).toEqual(["first", "replacement"]);
   expect((await messages(next)).some((x) => x.includes("discarded"))).toBe(false);
+});
+
+it("a replayed outbox cannot end the replacement turn with a discarded turn's marker", async () => {
+  const s = new Script();
+  s.toolTurn("a", "first", "a");
+  const anchor = s.lines.at(-1)?.uuid ?? "";
+  const kept = s.entries.length;
+  s.prompt("discarded");
+  s.turnStart("b");
+  s.step("b", 0);
+  s.answer({ type: "text", text: "discarded answer" });
+  s.turnEnd("b");
+  const outbox = s.entries.slice(kept);
+  s.rewindTo(anchor);
+  s.prompt("replacement");
+  s.turnStart("c");
+  s.step("c", 0);
+  s.answer({ type: "tool_use", id: "c1", name: "Bash", input: {} });
+  s.results("c1");
+  const recoveredLines = s.lines.length;
+  const later = s.entries.length;
+  s.step("c", 1);
+  s.answer({ type: "text", text: "replacement done" });
+  const r = await recorder(h);
+  writeTranscript(h, s.lines.slice(0, recoveredLines));
+  await r.capture(s.entries.slice(0, kept));
+  r.release();
+
+  const next = await recorder(h);
+  await next.capture(outbox);
+  writeTranscript(h, s.lines);
+  await next.capture(s.entries.slice(later));
+
+  const replacement = (await messages(next)).filter((m) => !m.startsWith("t1 "));
+  expect(new Set(replacement.map((m) => m.split(" ")[0])).size).toBe(1);
+  expect(replacement.at(-1)).toMatch(/assistant_text replacement done$/);
+});
+
+it("finds a long abandoned branch without running out of stack", () => {
+  const tail = new TranscriptTail("/unused");
+  tail.parents.set("root", null);
+  let parent = "root";
+  for (let index = 0; index < 20_000; index++) {
+    const id = `discarded-${index}`;
+    tail.parents.set(id, parent);
+    if (index === 0) tail.prompts.add(id);
+    parent = id;
+  }
+  tail.parents.set("replacement", "root");
+  tail.prompts.add("replacement");
+
+  expect(tail.abandoned().get("root")).toHaveLength(20_000);
 });

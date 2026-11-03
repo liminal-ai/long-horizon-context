@@ -103,7 +103,12 @@ export class Recorder {
     // Rows on a branch a rewind left are never recorded, whether live, replayed from the mod's outbox, or recovered.
     this.#parents.read();
     const abandoned = new Set([...this.#parents.abandoned().values()].flat());
-    const entries = all.filter((entry) => entry.kind !== "row" || !abandoned.has(entry.uuid));
+    // A turn marker belongs to the row before it, so a discarded turn's markers go with its rows.
+    let isAbandoned = false;
+    const entries = all.filter((entry) => {
+      if (entry.kind === "row") isAbandoned = abandoned.has(entry.uuid);
+      return entry.kind === "settle" || !isAbandoned;
+    });
     const before = this.#state;
     let recorded = 0;
     let pending: MessageEventInput[] = [];
