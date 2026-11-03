@@ -46,9 +46,12 @@ Facts from the code. Read them before driving:
   decisions live capture makes: a user text row is the person's prompt
   (typed, `claude -p`, or an old row with no `origin`), the native `/compact`
   line is a note, and the summary and command rows a native compaction
-  writes, which no hook sees, are dropped. A slash command is one short note,
-  `/name args`; its caveat, its output and a skill's expanded body are
-  dropped, live and recovered. A rollback never keeps a row past
+  writes, which no hook sees, are dropped. A slash command is recorded once as
+  `/name args`: one the person typed that prompts the model (a skill, a
+  plugin or custom command; its row carries the person's origin) is a
+  `user_prompt` that starts a turn, and a built-in local command (`/model`,
+  `/clear`; no origin) is a `runtime_note`. Its caveat, its output and a
+  skill's expanded body are dropped, live and recovered. A rollback never keeps a row past
   the first abandoned one. A branch off the
   transcript's active chain (from its last row by parent) that holds a
   person's prompt is abandoned: recovery never records it, and a new prompt

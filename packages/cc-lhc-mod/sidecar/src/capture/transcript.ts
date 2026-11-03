@@ -166,7 +166,7 @@ function doorOf(line: TranscriptLine): string | undefined {
 
 export function rowOf(line: TranscriptLine): Row | undefined {
   if (line.isSidechain === true || line.isCompactSummary === true) return undefined;
-  const origin = line.origin?.kind ?? "human";
+  const origin = line.origin?.kind ?? "unclassified";
   if (line.type === "attachment" && line.attachment?.type === "queued_command") {
     const text = typeof line.attachment.prompt === "string" ? line.attachment.prompt : "";
     const message: CapturedMessage = { type: "attachment", name: "queued_command", role: "user", content: [{ type: "text", text }] };

@@ -91,10 +91,29 @@ it("records /model as one short note, without its caveat or output rows", async 
   expect(notes.map((m) => m.slice(m.indexOf("runtime_note")))).toEqual(["runtime_note /model sonnet"]);
 });
 
-it("records a skill command as one short note, without the skill's expanded body", async () => {
-  const notes = (await recovered("skill-command-transcript.jsonl")).filter((m) => m.includes("runtime_note"));
+it("recovers a skill command with args as the person's prompt that starts a turn, without the skill's body", async () => {
+  const recorded = await recovered("skill-command-transcript.jsonl");
 
-  expect(notes.map((m) => m.slice(m.indexOf("runtime_note")))).toEqual(["runtime_note /bro"]);
+  expect(recorded.filter((m) => m.includes("user_prompt"))).toEqual([
+    "t1 user_prompt Reply with just ONE.",
+    "t2 user_prompt /bro hello",
+  ]);
+  expect(recorded.some((m) => m.includes("Base directory for this skill"))).toBe(false);
+  expect(recorded.filter((m) => m.includes("runtime_note")).map((m) => m.slice(m.indexOf("runtime_note")))).toEqual([
+    "runtime_note /model sonnet",
+  ]);
+});
+
+it("maps a live skill command row, typed by the person, to the same prompt", () => {
+  const rows = fixture("skill-command-transcript.jsonl").flatMap((line) => rowOf(line) ?? []);
+  const live = rows.map((row) => ({ ...row, origin: row.origin === "human" ? "composer" : row.origin }));
+
+  const prompts = mapEntries(live, SETTLED).events.filter((event) => event.eventKind === "user_prompt");
+
+  expect(prompts.map((event) => (event.payload as { text: string }).text)).toEqual([
+    "Reply with just ONE.",
+    "/bro hello",
+  ]);
 });
 
 it("maps live command rows to the same one note as recovery", () => {

@@ -84,7 +84,16 @@ const NOTIFICATION = /<task-notification>[\s\S]*<\/task-notification>/;
 /** A background task's notification is not something the person said, whichever door it came by. */
 const isTaskNotification = (row: Row): boolean => row.origin === "task-notification";
 
-export const isUserPrompt = (row: Row): boolean => row.door === "prompt" && !isTaskNotification(row);
+/** The person, as live capture and the transcript name them; a built-in local command's rows carry neither. */
+const BY_PERSON = new Set(["composer", "human"]);
+
+/**
+ * The person's own request: a submitted prompt, or a slash command that
+ * prompts the model (a skill, a plugin or custom command), which the person
+ * typed. A built-in local command (/model, /clear) is a note.
+ */
+export const isUserPrompt = (row: Row): boolean =>
+  slashCommand(row) === undefined ? row.door === "prompt" && !isTaskNotification(row) : BY_PERSON.has(row.origin);
 
 export function opensTurn(row: Row, state: TurnState): boolean {
   return isUserPrompt(row) && !state.isOpen;
@@ -107,7 +116,7 @@ function note(row: Row): MessageEventInput[] {
 }
 
 function prompt(row: Row, isSteer: boolean): MessageEventInput[] {
-  const text = joinedText(row.message.content);
+  const text = slashCommand(row) ?? joinedText(row.message.content);
   const blocks = nonTextBlocks(row.message.content);
   if (text.trim() === "" && blocks === undefined) return [];
   const extra = { ...(isSteer ? { steer: true } : {}), ...(blocks === undefined ? {} : { blocks }) };
@@ -116,9 +125,9 @@ function prompt(row: Row, isSteer: boolean): MessageEventInput[] {
 
 function mapRow(row: Row, state: TurnState): MessageEventInput[] {
   if (!isRecorded(row)) return [];
+  if (isUserPrompt(row)) return prompt(row, state.isOpen);
   const command = slashCommand(row);
   if (command !== undefined) return [textEvent(HARNESS, "runtime_note", command, "system", kindlessTextKey(row))];
-  if (isUserPrompt(row)) return prompt(row, state.isOpen);
   if (row.message.name === "queued_command" && !isTaskNotification(row)) return prompt(row, true);
   switch (row.door) {
     case "response":
