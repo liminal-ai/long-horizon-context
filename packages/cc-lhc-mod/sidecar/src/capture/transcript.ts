@@ -241,6 +241,9 @@ export function entriesOf(
       step += 1;
       entries.push({ kind: "step", sessionId: "", turnId: "", index: step, at: 0 });
     }
+    const opensTurn = row.door === "prompt" || isUserPrompt(row, afterCaveat);
+    // A prompt row is never a steer (steers are queued commands), so it settles a turn a crash left open.
+    if (opensTurn && isOpen) entries.push({ kind: "settle" });
     if (end > from) entries.push(row);
     // A response that ends the turn settles it; print-mode transcripts write no duration row.
     if (line.type === "assistant" && line.message?.stop_reason === "end_turn") {
@@ -248,7 +251,7 @@ export function entriesOf(
       isOpen = false;
     }
     const isDelivery = row.message.name === "queued_command" && !isOpen;
-    if (row.door === "prompt" || isUserPrompt(row, afterCaveat) || isDelivery) {
+    if (opensTurn || isDelivery) {
       entries.push({ kind: "turn-start", sessionId: "", turnId: line.uuid, at: 0 });
       isOpen = true;
       step = -1;

@@ -88,3 +88,16 @@ it("a recovered claude -p turn, which has no duration row, is settled so the nex
     "t2 user_prompt an independent next prompt",
   ]);
 });
+
+it("recovery settles a turn a crash interrupted before the next prompt opens its own", async () => {
+  const script = runningTurn(1);
+  script.prompt("after the crash");
+  writeTranscript(h, script.lines);
+
+  const r = await recorder(h);
+
+  expect((await messages(r)).filter((m) => m.includes("user_prompt"))).toEqual([
+    "t1 user_prompt read these files and continue working",
+    "t2 user_prompt after the crash",
+  ]);
+});
