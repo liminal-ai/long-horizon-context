@@ -143,7 +143,7 @@ function textOf(content: unknown): string {
   return typeof first?.text === "string" ? first.text : "";
 }
 
-const NOTE_PREFIXES = ["[Request interrupted", "<command-", "<local-command-"];
+const COMMAND_PREFIXES = ["<command-", "<local-command-"];
 
 /**
  * The door a live `session.append` would have named for a transcript row. The
@@ -158,9 +158,10 @@ function doorOf(line: TranscriptLine): string | undefined {
     return "tool-result";
   }
   const text = textOf(content).trimStart();
-  if (line.isMeta === true || NOTE_PREFIXES.some((prefix) => text.startsWith(prefix))) return "note";
-  // Claude Code stamps an origin on a submitted prompt; a row without one (the /compact line) came by the note door.
-  return line.origin === undefined ? "note" : "prompt";
+  if (COMMAND_PREFIXES.some((prefix) => text.startsWith(prefix))) return "command";
+  // A native /compact files its own line as plain text, by the note door.
+  if (line.isMeta === true || text.startsWith("[Request interrupted") || /^\/compact(\s|$)/.test(text)) return "note";
+  return "prompt";
 }
 
 export function rowOf(line: TranscriptLine): Row | undefined {
@@ -177,7 +178,7 @@ export function rowOf(line: TranscriptLine): Row | undefined {
   const raw = line.message.content;
   const content = typeof raw === "string" ? [{ type: "text", text: raw }] : Array.isArray(raw) ? raw : [];
   const role = line.type === "assistant" ? "assistant" : "user";
-  const message: CapturedMessage = { type: role, role, content };
+  const message: CapturedMessage = { type: role, role, content, ...(line.isMeta === true ? { isMeta: true as const } : {}) };
   return {
     kind: "row",
     sessionId: "",

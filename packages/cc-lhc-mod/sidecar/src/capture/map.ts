@@ -43,8 +43,35 @@ const STEP_KINDS = new Set(["assistant_text", "assistant_thinking", "tool_call",
 
 const DROPPED_DOORS = new Set(["queue", "compaction", "notice"]);
 
+const COMMAND_NAME = /<command-name>([\s\S]*?)<\/command-name>/;
+const COMMAND_ARGS = /<command-args>([\s\S]*?)<\/command-args>/;
+
+/**
+ * Rows a slash command writes around itself: the caveat, its output, and a
+ * skill's expanded body. The command row alone is kept, as one short note.
+ */
+const isCommandNoise = (row: Row): boolean => {
+  const text = joinedText(row.message.content).trimStart();
+  return (
+    text.startsWith("<local-command-caveat>") ||
+    text.startsWith("<local-command-stdout>") ||
+    text.startsWith("<local-command-stderr>") ||
+    (row.message.isMeta === true && text.startsWith("Base directory for this skill:"))
+  );
+};
+
+/** `/name args` for a slash command row, undefined for any other row. */
+function slashCommand(row: Row): string | undefined {
+  const text = joinedText(row.message.content);
+  const name = COMMAND_NAME.exec(text)?.[1]?.trim();
+  if (name === undefined) return undefined;
+  const args = COMMAND_ARGS.exec(text)?.[1]?.trim();
+  return args === undefined || args === "" ? name : `${name} ${args}`;
+}
+
 export function isRecorded(row: Row): boolean {
   if (DROPPED_DOORS.has(row.door) || row.message.role === undefined || row.model === "<synthetic>") return false;
+  if (isCommandNoise(row)) return false;
   if (row.door === "attachment" || row.door === "hook-context") {
     return row.message.name !== undefined && !MECHANICAL_ATTACHMENTS.has(row.message.name);
   }
@@ -89,6 +116,8 @@ function prompt(row: Row, isSteer: boolean): MessageEventInput[] {
 
 function mapRow(row: Row, state: TurnState): MessageEventInput[] {
   if (!isRecorded(row)) return [];
+  const command = slashCommand(row);
+  if (command !== undefined) return [textEvent(HARNESS, "runtime_note", command, "system", kindlessTextKey(row))];
   if (isUserPrompt(row)) return prompt(row, state.isOpen);
   if (row.message.name === "queued_command" && !isTaskNotification(row)) return prompt(row, true);
   switch (row.door) {
