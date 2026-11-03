@@ -100,9 +100,10 @@ const expected = [];
 const seen = new Set();
 let isInstalling = false;
 // Capture records neither a native summary as a prompt nor Claude Code's own synthetic messages (the refill breaker's).
-for (const row of rows.filter(
-  (r) => live.has(r.uuid) && r.isCompactSummary !== true && r.message?.model !== "<synthetic>",
-)) {
+// A synthetic row that calls a tool is a real call, such as a retrieval tool the mod serves.
+const isSynthetic = (row) =>
+  row.message?.model === "<synthetic>" && !blocksOf(row.message?.content).some((block) => block.type === "tool_use");
+for (const row of rows.filter((r) => live.has(r.uuid) && r.isCompactSummary !== true && !isSynthetic(r))) {
   if (row.subtype === "compact_boundary") {
     isInstalling = true;
     continue;
