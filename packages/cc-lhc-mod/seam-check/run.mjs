@@ -121,7 +121,9 @@ const checks = (debug) =>
   }));
 
 // The engine records its own count of the context it compacted as the boundary row's preTokens. An override that
-// took holds when the first auto compact ran at or above the trigger and below the engine's default threshold.
+// took holds when the run's first check was below the threshold (ok or warn), so a threshold under the starting
+// context fails, and the first auto compact ran at or above the trigger and below the engine's default threshold.
+// Resolution is one Read chunk, about 6k tokens.
 function firstCrossing(run, trigger, engineDefault) {
   const boundary = readFileSync(run.transcript, "utf8")
     .split("\n")
@@ -130,9 +132,10 @@ function firstCrossing(run, trigger, engineDefault) {
     .find((row) => row.subtype === "compact_boundary" && row.compactMetadata?.trigger === "auto");
   const pre = boundary?.compactMetadata?.preTokens;
   if (pre === undefined) return { ok: false, detail: "no auto compact_boundary row in the transcript" };
+  const opening = checks(run.debug)[0]?.level;
   return {
-    ok: pre >= trigger && pre < engineDefault,
-    detail: `first auto compact ran at ${pre} tokens (trigger ${trigger}, engine default ${engineDefault})`,
+    ok: opening !== undefined && opening !== "compact" && pre >= trigger && pre < engineDefault,
+    detail: `first check ${opening}, first auto compact ran at ${pre} tokens (trigger ${trigger}, engine default ${engineDefault})`,
   };
 }
 

@@ -108,7 +108,9 @@ the built mod. Each seam observes what its name says:
 - `output-reserve`: a 100k window gives exactly `effectiveWindow=80000`.
 - `override-lowers-trigger`: a real crossing at trigger 30000. The first auto
   `compact_boundary` row's `compactMetadata.preTokens`, the engine's own count
-  of what it compacted, is at or above 30000 and below the 67000 default.
+  of what it compacted, is at or above 30000 and below the 67000 default, and
+  the run's first autocompact check is `ok` or `warn`, so a threshold below
+  the starting context fails. Resolution is one Read chunk, about 6k tokens.
   Request usage is not used: it predates the tool result the next check sees.
 - `override-default-holds`: with the defaults (trigger 67000), no check in
   the run is compact-level.
