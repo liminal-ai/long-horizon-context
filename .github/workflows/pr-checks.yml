@@ -103,6 +103,36 @@ jobs:
       - name: Test claude-lhc
         run: pnpm --filter claude-lhc run test
 
+  cc-lhc-mod:
+    name: cc-lhc-mod
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install pnpm 11.8.0
+        uses: pnpm/action-setup@v6
+        with:
+          version: 11.8.0
+
+      - name: Install build Node 24.18.0
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24.18.0
+          cache: pnpm
+
+      - name: Install workspace (frozen)
+        run: pnpm install --frozen-lockfile
+
+      - name: Build cc-lhc-mod
+        run: pnpm --filter cc-lhc-mod run build
+
+      - name: Typecheck cc-lhc-mod
+        run: pnpm --filter cc-lhc-mod run typecheck
+
+      - name: Test cc-lhc-mod
+        run: pnpm --filter cc-lhc-mod run test
+
   cc-lhc:
     name: cc-lhc
     runs-on: ubuntu-24.04
