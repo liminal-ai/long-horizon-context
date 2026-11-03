@@ -108,6 +108,10 @@ Facts from the code. Read them before driving:
   source; after that it rebinds as `restart`, so a turn still running keeps going.
   Nothing waits for `session.end`: `/exit` kills the sidecar first, and each
   capture batch is committed before the sidecar answers it.
+- Shutdown: the sidecar exits on SIGTERM, SIGINT and SIGHUP, and on its own
+  (`exit orphaned`) once a heartbeat write to its stdout fails. Only the Claude
+  process that spawned it reads that pipe, so this also catches a sidecar that
+  a dying Claude respawned during a hangup.
 - Threads (`sidecar/src/bind.ts`): a bind answers the thread and how the
   session came to it, and the mod pins `LHC thread <id> (<how>)` as its
   status line. A session whose alias is known keeps its thread (`resumed`:
