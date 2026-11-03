@@ -28,8 +28,12 @@ Facts from the code. Read them before driving:
   `sidecar/src/capture/`): the mod puts every main-loop `session.append` row,
   `turn.start`, `turn.step`, `turn.complete` and every bind in one ordered
   outbox. A flush sends entries in order, executes a bind itself as a barrier,
-  and drops an entry only when the sidecar answers after the commit. The
-  sidecar refuses entries for a session it is not bound to. It records into
+  and drops an entry only when the sidecar answers after the commit. A
+  replacement sidecar is replayed the last sent bind before any row; a failed
+  send retries with backoff, and after 5 failures in a row capture stops with
+  one notice in the transcript. The sidecar sets its binding only once the
+  recording opens, and refuses entries for another session or with no
+  recording open. It records into
   the thread under alias `claude-code:<session id>`, dropping `queue`,
   `compaction` and `notice` rows, rows with no role, and mechanical
   attachments by name (`MECHANICAL_ATTACHMENTS` in
@@ -38,12 +42,13 @@ Facts from the code. Read them before driving:
   command mode) is a `runtime_note` holding its `<task-notification>` element;
   any other `queued_command` is the person's steer.
 - Recovery and rewind: at each bind the sidecar records transcript rows past
-  the committed cursor through the same path as live rows. A prompt on the
-  transcript's active chain (from its last row by parent) whose path back to
-  the nearest recorded row passes a branch holding recorded rows is a rewind:
-  core `rollback` keeps through that recorded row. A path that reaches a
-  compact boundary is no rewind. A fork is refused for the session's life
-  (`forks/<session id>`).
+  the committed cursor through the same path as live rows. A branch off the
+  transcript's active chain (from its last row by parent) that holds a
+  person's prompt is abandoned: recovery never records it, and a new prompt
+  whose path back to the nearest recorded row passes one writes core
+  `rollback`. A branch without a prompt (parallel tool calls) is live. A
+  rewind reaches back to a compact boundary but not past it. A fork is
+  refused for the session's life (`forks/<session id>`).
 - Lease: a second live Claude process on the same thread is refused with a
   notice in the transcript. The lease outlives a sidecar that exits under a
   live Claude process (a reload, a kill); a dead owner's lease is taken over
