@@ -1,6 +1,6 @@
 # Host: cc-lhc-mod
 
-Last verified against code: 2026-11-03, Claude Code 2.1.317, main at `7e4acd0`. Precedence when facts disagree: code, then the package README (`packages/cc-lhc-mod/README.md`), then this document.
+Last verified against code: 2026-11-03, Claude Code 2.1.317, main at `6161801`. Precedence when facts disagree: code, then the package README (`packages/cc-lhc-mod/README.md`), then this document.
 
 This document builds on the vocabulary in [01-core-concepts.md](01-core-concepts.md) and [02-domain-design.md](02-domain-design.md). Record, event, derivation, view, band, compact point, visibility boundary, impression, and retrieval keep their SDK meanings here.
 
@@ -79,7 +79,7 @@ A bind answers the thread and how the session came to it. The status line shows 
 - `forked`. A `--fork-session` records nothing until its first captured row. Then the sidecar finds the source by the rows the fork's transcript shares with a sibling transcript and copies the source thread with core `copyThread`.
 - `replaced`. A thread that holds `compact_continuation_boundary` rows, which only older hosts write, is not adopted. The session records to a new thread under alias `cc-lhc-mod:<session id>` and shows a notice that names both threads.
 
-The lease (`sidecar/src/lease.ts`, `<LHC home>/owners/<thread>.json`) holds the Claude process pid. A second live Claude process on the same thread is refused with a notice. A sidecar that exits under a live Claude process keeps the lease, and the next bind takes over a dead owner's lease.
+The lease (`sidecar/src/lease.ts`, `<LHC home>/owners/<thread>.json`) holds the Claude process pid. A second live Claude process on the same thread is refused with a notice. A sidecar that exits under a live Claude process keeps the lease, and the next bind takes over a dead owner's lease. The sidecar writes a newline to stdout every 5 seconds and exits with `exit orphaned` when the write fails, so it stops once the Claude process that started it is gone, even after a hangup.
 
 ## Settings
 
@@ -129,7 +129,6 @@ Later work a user would notice, from the plan's Later work list:
 - The panel's last compaction is kept in `$.state`, so a Claude Code restart shows none until the next compaction.
 - A `/model` switch re-applies the trigger in unit tests only.
 - A fork that exits before its first capture commits keeps its source only in memory, so a later `--resume` of it starts a fresh thread.
-- After a SIGHUP, such as a closed terminal, the mod can start a sidecar mid-teardown that then sits idle with nothing to stop it.
 
 ## Certification
 
