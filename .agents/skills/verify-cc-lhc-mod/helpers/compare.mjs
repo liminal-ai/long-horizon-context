@@ -136,19 +136,29 @@ for (const row of rows.filter((r) => live.has(r.uuid) && r.isCompactSummary !== 
 
 const recorded = [];
 const exported = JSON.parse(readFileSync(exportFile, "utf8"));
-// An exit mid-tool can drop the cut-off call and its result from the transcript after capture recorded both.
-const cutOffTurns = [];
+// An exit mid-tool can drop the cut-off call and its result from the transcript after capture recorded both:
+// the index in recorded of each call that closes a turn which closed aborted/interrupted.
+const cutOffCalls = [];
 for (const turn of exported.turns) {
-  const toolIds = new Set();
   for (const message of turn.messages) {
     const content = message.blocks?.[0]?.content ?? {};
     if (message.kind === "assistant_text") recorded.push(`text ${content.text}`);
     if (message.kind === "tool_call") recorded.push(`call ${content.toolCallId}`);
     if (message.kind === "tool_result") recorded.push(`result ${content.toolCallId}`);
     if (message.kind === "user_prompt" && content.steer !== true) recorded.push(`prompt ${content.text}`);
-    if (message.kind === "tool_call" || message.kind === "tool_result") toolIds.add(content.toolCallId);
   }
-  if (turn.outcome === "aborted" && turn.outcomeReason === "interrupted") cutOffTurns.push(toolIds);
+  const [last, beforeLast] = [turn.messages.at(-1), turn.messages.at(-2)];
+  const id = beforeLast?.blocks?.[0]?.content?.toolCallId;
+  if (
+    turn.status !== "open" &&
+    turn.outcome === "aborted" &&
+    turn.outcomeReason === "interrupted" &&
+    beforeLast?.kind === "tool_call" &&
+    last?.kind === "tool_result" &&
+    last.blocks?.[0]?.content?.toolCallId === id
+  ) {
+    cutOffCalls.push(recorded.length - 2);
+  }
 }
 
 const count = (items) => items.reduce((map, item) => map.set(item, (map.get(item) ?? 0) + 1), new Map());
@@ -162,10 +172,21 @@ for (const [item, n] of want) {
   if (got !== n) failures++;
 }
 const extras = [...have.keys()].filter((item) => !want.has(item));
+// The transcript must also end that turn at the cut-off: after the last item it shares with the turn
+// comes whatever the export records after the pair, or nothing.
+const nthIndex = (items, item, n) => items.flatMap((x, i) => (x === item ? [i] : []))[n] ?? -1;
+const followsInTranscript = (index) => {
+  const last = recorded[index - 1];
+  if (last === undefined) return expected[0] === recorded[index + 2];
+  const at = nthIndex(expected, last, recorded.slice(0, index).filter((x) => x === last).length - 1);
+  return at !== -1 && expected[at + 1] === recorded[index + 2];
+};
 const dropped = [];
-for (const toolIds of cutOffTurns) {
-  const pairs = [...toolIds].filter((id) => extras.includes(`call ${id}`) && extras.includes(`result ${id}`));
-  if (pairs.length === 1 && have.get(`call ${pairs[0]}`) === 1 && have.get(`result ${pairs[0]}`) === 1) dropped.push(pairs[0]);
+for (const index of cutOffCalls) {
+  const [call, result] = [recorded[index], recorded[index + 1]];
+  if (have.get(call) === 1 && have.get(result) === 1 && !want.has(call) && !want.has(result) && followsInTranscript(index)) {
+    dropped.push(call.slice("call ".length));
+  }
 }
 for (const id of dropped) console.log(`dropped at exit ${id}: one call and result in a turn closed aborted/interrupted`);
 for (const item of extras) {
