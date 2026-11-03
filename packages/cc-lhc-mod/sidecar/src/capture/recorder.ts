@@ -1,60 +1,30 @@
-import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
-import { messageKeyPrefix } from "claude-adapter";
-import type { Lhc, MessageEventInput, ThreadRef } from "lhc";
-import type { CaptureEntry } from "../../../src/capture.ts";
+import { messageKeyPrefix, textEvent } from "claude-adapter";
+import type { Lhc, MessageEventInput } from "lhc";
+import type { CaptureEntry, How } from "../../../src/capture.ts";
+import { type Binding, openThread, type Thread } from "../bind.ts";
 import { acquireLease } from "../lease.ts";
 import { Receipts } from "../receipts.ts";
 import { type Recovered, recoverTranscript } from "../recovery.ts";
 import { type Entry, HARNESS, isRecorded, mapEntries, opensTurn, SETTLED, type TurnState } from "./map.ts";
 import { TranscriptTail } from "./transcript.ts";
 
-export type Binding = { sessionId: string; transcriptPath: string; source: string };
-
 type Deps = { lhc: Lhc; home: string; ownerPid: number; log: (line: string) => void };
 
-export type Recording = { kind: "recording"; recorder: Recorder } | { kind: "refused"; notice: string };
+export type { Binding };
+
+/** A fork records nothing until its first row shows where it left its source. */
+export type Recording =
+  | { kind: "recording"; recorder: Recorder; how: How; notice?: string }
+  | { kind: "refused"; notice: string }
+  | { kind: "awaiting-fork" };
 
 const PARENT_POLLS = 40;
 const PARENT_POLL_MS = 50;
 
-export const aliasOf = (sessionId: string): string => `${HARNESS}:${sessionId}`;
-
-type Thread = ThreadRef & { threadId: string; registryPath: string };
-
-async function threadFor(lhc: Lhc, home: string, sessionId: string): Promise<Thread> {
-  mkdirSync(join(home, "threads"), { recursive: true });
-  const registryPath = join(home, "registry.sqlite");
-  const alias = aliasOf(sessionId);
-  const found = await lhc.threads.resolveAlias({ alias, registryPath });
-  if (found.ok) return { threadId: found.value.threadId, registryPath };
-  if (found.error.code !== "alias_not_found") throw new Error(`alias lookup failed: ${found.error.reason}`);
-  const created = await lhc.threads.newThread({
-    filePath: join(home, "threads", `${randomUUID()}.sqlite`),
-    title: `Claude Code ${sessionId}`,
-    registryPath,
-  });
-  if (!created.ok) throw new Error(`thread creation failed: ${created.error.reason}`);
-  const bound = await lhc.threads.registerCurrentAlias({ alias, threadId: created.value.threadId, registryPath });
-  if (bound.ok) return { threadId: created.value.threadId, registryPath };
-  const winner = await lhc.threads.resolveAlias({ alias, registryPath });
-  if (!winner.ok) throw new Error(`alias registration failed: ${bound.error.reason}`);
-  return { threadId: winner.value.threadId, registryPath };
-}
-
-/** A fork stays refused for the session's life, whatever reason a later bind gives. */
-const forkMark = (home: string, sessionId: string): string => join(home, "forks", sessionId);
-
-export async function openRecording(deps: Deps, binding: Binding): Promise<Recording> {
-  if (binding.source === "fork") {
-    mkdirSync(join(deps.home, "forks"), { recursive: true });
-    writeFileSync(forkMark(deps.home, binding.sessionId), "");
-  }
-  if (existsSync(forkMark(deps.home, binding.sessionId))) {
-    return { kind: "refused", notice: "LHC does not record forked sessions yet. This session is not recorded." };
-  }
-  const thread = await threadFor(deps.lhc, deps.home, binding.sessionId);
+export async function openRecording(deps: Deps, binding: Binding, firstRow?: string): Promise<Recording> {
+  const opened = await openThread(deps, binding, firstRow);
+  if (opened === undefined) return { kind: "awaiting-fork" };
+  const { thread, how, notice } = opened;
   const lease = acquireLease(deps.home, thread.threadId, deps.ownerPid);
   if (!lease.held) {
     return {
@@ -64,13 +34,18 @@ export async function openRecording(deps: Deps, binding: Binding): Promise<Recor
   }
   const recorder = new Recorder(deps, binding, thread, lease.release);
   await recorder.readAnswered();
-  const recovered = await recorder.recover();
-  // A turn cannot outlive its Claude Code process: a new one (startup, resume) ends the old process's open turn.
-  if (binding.source === "startup" || binding.source === "resume") await recorder.endInterruptedTurn();
+  // A fork's transcript already holds its own first rows; live capture brings those.
+  const recovered = await recorder.recover(opened.recoverThrough);
+  // A turn cannot outlive its Claude Code process: a new one (startup, resume, a fork over its source's rows)
+  // ends the old process's open turn.
+  if (binding.source === "startup" || binding.source === "resume" || opened.recoverThrough !== undefined) {
+    await recorder.endInterruptedTurn();
+  }
   deps.log(
-    `recording session ${binding.sessionId} thread ${thread.threadId} recovered ${recovered.recorded} of ${recovered.scanned} transcript rows`,
+    `recording session ${binding.sessionId} thread ${thread.threadId} (${how}) recovered ${recovered.recorded} of ${recovered.scanned} transcript rows`,
   );
-  return { kind: "recording", recorder };
+  if (notice !== undefined) deps.log(notice);
+  return { kind: "recording", recorder, how, ...(notice === undefined ? {} : { notice }) };
 }
 
 export class Recorder {
@@ -105,8 +80,9 @@ export class Recorder {
     }
   }
 
-  recover(): Promise<Recovered> {
+  recover(through?: string): Promise<Recovered> {
     return recoverTranscript({
+      ...(through === undefined ? {} : { through }),
       home: this.deps.home,
       sessionId: this.binding.sessionId,
       transcriptPath: this.binding.transcriptPath,

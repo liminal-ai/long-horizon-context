@@ -37,7 +37,7 @@ it("keeps the first recorded result when a resumed transcript replaces an interr
 
   writeTranscript(h, lines);
   const resumed = await record(h, "resume");
-  if (resumed.kind !== "recording") throw new Error(resumed.notice);
+  if (resumed.kind !== "recording") throw new Error(JSON.stringify(resumed));
   const results = [...(await events(resumed.recorder))].filter(([key]) => key.endsWith(":tool_result"));
 
   expect(results.map(([, payload]) => [payload.toolCallId, payload.content])).toEqual([[CALL, "Exit code 137"]]);
