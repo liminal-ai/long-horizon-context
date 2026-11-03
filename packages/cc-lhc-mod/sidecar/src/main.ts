@@ -3,7 +3,7 @@ import { dirname } from "node:path";
 import { parseArgs } from "node:util";
 import { sidecarLogPath, socketPath } from "../../src/paths.ts";
 import { createLhc } from "./inference-sdk.ts";
-import { createSidecarServer, stopRecording } from "./server.ts";
+import { createSidecarServer } from "./server.ts";
 
 // Linux caps sun_path at 108 bytes including the terminator.
 const MAX_SOCKET_PATH = 107;
@@ -28,10 +28,10 @@ chmodSync(dirname(socket), 0o700);
 rmSync(socket, { force: true });
 
 const parent = process.ppid;
-const { server, state } = createSidecarServer({ lhc: createLhc(), home: values.home, ownerPid: parent, log });
+const { server } = createSidecarServer({ lhc: createLhc(), home: values.home, ownerPid: parent, log });
 const stop = (why: string): void => {
+  // The lease stays: it belongs to the Claude process, which outlives a reloaded sidecar and is reclaimed once dead.
   log(`exit ${why}`);
-  stopRecording(state);
   rmSync(socket, { force: true });
   process.exit(0);
 };

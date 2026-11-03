@@ -4,6 +4,7 @@ import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
+import { acquireLease } from "../sidecar/src/lease.ts";
 
 const main = join(import.meta.dirname, "..", "sidecar", "src", "main.ts");
 let home: string;
@@ -86,5 +87,22 @@ describe("sidecar", () => {
     const answer = await call(socket, "POST", "/bind", { transcriptPath: "/t/x.jsonl", source: "startup" });
 
     expect(answer).toEqual({ status: 400, json: { error: "bind needs sessionId, transcriptPath and source" } });
+  });
+
+  it("keeps the thread lease when it exits under a live Claude process, as a reload's old sidecar does", async () => {
+    const socket = await start("lease1");
+    await call(socket, "POST", "/bind", {
+      sessionId: "s-lease",
+      transcriptPath: "/t/s-lease.jsonl",
+      source: "startup",
+    });
+    const threadId = ((await call(socket, "GET", "/health")).json as { recording: { threadId: string } }).recording
+      .threadId;
+    const running = child;
+    const exited = new Promise((resolve) => running?.once("exit", resolve));
+    running?.kill("SIGTERM");
+    await exited;
+
+    expect(acquireLease(home, threadId, process.ppid)).toEqual({ held: false, ownerPid: process.pid });
   });
 });
