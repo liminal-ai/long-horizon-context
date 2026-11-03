@@ -1,6 +1,6 @@
 import { closeSync, openSync, readSync } from "node:fs";
 import type { CapturedMessage } from "../../../src/capture.ts";
-import type { Row } from "./map.ts";
+import { isUserPrompt, type Row } from "./map.ts";
 
 export type TranscriptLine = {
   uuid: string;
@@ -20,6 +20,7 @@ const CHUNK = 1 << 20;
 export class TranscriptTail {
   readonly parents = new Map<string, string | null>();
   readonly compactBoundaries = new Set<string>();
+  readonly prompts = new Set<string>();
   #offset: number;
   #pending = Buffer.alloc(0);
 
@@ -46,19 +47,28 @@ export class TranscriptTail {
     return chain;
   }
 
-  /** Every row below the given chain rows (null for the root) on a branch off the chain. */
-  branchesOff(forks: ReadonlyArray<string | null>, chain: ReadonlySet<string>): string[] {
+  /**
+   * Rows a rewind left: each branch off the active chain that holds a person's
+   * prompt, keyed by the chain row it hangs from (null for the root). A branch
+   * with no prompt, such as a parallel tool call, is live.
+   */
+  abandoned(): Map<string | null, string[]> {
+    const chain = this.activeChain();
     const children = new Map<string | null, string[]>();
     for (const [child, parent] of this.parents) {
       const siblings = children.get(parent);
       if (siblings === undefined) children.set(parent, [child]);
       else siblings.push(child);
     }
-    const found: string[] = [];
-    const queue = forks.flatMap((fork) => (children.get(fork) ?? []).filter((child) => !chain.has(child)));
-    for (let id = queue.shift(); id !== undefined; id = queue.shift()) {
-      found.push(id);
-      queue.push(...(children.get(id) ?? []));
+    const subtree = (id: string): string[] => [id, ...(children.get(id) ?? []).flatMap(subtree)];
+    const found = new Map<string | null, string[]>();
+    const reachesRoot = ![...chain].some((id) => this.compactBoundaries.has(id));
+    for (const fork of reachesRoot ? [null, ...chain] : chain) {
+      for (const child of children.get(fork) ?? []) {
+        if (chain.has(child)) continue;
+        const branch = subtree(child);
+        if (branch.some((id) => this.prompts.has(id))) found.set(fork, [...(found.get(fork) ?? []), ...branch]);
+      }
     }
     return found;
   }
@@ -88,6 +98,8 @@ export class TranscriptTail {
           if (line !== undefined) {
             this.parents.set(line.uuid, line.parentUuid);
             if (line.subtype === "compact_boundary") this.compactBoundaries.add(line.uuid);
+            const row = rowOf(line);
+            if (row !== undefined && isUserPrompt(row)) this.prompts.add(line.uuid);
             lines.push({ line, end: this.#offset });
           }
           end = this.#pending.indexOf(10);

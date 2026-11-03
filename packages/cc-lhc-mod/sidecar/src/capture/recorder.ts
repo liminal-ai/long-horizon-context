@@ -91,7 +91,11 @@ export class Recorder {
       home: this.deps.home,
       sessionId: this.binding.sessionId,
       transcriptPath: this.binding.transcriptPath,
-      capture: (rows) => this.capture(rows),
+      capture: (rows) => {
+        this.#parents.read();
+        const abandoned = new Set([...this.#parents.abandoned().values()].flat());
+        return this.capture(rows.filter((row) => row.kind !== "row" || !abandoned.has(row.uuid)));
+      },
     });
   }
 
@@ -136,32 +140,21 @@ export class Recorder {
       return [];
     }
     const transcript = this.#parents;
-    const chain = transcript.activeChain();
-    if (!chain.has(promptUuid)) return [];
-    const forks: Array<string | null> = [];
-    let keep = 0;
+    if (!transcript.activeChain().has(promptUuid)) return [];
+    const abandoned = transcript.abandoned();
+    const branches: string[] = [];
+    let keep: number | undefined;
     for (let id: string | null = parent; ; id = transcript.parents.get(id) ?? null) {
-      if (id === null) {
-        forks.push(null);
-        break;
-      }
-      // The chain ends at a compaction, and a rewind cannot reach past one.
-      if (transcript.compactBoundaries.has(id)) return [];
-      forks.push(id);
-      const order = await this.#capturedThrough(id);
-      if (order !== undefined) {
-        keep = order;
-        break;
-      }
+      branches.push(...(abandoned.get(id) ?? []));
+      // A rewind reaches back to a compaction but not past it.
+      if (id === null || transcript.compactBoundaries.has(id)) break;
+      keep = await this.#capturedThrough(id);
+      if (keep !== undefined) break;
     }
-    const abandoned = transcript.branchesOff(forks, chain);
-    if (abandoned.length === 0) return [];
-    const counts = await this.deps.lhc.intakeStream.eventKeyPrefixCounts(
-      this.thread,
-      abandoned.map((id) => messageKeyPrefix(HARNESS, id)),
-    );
-    if (!counts.ok) throw new Error(`key lookup failed: ${counts.error.reason}`);
-    if (!counts.value.some((row) => row.exists)) return [];
+    const orders = await Promise.all(branches.map((id) => this.#capturedFrom(id)));
+    const firstAbandoned = Math.min(...orders.filter((order) => order !== undefined));
+    if (firstAbandoned === Number.POSITIVE_INFINITY) return [];
+    keep ??= firstAbandoned - 1;
     this.deps.log(`rewind before prompt ${promptUuid}: rollback keeps through event ${keep}`);
     return [
       {
@@ -181,6 +174,15 @@ export class Recorder {
       await new Promise((resolve) => setTimeout(resolve, PARENT_POLL_MS));
     }
     return undefined;
+  }
+
+  async #capturedFrom(uuid: string): Promise<number | undefined> {
+    const page = await this.deps.lhc.intakeStream.listEventKeysByPrefix(this.thread, {
+      prefix: messageKeyPrefix(HARNESS, uuid),
+    });
+    if (!page.ok) throw new Error(`key lookup failed: ${page.error.reason}`);
+    const orders = page.value.keys.map((key) => key.eventOrder);
+    return orders.length === 0 ? undefined : Math.min(...orders);
   }
 
   async #capturedThrough(uuid: string): Promise<number | undefined> {

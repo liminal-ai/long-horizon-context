@@ -57,7 +57,7 @@ const NOTIFICATION = /<task-notification>[\s\S]*<\/task-notification>/;
 /** A background task's notification is not something the person said, whichever door it came by. */
 const isTaskNotification = (row: Row): boolean => row.origin === "task-notification";
 
-const isUserPrompt = (row: Row): boolean => row.door === "prompt" && !isTaskNotification(row);
+export const isUserPrompt = (row: Row): boolean => row.door === "prompt" && !isTaskNotification(row);
 
 export function opensTurn(row: Row, state: TurnState): boolean {
   return isUserPrompt(row) && !state.isOpen;
