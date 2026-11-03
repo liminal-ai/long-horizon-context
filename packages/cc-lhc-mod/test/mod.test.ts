@@ -168,3 +168,25 @@ test("capture hooks queue rows and turn steps in order and never wait on the sid
   ]);
   expect(sent.every((entry) => entry.sessionId === "session-1")).toBe(true);
 });
+
+test("a new session's bind reaches the sidecar before any of that session's rows", async ($, on) => {
+  const { posts, policyPosted, openCapture, captured } = engine(on, 1_000_000);
+  on("turn.start", (_, e) => ({ turnId: e.turnId }));
+
+  await $.classic.SessionStart({ source: "startup", session_id: "session-1", transcript_path: "/t/session-1.jsonl" });
+  await policyPosted();
+  await $.turn.start({ text: "hi", turnId: "turn-1" });
+  await $.classic.SessionStart({ source: "clear", session_id: "session-2", transcript_path: "/t/session-2.jsonl" });
+  await $.turn.start({ text: "after clear", turnId: "turn-2" });
+  openCapture();
+  await captured(2);
+
+  const order = posts
+    .filter((post) => post.path !== "/policy")
+    .map((post) =>
+      post.path === "/bind"
+        ? `bind ${(post.body as { sessionId: string }).sessionId}`
+        : `capture ${(post.body as { entries: Array<{ sessionId: string }> }).entries.map((entry) => entry.sessionId).join(",")}`,
+    );
+  expect(order).toEqual(["bind session-1", "capture session-1", "bind session-2", "capture session-2"]);
+});

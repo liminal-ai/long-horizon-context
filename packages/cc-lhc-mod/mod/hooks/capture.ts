@@ -18,11 +18,15 @@ function flush($: EngineInterface): void {
   runInBackground($, "capture", async () => {
     isFlushQueued = false;
     try {
-      while (outbox.length > 0) {
-        const batch = outbox.slice(0, MAX_BATCH);
+      const sessionId = outbox[0]?.sessionId;
+      while (outbox[0] !== undefined && outbox[0].sessionId === sessionId) {
+        const end = outbox.findIndex((entry) => entry.sessionId !== sessionId);
+        const batch = outbox.slice(0, Math.min(MAX_BATCH, end === -1 ? outbox.length : end));
         await post($, "/capture", { entries: batch });
         outbox.splice(0, batch.length);
       }
+      // A later session's entries wait for its bind, which is already queued behind this flush.
+      if (outbox.length > 0) flush($);
     } catch (error) {
       if (!isRetryArmed) {
         isRetryArmed = true;
