@@ -14,22 +14,30 @@ const rows = readFileSync(transcriptFile, "utf8")
   .filter((row) => typeof row.uuid === "string" && row.isSidechain !== true);
 
 const blocksOf = (content) => (typeof content === "string" ? [{ type: "text", text: content }] : Array.isArray(content) ? content : []);
-const isToolResultRow = (row) => blocksOf(row.message?.content).some((block) => block.type === "tool_result");
+const isPrompt = (row) =>
+  row.type === "user" &&
+  row.isMeta !== true &&
+  row.isCompactSummary !== true &&
+  row.origin?.kind !== "task-notification" &&
+  blocksOf(row.message?.content).some(
+    (block) => block.type === "text" && !/^(\[Request interrupted|<command-|<local-command-)/.test(block.text.trimStart()),
+  );
 
-// The live branch: the parent chain from the last row, plus tool results whose
-// parent is on it (parallel calls give two results one parent).
+// The live branch: the parent chain from the last row (across a compaction's
+// logical parent), plus every side branch off it that holds no prompt, such
+// as parallel tool calls. A side branch with a prompt is one a rewind left.
 const byUuid = new Map(rows.map((row) => [row.uuid, row]));
+const children = new Map();
+for (const row of rows) children.set(row.parentUuid, [...(children.get(row.parentUuid) ?? []), row]);
+const subtree = (row) => [row, ...(children.get(row.uuid) ?? []).flatMap(subtree)];
 const live = new Set();
 for (let row = rows.at(-1); row !== undefined; row = byUuid.get(row.parentUuid ?? row.logicalParentUuid)) {
   live.add(row.uuid);
 }
-for (let grew = true; grew; ) {
-  grew = false;
-  for (const row of rows) {
-    if (!live.has(row.uuid) && live.has(row.parentUuid) && isToolResultRow(row)) {
-      live.add(row.uuid);
-      grew = true;
-    }
+for (const uuid of [...live]) {
+  for (const child of children.get(uuid) ?? []) {
+    const branch = live.has(child.uuid) ? [] : subtree(child);
+    if (!branch.some(isPrompt)) for (const row of branch) live.add(row.uuid);
   }
 }
 
@@ -39,11 +47,7 @@ for (const row of rows.filter((r) => live.has(r.uuid) && r.isCompactSummary !== 
     if (row.type === "assistant" && block.type === "text" && block.text !== "") expected.push(`text ${block.text}`);
     if (row.type === "assistant" && block.type === "tool_use") expected.push(`call ${block.id}`);
     if (row.type === "user" && block.type === "tool_result") expected.push(`result ${block.tool_use_id}`);
-    if (row.type === "user" && block.type === "text" && row.isMeta !== true && row.origin?.kind !== "task-notification") {
-      if (!/^(\[Request interrupted|<command-|<local-command-)/.test(block.text.trimStart())) {
-        expected.push(`prompt ${block.text}`);
-      }
-    }
+    if (block.type === "text" && isPrompt(row)) expected.push(`prompt ${block.text}`);
   }
 }
 
