@@ -56,18 +56,22 @@ const routes: Record<string, Route> = {
   }),
   "POST /bind": async (body, state, deps): Promise<unknown> => {
     const binding = parseBinding(body);
-    state.binding = binding;
-    deps.log(`bound session ${binding.sessionId} transcript ${binding.transcriptPath} source ${binding.source}`);
     const current = state.recording?.kind === "recording" ? state.recording.recorder : undefined;
     if (current?.binding.sessionId === binding.sessionId && current.binding.transcriptPath === binding.transcriptPath) {
       const recovered = await current.recover();
+      state.binding = binding;
+      deps.log(`bound session ${binding.sessionId} transcript ${binding.transcriptPath} source ${binding.source}`);
       deps.log(`still recording session ${binding.sessionId}, recovered ${recovered.recorded} of ${recovered.scanned} rows`);
       return binding;
     }
     stopRecording(state);
-    state.recording = await openRecording(deps, binding);
-    if (state.recording.kind === "refused") deps.log(`not recording: ${state.recording.notice}`);
-    return { ...binding, ...(state.recording.kind === "refused" ? { notice: state.recording.notice } : {}) };
+    state.binding = null;
+    const recording = await openRecording(deps, binding);
+    state.recording = recording;
+    state.binding = binding;
+    deps.log(`bound session ${binding.sessionId} transcript ${binding.transcriptPath} source ${binding.source}`);
+    if (recording.kind === "refused") deps.log(`not recording: ${recording.notice}`);
+    return { ...binding, ...(recording.kind === "refused" ? { notice: recording.notice } : {}) };
   },
   "POST /policy": (body, state, deps) => {
     state.policy = parsePolicy(body);
@@ -79,7 +83,8 @@ const routes: Record<string, Route> = {
     const sessionId = state.binding?.sessionId;
     const foreign = entries.find((entry) => entry.sessionId !== sessionId);
     if (foreign !== undefined) throw new Error(`entries for session ${foreign.sessionId}, bound to ${sessionId}`);
-    if (state.recording?.kind !== "recording" || entries.length === 0) return { recorded: 0 };
+    if (state.recording === null) throw new Error("no recording is open");
+    if (state.recording.kind !== "recording" || entries.length === 0) return { recorded: 0 };
     const recorded = await state.recording.recorder.capture(entries);
     const lag = Math.max(...entries.map((entry) => Date.now() - entry.at));
     deps.log(`captured ${entries.length} entries recorded ${recorded} events lag ${lag}ms`);

@@ -4,6 +4,8 @@ import { expect, test } from "claude-code/testing";
 const HOME = "/lhc-test-home";
 
 type Post = { path: string; body: unknown; socketPath: string | undefined };
+type Sent = { sessionId: string; uuid?: string; turnId?: string };
+type Body = { sessionId: string; source: string; entries: Sent[] };
 
 function engine(on: On, window: number) {
   const posts: Post[] = [];
@@ -222,4 +224,186 @@ test("an old-session flush queued behind a capture cannot pass the new session's
     "bind session-2",
     "capture session-2",
   ]);
+});
+
+function faultEngine(on: On, opts: { rejectRestart?: boolean; captures400?: number } = {}) {
+  const requests: Array<{ path: string; body: Body; bound: string | undefined; status: number }> = [];
+  const accepted: string[] = [];
+  let current: string | undefined;
+  let exits = 0;
+  let sleeps = 0;
+  let captureFailures = opts.captures400 ?? 0;
+  let releaseCapture = () => {};
+  const firstCaptureGate = new Promise<void>((resolve) => {
+    releaseCapture = resolve;
+  });
+  let attempts = 0;
+  const waiters: Array<{ test: () => boolean; resolve: () => void }> = [];
+  const signal = () => {
+    for (const w of waiters) if (w.test()) w.resolve();
+  };
+  const until = (test: () => boolean) =>
+    test() ? Promise.resolve() : new Promise<void>((resolve) => waiters.push({ test, resolve }));
+  const kills: Array<() => void> = [];
+  on("env.get", (_, e) => ({ value: e.name === "LHC_HOME" ? HOME : undefined }));
+  on("env.set", () => ({ value: {} }));
+  on("fs.write", () => ({ value: undefined }));
+  const notices: string[] = [];
+  on("ui.log", (_, e) => {
+    if (JSON.stringify(e).includes("sidecar exited")) {
+      exits++;
+      signal();
+    }
+    if (e.to !== "debug") {
+      notices.push(e.text);
+      signal();
+    }
+    return { value: undefined };
+  });
+  on("clock.sleep", () => (++sleeps <= 10 ? { value: undefined } : new Promise(() => {})));
+  on("session.id", () => ({ value: "session-1" }));
+  on("session.model", () => ({ value: "claude-sonnet-5-5" }));
+  on("session.usage", () => ({
+    value: {
+      startedAt: 0,
+      context: { window: 1_000_000, breakdown: { rawMaxTokens: 1_000_000 } as SessionContextBreakdown },
+      rateLimits: [],
+    },
+  }));
+  on("classic.SessionStart", () => ({}));
+  on("turn.start", (_, e) => ({ turnId: e.turnId }));
+  on("process.spawn", async function* (_, e) {
+    const home = e.argv[e.argv.indexOf("--home") + 1],
+      id = e.argv[e.argv.indexOf("--id") + 1];
+    const dead = new Promise<void>((resolve) => kills.push(resolve));
+    current = undefined;
+    yield { stream: "stdout", text: `listening ${home}/run/${id}.sock\n` };
+    await dead;
+    return { value: { code: 0, signal: null } };
+  });
+  on("http.fetch", async (_, e) => {
+    const path = new URL(e.url).pathname,
+      body = JSON.parse(e.init?.body ?? "null") as Body;
+    let status = 200;
+    if (path === "/capture") {
+      attempts++;
+      signal();
+      if (attempts === 1) await firstCaptureGate;
+      if (captureFailures-- > 0) status = 400;
+      else if (body.entries.some((x) => x.sessionId !== current)) status = 400;
+      if (status === 200) accepted.push(...body.entries.map((x) => `${x.sessionId}:${x.uuid ?? x.turnId}`));
+    }
+    if (path === "/bind") {
+      if (body.source === "restart" && opts.rejectRestart) {
+        status = 400;
+        opts.rejectRestart = false;
+      } else current = body.sessionId;
+    }
+    requests.push({ path, body, bound: current, status });
+    signal();
+    return {
+      value: {
+        status,
+        ok: status === 200,
+        headers: {},
+        text: status === 200 ? "{}" : '{"error":"injected single failure"}',
+      },
+    };
+  });
+  return {
+    requests,
+    accepted,
+    notices,
+    until,
+    releaseCapture,
+    kill: async () => {
+      const n = exits;
+      kills.at(-1)?.();
+      await until(() => exits > n);
+    },
+    attempts: () => attempts,
+  };
+}
+
+test("round2: capture 400 retains the same entries and retries before clear and resume binds", async ($, on) => {
+  const f = faultEngine(on, { captures400: 1 });
+  await $.classic.SessionStart({ source: "startup", session_id: "session-1", transcript_path: "/t/1" });
+  await f.until(() => f.requests.some((r) => r.path === "/policy"));
+  await $.turn.start({ text: "old", turnId: "old" });
+  await f.until(() => f.attempts() === 1);
+  await $.classic.SessionStart({ source: "clear", session_id: "session-2", transcript_path: "/t/2" });
+  await $.turn.start({ text: "new", turnId: "new" });
+  await $.classic.SessionStart({ source: "resume", session_id: "session-1", transcript_path: "/t/1" });
+  await $.turn.start({ text: "resume", turnId: "resume" });
+  f.releaseCapture();
+  await f.until(() => f.accepted.length === 3);
+  expect(f.accepted).toEqual(["session-1:old", "session-2:new", "session-1:resume"]);
+  expect(f.requests.filter((r) => r.path === "/capture").map((r) => r.status)).toEqual([400, 200, 200, 200]);
+});
+
+test("round2: replacement during pending old capture rebinds old session before clear and resume", async ($, on) => {
+  const f = faultEngine(on, { captures400: 1 });
+  await $.classic.SessionStart({ source: "startup", session_id: "session-1", transcript_path: "/t/1" });
+  await f.until(() => f.requests.some((r) => r.path === "/policy"));
+  await $.turn.start({ text: "old", turnId: "old" });
+  await f.until(() => f.attempts() === 1);
+  await $.classic.SessionStart({ source: "clear", session_id: "session-2", transcript_path: "/t/2" });
+  await $.turn.start({ text: "new", turnId: "new" });
+  await $.classic.SessionStart({ source: "resume", session_id: "session-1", transcript_path: "/t/1" });
+  await $.turn.start({ text: "resume", turnId: "resume" });
+  await f.kill();
+  f.releaseCapture();
+  await f.until(() => f.accepted.length === 3);
+  const bindings = f.requests.filter((r) => r.path === "/bind").map((r) => `${r.body.sessionId}:${r.body.source}`);
+  expect(bindings).toEqual(["session-1:startup", "session-1:restart", "session-2:clear", "session-1:resume"]);
+  expect(f.accepted).toEqual(["session-1:old", "session-2:new", "session-1:resume"]);
+  expect(
+    f.requests
+      .filter((r) => r.path === "/capture" && r.status === 200)
+      .every((r) => r.body.entries.every((x) => x.sessionId === r.bound)),
+  ).toBe(true);
+});
+
+test("round2: a rejected replacement bind must be retried before any capture is acknowledged", async ($, on) => {
+  const f = faultEngine(on, { rejectRestart: true });
+  f.releaseCapture();
+  await $.classic.SessionStart({ source: "startup", session_id: "session-1", transcript_path: "/t/1" });
+  await f.until(() => f.requests.some((r) => r.path === "/policy"));
+  await f.kill();
+  await $.turn.start({ text: "after death", turnId: "after-death" });
+  await f.until(() => f.requests.filter((r) => r.path === "/capture").length >= 3 || f.accepted.length === 1);
+
+  expect(f.accepted).toEqual(["session-1:after-death"]);
+});
+
+test("round2: replacement replays last sent bind while a different clear bind is pending", async ($, on) => {
+  const f = faultEngine(on, { captures400: 1 });
+  await $.classic.SessionStart({ source: "startup", session_id: "session-1", transcript_path: "/t/1" });
+  await f.until(() => f.requests.some((r) => r.path === "/policy"));
+  await $.turn.start({ text: "old", turnId: "old" });
+  await f.until(() => f.attempts() === 1);
+  await $.classic.SessionStart({ source: "clear", session_id: "session-2", transcript_path: "/t/2" });
+  await $.turn.start({ text: "new", turnId: "new" });
+  await f.kill();
+  f.releaseCapture();
+  await f.until(() => f.accepted.length === 2 || f.requests.filter((r) => r.path === "/capture").length >= 3);
+  expect(f.requests.filter((r) => r.path === "/bind").map((r) => `${r.body.sessionId}:${r.body.source}`)).toEqual([
+    "session-1:startup",
+    "session-1:restart",
+    "session-2:clear",
+  ]);
+  expect(f.accepted).toEqual(["session-1:old", "session-2:new"]);
+});
+
+test("capture stops with one visible notice after repeated failed sends", async ($, on) => {
+  const f = faultEngine(on, { captures400: 100 });
+  f.releaseCapture();
+  await $.classic.SessionStart({ source: "startup", session_id: "session-1", transcript_path: "/t/1" });
+  await $.turn.start({ text: "first", turnId: "first" });
+  await f.until(() => f.notices.some((text) => text.includes("stopped recording")));
+  await $.turn.start({ text: "second", turnId: "second" });
+
+  expect(f.notices.filter((text) => text.includes("stopped recording"))).toHaveLength(1);
+  expect(f.attempts()).toBe(5);
+  expect(f.accepted).toEqual([]);
 });
