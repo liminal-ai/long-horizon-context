@@ -1,0 +1,23 @@
+{
+  "name": "cc-lhc-mod",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Claude Code mod plus a per-process Node sidecar that records the session into an LHC thread.",
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "typecheck": "tsc -p tsconfig.json && node scripts/typecheck-mod.mjs",
+    "test": "vitest run",
+    "test:mod": "node scripts/build.mjs && claude plugin test dist/plugin",
+    "seam-check": "node scripts/build.mjs && node seam-check/run.mjs"
+  },
+  "engines": {
+    "node": ">=24.3.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.12.4",
+    "esbuild": "^0.28.0",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.8"
+  }
+}
