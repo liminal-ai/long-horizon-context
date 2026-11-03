@@ -62,12 +62,9 @@ describe("sidecar", () => {
     const binding = { sessionId: "s-1", transcriptPath: "/t/s-1.jsonl", source: "startup" };
 
     expect((await call(socket, "POST", "/bind", binding)).status).toBe(200);
-    expect(
-      (await call(socket, "POST", "/policy", { window: 1_000_000, trigger: 800_000, target: 140_000 })).status,
-    ).toBe(200);
     const health = await call(socket, "GET", "/health");
 
-    expect(health.json).toMatchObject({ binding, policy: { window: 1_000_000, trigger: 800_000, target: 140_000 } });
+    expect(health.json).toMatchObject({ binding });
     const log = readFileSync(join(home, "logs", "sidecar-bind1.log"), "utf8");
     expect(log).toContain("bound session s-1 transcript /t/s-1.jsonl source startup");
   });

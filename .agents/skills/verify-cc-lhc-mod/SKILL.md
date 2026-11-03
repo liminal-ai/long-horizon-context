@@ -108,7 +108,7 @@ Facts from the code. Read them before driving:
 - Binding: `classic.SessionStart` (startup, clear, resume, fork, and
   `compact` after each compaction) posts `/bind`. A reload re-runs `session.start` only, so the mod keeps the binding
   in `$.state` and rebinds with source `reload`. The sidecar answers
-  `GET /health` with its binding, policy and recording (`threadId`, `how`).
+  `GET /health` with its binding and recording (`threadId`, `how`).
   A fork's rebind (restart or reload) keeps source `fork` until the mod sees
   the fork's thread, so a sidecar that never saw its first row still copies the
   source; after that it rebinds as `restart`, so a turn still running keeps going.
@@ -402,7 +402,7 @@ Read-only diagnostics, per home:
   settings apply: `<reason> window W trigger T target X pct P [clamped]`. The
   same lines go to the debug log as `[lhc] $.ui.log (to debug): ...`.
 - Sidecar log: `<home>/lhc/logs/sidecar-<load id>.log`. `listening`,
-  `bound session <id> transcript <path> source <source>`, `policy ...`,
+  `bound session <id> transcript <path> source <source>`,
   `exit <signal>`.
 - Debug log: `<home>/debug-<session>.log`. `autocompact: ... level=ok|warn|compact
   effectiveWindow=E` per check, plugin load and reload lines.

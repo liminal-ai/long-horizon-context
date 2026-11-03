@@ -1,6 +1,6 @@
 import type { EngineInterface } from "claude-code";
 import { type CompactPolicy, computePolicy, type ResolvedSettings, resolveSettings } from "../../src/settings.ts";
-import { log, post, runInBackground } from "./sidecar.ts";
+import { log, runInBackground } from "./sidecar.ts";
 import { publishBestEffort } from "./state.ts";
 
 let options: Record<string, unknown> = {};
@@ -46,6 +46,5 @@ export function applySettings($: EngineInterface, reason: string): void {
       $,
       `${reason} window ${policy.window} trigger ${policy.trigger} target ${policy.target} pct ${policy.pct}${clamp}`,
     );
-    await post($, "/policy", { window: policy.window, trigger: policy.trigger, target: policy.target });
   });
 }

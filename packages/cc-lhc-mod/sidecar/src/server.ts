@@ -13,8 +13,7 @@ import { type Binding, openRecording, type Recorder, type Recording } from "./ca
 import type { Bridge } from "./inference-bridge.ts";
 
 export type { Binding };
-export type Policy = { window: number; trigger: number; target: number };
-export type SidecarState = { binding: Binding | null; policy: Policy | null; recording: Recording | null };
+export type SidecarState = { binding: Binding | null; recording: Recording | null };
 export type SidecarDeps = { lhc: Lhc; bridge?: Bridge; home: string; ownerPid: number; log: (line: string) => void };
 
 type Route = (body: unknown, state: SidecarState, deps: SidecarDeps) => unknown;
@@ -28,14 +27,6 @@ function parseBinding(body: unknown): Binding {
     throw new Error("bind needs sessionId, transcriptPath and source");
   }
   return { sessionId, transcriptPath, source };
-}
-
-function parsePolicy(body: unknown): Policy {
-  const { window, trigger, target } = (body ?? {}) as Record<string, unknown>;
-  if (!isCount(window) || !isCount(trigger) || !isCount(target)) {
-    throw new Error("policy needs window, trigger and target");
-  }
-  return { window, trigger, target };
 }
 
 function parseEntries(body: unknown): CaptureEntry[] {
@@ -115,10 +106,9 @@ async function derivationsOf(state: SidecarState, deps: SidecarDeps): Promise<De
 }
 
 const routes: Record<string, Route> = {
-  "GET /health": async (_body, state, deps): Promise<Health & { pid: number; binding: Binding | null; policy: Policy | null }> => ({
+  "GET /health": async (_body, state, deps): Promise<Health & { pid: number; binding: Binding | null }> => ({
     pid: process.pid,
     binding: state.binding,
-    policy: state.policy,
     recording: state.recording === null ? null : { kind: state.recording.kind, ...describe(state.recording) },
     derivations: await derivationsOf(state, deps),
   }),
@@ -142,11 +132,6 @@ const routes: Record<string, Route> = {
     if (recording.kind === "awaiting-fork") deps.log(`fork ${binding.sessionId} waits for its first row`);
     if (recording.kind === "recording") void deps.lhc.work.drain(recording.recorder.thread);
     return { ...binding, ...describe(recording) };
-  },
-  "POST /policy": (body, state, deps) => {
-    state.policy = parsePolicy(body);
-    deps.log(`policy window ${state.policy.window} trigger ${state.policy.trigger} target ${state.policy.target}`);
-    return state.policy;
   },
   "POST /capture": async (body, state, deps): Promise<CaptureReply> => {
     const entries = parseEntries(body);
@@ -223,7 +208,7 @@ function reply(res: ServerResponse, status: number, value: unknown): void {
 }
 
 export function createSidecarServer(deps: SidecarDeps): { server: Server; state: SidecarState } {
-  const state: SidecarState = { binding: null, policy: null, recording: null };
+  const state: SidecarState = { binding: null, recording: null };
   let inArrivalOrder: Promise<unknown> = Promise.resolve();
   const server = createServer((req, res) => {
     const unorderedRoute = unorderedRoutes[`${req.method} ${req.url}`];
