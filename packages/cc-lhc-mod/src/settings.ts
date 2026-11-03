@@ -49,7 +49,7 @@ function policyFor(settings: Settings, window: number): CompactPolicy {
   const engineCap = effective - ENGINE_HEADROOM;
   const wanted = Math.min(settings.upperBound, Math.floor((settings.compactPercent * window) / 100));
   const trigger = Math.min(wanted, engineCap);
-  const target = Math.min(settings.lowerBound, Math.floor(TARGET_WINDOW_SHARE * window));
+  const target = Math.min(settings.lowerBound, Math.floor(TARGET_WINDOW_SHARE * window), Math.floor(trigger / 2));
   return { window, trigger, target, pct: overrideFor(trigger, effective), isClamped: trigger < wanted };
 }
 
@@ -64,14 +64,5 @@ export function computePolicy(
   resolved: ResolvedSettings,
   window: number,
 ): { policy: CompactPolicy; notices: string[] } {
-  const policy = policyFor(resolved.settings, window);
-  if (policy.target < policy.trigger) return { policy, notices: resolved.notices };
-  const fallback = policyFor(DEFAULT_SETTINGS, window);
-  return {
-    policy: fallback,
-    notices: [
-      ...resolved.notices,
-      `target ${policy.target} is not below trigger ${policy.trigger}; using the default settings`,
-    ],
-  };
+  return { policy: policyFor(resolved.settings, window), notices: resolved.notices };
 }

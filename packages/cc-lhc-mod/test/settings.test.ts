@@ -31,10 +31,21 @@ describe("computePolicy", () => {
     }
   });
 
-  it("falls back to the defaults when the target is not below the trigger", () => {
-    const { policy, notices } = computePolicy(resolveSettings({ compactPercent: 40 }), 100_000);
-    expect(policy).toMatchObject({ trigger: 67_000, target: 40_000 });
-    expect(notices).toEqual(["target 40000 is not below trigger 40000; using the default settings"]);
+  it("keeps a lowered trigger and halves it for the target", () => {
+    for (const window of [100_000, 200_000]) {
+      const { policy, notices } = computePolicy(resolveSettings({ compactPercent: 40 }), window);
+      expect(policy).toMatchObject({ trigger: 0.4 * window, target: 0.2 * window });
+      expect(notices).toEqual([]);
+    }
+  });
+
+  it("keeps every target below its trigger", () => {
+    for (const window of [100_000, 200_000, 1_000_000]) {
+      for (let compactPercent = 1; compactPercent <= 100; compactPercent += 3) {
+        const { policy } = computePolicy(resolveSettings({ compactPercent }), window);
+        expect(policy.target).toBeLessThan(policy.trigger);
+      }
+    }
   });
 
   it("keeps a target below the trigger", () => {

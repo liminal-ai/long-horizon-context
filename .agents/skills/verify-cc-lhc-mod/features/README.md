@@ -55,14 +55,12 @@ Crossing drive, 100k compact window, trigger 40000 (pct 50):
 
 ```sh
 VERIFY_ENV="CLAUDE_CODE_AUTO_COMPACT_WINDOW=100000" $V/helpers/launch.sh "$S" "$H" -- --model sonnet --allowedTools Read \
-  --settings '{"pluginConfigs":{"lhc@inline":{"options":{"compactPercent":40,"lowerBound":20000}}}}'
+  --settings '{"pluginConfigs":{"lhc@inline":{"options":{"compactPercent":40}}}}'
 $V/helpers/say.sh "$S" "Read f1.txt in chunks of 150 lines (offset 1, 151, 301, 451, 601), one Read call at a time, then reply DONE."
 $V/helpers/wait.sh "$H" 'level=compact' 240
 ```
 
-Put a text file of about 60 KB as `f1.txt` in `$H/work` first. Keep the
-default `lowerBound` out of this drive: on a 100k window it makes the target
-40000, equal to the trigger, and the settings fall back to the defaults.
+Put a text file of about 60 KB as `f1.txt` in `$H/work` first.
 Pass when the mod log says `window 100000 trigger 40000 target 20000 pct 50`,
 the debug log shows `level=ok` or `level=warn` checks before the first
 `level=compact`, and the first `compact_boundary` row's `preTokens` is above
