@@ -110,7 +110,10 @@ the built mod. Each seam observes what its name says:
   `compact_boundary` row's `compactMetadata.preTokens`, the engine's own count
   of what it compacted, is at or above 30000 and below the 67000 default, and
   the run's first autocompact check is `ok` or `warn`, so a threshold below
-  the starting context fails. Resolution is one Read chunk, about 6k tokens.
+  the starting context fails. It catches an override that is missing, below
+  the starting context, or at the default. It does not catch a threshold a
+  few thousand tokens off the trigger: an early compact attempt can bail and
+  the debug log redacts check counts (24000 against a 30000 trigger passed).
   Request usage is not used: it predates the tool result the next check sees.
 - `override-default-holds`: with the defaults (trigger 67000), no check in
   the run is compact-level.

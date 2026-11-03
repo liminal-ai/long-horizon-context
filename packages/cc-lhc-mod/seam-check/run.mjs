@@ -123,7 +123,8 @@ const checks = (debug) =>
 // The engine records its own count of the context it compacted as the boundary row's preTokens. An override that
 // took holds when the run's first check was below the threshold (ok or warn), so a threshold under the starting
 // context fails, and the first auto compact ran at or above the trigger and below the engine's default threshold.
-// Resolution is one Read chunk, about 6k tokens.
+// It catches an override that is missing, below the starting context, or at the default. A threshold a few thousand
+// tokens off the trigger can pass: an early attempt may bail, and the logs redact check counts.
 function firstCrossing(run, trigger, engineDefault) {
   const boundary = readFileSync(run.transcript, "utf8")
     .split("\n")
