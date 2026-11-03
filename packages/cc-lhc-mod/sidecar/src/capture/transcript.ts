@@ -213,7 +213,8 @@ export function rowOf(line: TranscriptLine): Row | undefined {
 /**
  * The entries live capture would have sent for transcript lines: each row past
  * `from`, and, from every line, the turn starts, steps and ends that set the
- * turn state. A prompt opens a turn, each model response (one message id) is
+ * turn state. A prompt, a command, or a delivered notification while no turn
+ * is open opens a turn, each model response (one message id) is
  * one step with its tool results, and a response that ends the turn or a
  * turn's duration row settles it.
  */
@@ -226,9 +227,11 @@ export function entriesOf(
   let step = -1;
   let response: string | undefined;
   let afterCaveat = false;
+  let isOpen = false;
   for (const { line, end } of lines) {
     if (line.type === "system" && line.subtype === "turn_duration") {
       entries.push({ kind: "settle" });
+      isOpen = false;
       continue;
     }
     const row = skip(line.uuid) ? undefined : rowOf(line);
@@ -240,9 +243,14 @@ export function entriesOf(
     }
     if (end > from) entries.push(row);
     // A response that ends the turn settles it; print-mode transcripts write no duration row.
-    if (line.type === "assistant" && line.message?.stop_reason === "end_turn") entries.push({ kind: "settle" });
-    if (row.door === "prompt" || isUserPrompt(row, afterCaveat)) {
+    if (line.type === "assistant" && line.message?.stop_reason === "end_turn") {
+      entries.push({ kind: "settle" });
+      isOpen = false;
+    }
+    const isDelivery = row.message.name === "queued_command" && !isOpen;
+    if (row.door === "prompt" || isUserPrompt(row, afterCaveat) || isDelivery) {
       entries.push({ kind: "turn-start", sessionId: "", turnId: line.uuid, at: 0 });
+      isOpen = true;
       step = -1;
       response = undefined;
     }

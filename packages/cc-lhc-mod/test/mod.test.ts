@@ -1,9 +1,18 @@
 import type { On, SessionContextBreakdown } from "claude-code";
-import { expect, test } from "claude-code/testing";
+import { type Engine, expect, test } from "claude-code/testing";
 
 const HOME = "/lhc-test-home";
 
 type Post = { path: string; body: unknown; socketPath: string | undefined };
+
+/** A person's prompt row, which the mod captures as one entry. */
+const promptRow = ($: Engine, uuid: string) =>
+  $.session.append({
+    message: { type: "user", role: "user", content: [{ type: "text", text: uuid }] },
+    door: "prompt",
+    origin: { kind: "composer" },
+    uuid,
+  });
 type Sent = { sessionId: string; uuid?: string; turnId?: string };
 type Body = { sessionId: string; source: string; entries: Sent[] };
 
@@ -177,9 +186,9 @@ test("a new session's bind reaches the sidecar before any of that session's rows
 
   await $.classic.SessionStart({ source: "startup", session_id: "session-1", transcript_path: "/t/session-1.jsonl" });
   await policyPosted();
-  await $.turn.start({ text: "hi", turnId: "turn-1" });
+  await promptRow($, "turn-1");
   await $.classic.SessionStart({ source: "clear", session_id: "session-2", transcript_path: "/t/session-2.jsonl" });
-  await $.turn.start({ text: "after clear", turnId: "turn-2" });
+  await promptRow($, "turn-2");
   openCapture();
   await captured(2);
 
@@ -198,7 +207,7 @@ test("an old-session flush queued behind a capture cannot pass the new session's
   on("turn.start", (_, e) => ({ turnId: e.turnId }));
   await $.classic.SessionStart({ source: "startup", session_id: "session-1", transcript_path: "/t/session-1.jsonl" });
   await policyPosted();
-  await $.turn.start({ text: "first", turnId: "turn-1" });
+  await promptRow($, "turn-1");
   await $.session.append({
     message: { type: "assistant", role: "assistant", content: [{ type: "text", text: "old extra" }] },
     door: "response",
@@ -206,7 +215,7 @@ test("an old-session flush queued behind a capture cannot pass the new session's
     uuid: "old-extra",
   });
   await $.classic.SessionStart({ source: "clear", session_id: "session-2", transcript_path: "/t/session-2.jsonl" });
-  await $.turn.start({ text: "new", turnId: "turn-2" });
+  await promptRow($, "turn-2");
   openCapture();
   await captured(3);
   await policyPosted(2);
@@ -329,12 +338,12 @@ test("round2: capture 400 retains the same entries and retries before clear and 
   const f = faultEngine(on, { captures400: 1 });
   await $.classic.SessionStart({ source: "startup", session_id: "session-1", transcript_path: "/t/1" });
   await f.until(() => f.requests.some((r) => r.path === "/policy"));
-  await $.turn.start({ text: "old", turnId: "old" });
+  await promptRow($, "old");
   await f.until(() => f.attempts() === 1);
   await $.classic.SessionStart({ source: "clear", session_id: "session-2", transcript_path: "/t/2" });
-  await $.turn.start({ text: "new", turnId: "new" });
+  await promptRow($, "new");
   await $.classic.SessionStart({ source: "resume", session_id: "session-1", transcript_path: "/t/1" });
-  await $.turn.start({ text: "resume", turnId: "resume" });
+  await promptRow($, "resume");
   f.releaseCapture();
   await f.until(() => f.accepted.length === 3);
   expect(f.accepted).toEqual(["session-1:old", "session-2:new", "session-1:resume"]);
@@ -345,12 +354,12 @@ test("round2: replacement during pending old capture rebinds old session before 
   const f = faultEngine(on, { captures400: 1 });
   await $.classic.SessionStart({ source: "startup", session_id: "session-1", transcript_path: "/t/1" });
   await f.until(() => f.requests.some((r) => r.path === "/policy"));
-  await $.turn.start({ text: "old", turnId: "old" });
+  await promptRow($, "old");
   await f.until(() => f.attempts() === 1);
   await $.classic.SessionStart({ source: "clear", session_id: "session-2", transcript_path: "/t/2" });
-  await $.turn.start({ text: "new", turnId: "new" });
+  await promptRow($, "new");
   await $.classic.SessionStart({ source: "resume", session_id: "session-1", transcript_path: "/t/1" });
-  await $.turn.start({ text: "resume", turnId: "resume" });
+  await promptRow($, "resume");
   await f.kill();
   f.releaseCapture();
   await f.until(() => f.accepted.length === 3);
@@ -370,7 +379,7 @@ test("round2: a rejected replacement bind must be retried before any capture is 
   await $.classic.SessionStart({ source: "startup", session_id: "session-1", transcript_path: "/t/1" });
   await f.until(() => f.requests.some((r) => r.path === "/policy"));
   await f.kill();
-  await $.turn.start({ text: "after death", turnId: "after-death" });
+  await promptRow($, "after-death");
   await f.until(() => f.requests.filter((r) => r.path === "/capture").length >= 3 || f.accepted.length === 1);
 
   expect(f.accepted).toEqual(["session-1:after-death"]);
@@ -380,10 +389,10 @@ test("round2: replacement replays last sent bind while a different clear bind is
   const f = faultEngine(on, { captures400: 1 });
   await $.classic.SessionStart({ source: "startup", session_id: "session-1", transcript_path: "/t/1" });
   await f.until(() => f.requests.some((r) => r.path === "/policy"));
-  await $.turn.start({ text: "old", turnId: "old" });
+  await promptRow($, "old");
   await f.until(() => f.attempts() === 1);
   await $.classic.SessionStart({ source: "clear", session_id: "session-2", transcript_path: "/t/2" });
-  await $.turn.start({ text: "new", turnId: "new" });
+  await promptRow($, "new");
   await f.kill();
   f.releaseCapture();
   await f.until(() => f.accepted.length === 2 || f.requests.filter((r) => r.path === "/capture").length >= 3);
@@ -399,16 +408,16 @@ test("capture stops with one visible notice after repeated failed sends", async 
   const f = faultEngine(on, { captures400: 100 });
   f.releaseCapture();
   await $.classic.SessionStart({ source: "startup", session_id: "session-1", transcript_path: "/t/1" });
-  await $.turn.start({ text: "first", turnId: "first" });
+  await promptRow($, "first");
   await f.until(() => f.notices.some((text) => text.includes("stopped recording")));
-  await $.turn.start({ text: "second", turnId: "second" });
+  await promptRow($, "second");
 
   expect(f.notices.filter((text) => text.includes("stopped recording"))).toHaveLength(1);
   expect(f.attempts()).toBe(5);
   expect(f.accepted).toEqual([]);
 });
 
-test("turn markers name the turn by the row that opened it", async ($, on) => {
+test("turn markers name the turn by the row that opened it, and a turn with none sends no markers", async ($, on) => {
   const { posts, policyPosted, openCapture, captured } = engine(on, 1_000_000);
   on("turn.start", (_, e) => ({ turnId: e.turnId }));
   on("turn.complete", () => ({ text: "" }));
@@ -421,12 +430,13 @@ test("turn markers name the turn by the row that opened it", async ($, on) => {
   await $.turn.start({ text: "hi", turnId: "engine-turn" });
   await $.turn.complete({ turnId: "engine-turn", reason: "answer", answer: "", durationMs: 1, isAborted: false });
   await $.turn.start({ text: "", turnId: "continuation" });
-  await captured(4);
+  await $.turn.complete({ turnId: "continuation", reason: "answer", answer: "", durationMs: 1, isAborted: false });
+  await captured(3);
 
   const markers = posts
     .filter((post) => post.path === "/capture")
     .flatMap((post) => (post.body as { entries: Array<{ kind: string; turnId?: string }> }).entries)
     .filter((entry) => entry.kind !== "row")
     .map((entry) => `${entry.kind} ${entry.turnId}`);
-  expect(markers).toEqual(["turn-start prompt-row", "turn-end prompt-row", "turn-start continuation"]);
+  expect(markers).toEqual(["turn-start prompt-row", "turn-end prompt-row"]);
 });

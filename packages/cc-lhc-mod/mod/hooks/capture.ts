@@ -1,5 +1,6 @@
 import type { EngineInterface, On } from "claude-code";
 import type { CaptureEntry, CapturedMessage } from "../../src/capture.ts";
+import type { TurnNames } from "../types";
 import { boundSession, enqueue, log } from "./sidecar.ts";
 
 type Captured = { [K in CaptureEntry["kind"]]: Omit<Extract<CaptureEntry, { kind: K }>, "sessionId" | "at"> }[CaptureEntry["kind"]];
@@ -7,14 +8,25 @@ type Captured = { [K in CaptureEntry["kind"]]: Omit<Extract<CaptureEntry, { kind
 let hookMs: number[] = [];
 
 /**
- * A turn is named by the uuid of the prompt or command row that opened it,
- * the name recovery derives from the transcript, so the sidecar can tell a
- * replayed marker of an older turn from one of the turn still open. Without
- * that row (a reload mid-turn) the engine's turn id stands in.
+ * A turn is named by the uuid of the row that opened it (a prompt, a command,
+ * or a delivered notification), the name recovery derives from the
+ * transcript, so the sidecar can tell a replayed marker of an older turn from
+ * one of the turn still open. The names live in $.state, which survives a
+ * reload; a turn with no opener row sends no markers, as recovery opens none.
  */
-let opener: string | undefined;
-const turnNames = new Map<string, string>();
-const turnName = (turnId: string): string => turnNames.get(turnId) ?? turnId;
+let turns: TurnNames = { names: {} };
+let restored: Promise<void> | undefined;
+
+function restoreTurns($: EngineInterface): Promise<void> {
+  restored ??= $.state.get({ plugin: "lhc", key: "turns" }).then(({ value }) => {
+    if (value !== undefined) turns = { pending: turns.pending ?? value.pending, names: { ...value.names, ...turns.names } };
+  });
+  return restored;
+}
+
+function saveTurns($: EngineInterface): void {
+  void $.state.set({ plugin: "lhc", key: "turns" }, turns).catch(() => {});
+}
 
 function push($: EngineInterface, entry: Captured): void {
   const sessionId = boundSession();
@@ -22,10 +34,18 @@ function push($: EngineInterface, entry: Captured): void {
   enqueue($, { ...entry, sessionId, at: Date.now() } as CaptureEntry);
 }
 
-export function captureTurnStart($: EngineInterface, turnId: string): void {
-  turnNames.set(turnId, opener ?? turnId);
-  opener = undefined;
-  push($, { kind: "turn-start", turnId: turnName(turnId) });
+export async function captureTurnStart($: EngineInterface, turnId: string): Promise<void> {
+  await restoreTurns($);
+  const name = turns.pending;
+  if (name === undefined) return;
+  turns = { names: { ...turns.names, [turnId]: name } };
+  saveTurns($);
+  push($, { kind: "turn-start", turnId: name });
+}
+
+async function turnName($: EngineInterface, turnId: string): Promise<string | undefined> {
+  await restoreTurns($);
+  return turns.names[turnId];
 }
 
 export function registerCapture(on: On): void {
@@ -33,7 +53,10 @@ export function registerCapture(on: On): void {
     const stored = await next(e);
     const started = performance.now();
     if (e.agentId === undefined && stored.deny === undefined) {
-      if (e.door === "prompt" || e.door === "command") opener = stored.uuid;
+      if (e.door === "prompt" || e.door === "command" || e.door === "delivery") {
+        turns = { ...turns, pending: stored.uuid };
+        saveTurns($);
+      }
       push($, {
         kind: "row",
         uuid: stored.uuid,
@@ -48,14 +71,18 @@ export function registerCapture(on: On): void {
   });
 
   on("turn.step", async function* ($, e, next) {
-    if (e.agentId === undefined) push($, { kind: "step", turnId: turnName(e.turnId), index: e.index });
+    const name = e.agentId === undefined ? await turnName($, e.turnId) : undefined;
+    if (name !== undefined) push($, { kind: "step", turnId: name, index: e.index });
     return yield* next(e);
   });
 
   on("turn.complete", async ($, e, next) => {
     if (e.agentId === undefined) {
-      push($, { kind: "turn-end", turnId: turnName(e.turnId), isAborted: e.isAborted, reason: e.reason });
-      turnNames.delete(e.turnId);
+      const name = await turnName($, e.turnId);
+      if (name !== undefined) push($, { kind: "turn-end", turnId: name, isAborted: e.isAborted, reason: e.reason });
+      const { [e.turnId]: _ended, ...names } = turns.names;
+      turns = { ...turns, names };
+      saveTurns($);
       const sorted = hookMs.sort((a, b) => a - b);
       const p95 = sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.95))] ?? 0;
       log($, `capture hook rows ${sorted.length} p95 ${p95.toFixed(3)}ms max ${(sorted.at(-1) ?? 0).toFixed(3)}ms`);

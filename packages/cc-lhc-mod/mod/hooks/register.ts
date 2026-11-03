@@ -51,7 +51,7 @@ export const register: Register = (on, initial) => {
   });
 
   on("turn.start", async ($, e, next) => {
-    if (e.agentId === undefined) captureTurnStart($, e.turnId);
+    if (e.agentId === undefined) await captureTurnStart($, e.turnId);
     if (e.agentId === undefined && appliedModel !== undefined && (await $.session.model()) !== appliedModel) {
       applySettings($, "model");
     }

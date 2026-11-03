@@ -134,8 +134,7 @@ export class Recorder {
    * The transcript is the authority for every turn recovery has read, so a
    * turn marker from the mod applies only to the turn still open. A turn start
    * applies unless an open turn was opened later in the transcript; a step or
-   * an end applies to the open turn. An engine turn id, which no transcript
-   * row carries, comes from a mod reloaded mid-turn and names the open turn.
+   * an end applies only to the open turn.
    */
   #applies(entry: Entry): boolean {
     if (entry.kind === "row" || entry.kind === "settle") return true;
@@ -145,10 +144,7 @@ export class Recorder {
       const open = this.#state.isOpen ? order.get(this.#state.turnId ?? "") : undefined;
       return position === undefined || open === undefined || position >= open;
     }
-    if (entry.turnId === this.#state.turnId) return true;
-    if (position !== undefined || !this.#state.isOpen) return false;
-    this.#state = { ...this.#state, turnId: entry.turnId };
-    return true;
+    return entry.turnId === this.#state.turnId;
   }
 
 

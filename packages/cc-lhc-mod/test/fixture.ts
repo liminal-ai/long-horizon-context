@@ -24,7 +24,7 @@ export class Script {
     extra: { origin?: string; model?: string } = {},
   ): string {
     const uuid = randomUUID();
-    if (door === "prompt" || door === "command") this.#opener = uuid;
+    if (door === "prompt" || door === "command" || door === "delivery") this.#opener = uuid;
     this.entries.push({
       kind: "row",
       sessionId: SESSION,
@@ -88,7 +88,7 @@ export class Script {
   ): string {
     const rendered = `<system-reminder>\n[SYSTEM NOTIFICATION - NOT USER INPUT]\nThis is an automated background-task event, NOT a message from the user.\n\n${notification}\n</system-reminder>`;
     return this.#row(
-      "attachment",
+      "delivery",
       { type: "attachment", name: "queued_command", role: "user", content: [{ type: "text", text: rendered }] },
       {
         type: "attachment",
