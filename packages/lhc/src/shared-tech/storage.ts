@@ -27,14 +27,19 @@ const WAL_RETRY_PAUSE_MS = 10;
 // SQLITE_BUSY at once for that upgrade instead of calling the busy handler.
 function switchToWal(db: DatabaseSync): void {
   const deadline = Date.now() + SQLITE_BUSY_TIMEOUT_MS;
-  for (;;) {
-    try {
-      db.exec("PRAGMA journal_mode = WAL;");
-      return;
-    } catch (error) {
-      if ((error as { errcode?: number }).errcode !== SQLITE_BUSY || Date.now() >= deadline) throw error;
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, WAL_RETRY_PAUSE_MS);
+  try {
+    for (;;) {
+      db.exec(`PRAGMA busy_timeout = ${Math.max(1, deadline - Date.now())};`);
+      try {
+        db.exec("PRAGMA journal_mode = WAL;");
+        return;
+      } catch (error) {
+        if ((error as { errcode?: number }).errcode !== SQLITE_BUSY || Date.now() >= deadline) throw error;
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, WAL_RETRY_PAUSE_MS);
+      }
     }
+  } finally {
+    db.exec(`PRAGMA busy_timeout = ${SQLITE_BUSY_TIMEOUT_MS};`);
   }
 }
 
