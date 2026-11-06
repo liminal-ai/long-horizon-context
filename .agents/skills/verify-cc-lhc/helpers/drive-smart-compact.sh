@@ -37,6 +37,13 @@ if [ -n "$NEW_FILES" ]; then
   echo "$NEW_FILES" | head -1 | xargs -I{} sh -c 'grep -lq "'"$CODEWORD"'" "{}"' \
     && pass "compacted session still carries seeded history" \
     || note "codeword not in first new transcript; inspect evidence"
+  SOURCE="$(grep "/$SID.jsonl\$" "$EVIDENCE_DIR/compact-before.txt")"
+  cp "$SOURCE" "$EVIDENCE_DIR/compact-source.jsonl"
+  echo "$NEW_FILES" | head -1 | xargs -I{} cp {} "$EVIDENCE_DIR/compact-rebuilt.jsonl"
+  node "$SKILL_DIR/helpers/check-rebuilt-content.mjs" --source "$EVIDENCE_DIR/compact-source.jsonl" \
+    --rebuilt "$EVIDENCE_DIR/compact-rebuilt.jsonl" >"$EVIDENCE_DIR/compact-content.txt" \
+    && pass "rebuilt transcript content matches the source ($(head -1 "$EVIDENCE_DIR/compact-content.txt"))" \
+    || fail "rebuilt transcript duplicates or changes source entries: $(tr '\n' ' ' <"$EVIDENCE_DIR/compact-content.txt")"
   finish smart-compact; exit $?
 fi
 if [ "$RC" = "0" ] && grep -q "pre-launch Smart Compact rebuilt:" "$EVIDENCE_DIR/smart-compact-wrapper.log" 2>/dev/null; then

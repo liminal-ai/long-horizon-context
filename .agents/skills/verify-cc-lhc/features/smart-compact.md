@@ -43,7 +43,10 @@ Preconditions:
   --lhc-min-runway-tokens=1 --lhc-no-inference`. PASS requires a new
   session transcript (different id), or the `wrapper.log` line
   `pre-launch Smart Compact rebuilt:`. The seeded codeword in the new
-  transcript is a `NOTE:` when missing, not a failure. If the seam does
+  transcript is a `NOTE:` when missing, not a failure. When a new
+  transcript exists, the drive saves it as `compact-rebuilt.jsonl` beside
+  the session it was rebuilt from (`compact-source.jsonl`) and grades it
+  with the content check below. If the seam does
   not fire the drive exits 3 with `SKIP:` and the last `wrapper.log`
   signal, the `pre-launch seam` line when there is one — that is a
   recorded gap, never a pass. A failed precondition step exits 1, never 3.
@@ -54,9 +57,28 @@ Preconditions:
   run `/smart-compact`, and capture the pane. The rebuilt session shows a
   `[lhc compact:manual] rebuilt LHC view <n> (120k target)` runtime note.
   Outcome: a new `<session id>.jsonl` under the throwaway
-  `.claude/projects`, and `wrapper.log` lines `cc-lhc handoff switch
-  (compact): <old> -> <new>` and `cc-lhc handoff success (compact)`.
-  Without throwaway auth: `SKIP:` with reason.
+  `.claude/projects`, `wrapper.log` lines `cc-lhc handoff switch
+  (compact): <old> -> <new>` and `cc-lhc handoff success (compact)`, and
+  the content check below passes with `--source <old>.jsonl --rebuilt
+  <new>.jsonl`. List the `.jsonl` files before and after the compact to
+  tell old from new. Without throwaway auth: `SKIP:` with reason.
+- **Rebuilt-content check (outcome).** Run
+  `node helpers/check-rebuilt-content.mjs --source OLD.jsonl --rebuilt
+  NEW.jsonl`. It grades the rebuilt prefix, the lines before the last
+  `[runtime note]`. Whatever follows that note is the resumed child's own
+  output. `[context · …]` blocks may summarize older turns. Every other
+  user or assistant text entry must appear in the source and, in order,
+  match the source's trailing entries. It fails with `entry not in
+  source` (for example, a CLI `<system-reminder>` in front of a prompt),
+  `entry duplicated`, `differs from source tail`, or `user entry kept
+  verbatim and also inside a compacted block`. Prints `OK …` and exits 0
+  on a clean rebuild.
+- **Broken-case probe.** `helpers/probe-checks.sh` runs the seeded drive,
+  then feeds the check copies of its rebuilt transcript with a
+  reminder-prefixed duplicate prompt, an exact duplicate, an injected
+  assistant notice, a reordered pair, and a turn both compacted and kept
+  verbatim. Each must fail with its reason, and the unmodified copy must
+  pass. Results go to `probe/` in the evidence dir.
 - **Carried work (live only).** Ask Claude to start a background shell
   (`sleep 25 && echo <marker>`), compact, wait, and send a prompt that
   asks for its output. Grade the marker in Claude's answer and the
@@ -65,6 +87,17 @@ Preconditions:
 
 ## Gotchas
 
+- On 2026-11-06 the live panel drive with Claude 2.1.317 failed the
+  content check with `entry not in source`. The first prompt came back
+  twice, once behind the CLI's `<system-reminder>` attribution block.
+  Root cause: Claude now writes `api-request-blob` lines whose
+  `message.role` is `user`, and `isUserLine`
+  (`packages/cc-lhc/src/intake/map.ts`) captures them as prompts. That is
+  a product bug tracked on LH-245, so expect this failure until it is
+  fixed, and never loosen the check to pass it. After the handoff, the
+  resumed CLI also appends `No response requested.` and the auto-mode
+  notice, which it renders as a `●` line. Those come after the
+  `[runtime note]` and are not rebuild content.
 - Seeded-drive reality: on 2026-10-28 the forced-bounds drive fired and
   passed with a new transcript, and again on 2026-11-02. The one-shot
   seam can still skip, and the SKIP branch exists for that; do not fake
