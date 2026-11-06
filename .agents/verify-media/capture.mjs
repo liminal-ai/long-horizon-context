@@ -17,7 +17,7 @@ const USAGE = `usage: capture.mjs --checkout <dir> --session <tmux session> --si
 
 /** Strings that look like a credential. A capture holding one is never written, so it can never be published. */
 const TOKEN_SHAPES = [
-  /sk-[A-Za-z0-9_-]{8,}/,
+  /(?<![A-Za-z0-9])sk-[A-Za-z0-9_-]{8,}/,
   /ANTHROPIC_(?:AUTH_TOKEN|API_KEY)/,
   /Bearer\s+\S/,
   /\bgh[opsu]_[A-Za-z0-9]{20,}/,

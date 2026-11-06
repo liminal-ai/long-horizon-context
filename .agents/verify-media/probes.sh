@@ -130,6 +130,10 @@ stub_publish() {
 }
 head_sha="$(git -C "$head_co" rev-parse HEAD)"
 
+# The foreign-author probe reuses the good run's published.json, so the good run publishes first.
+publish "$good" >"$probe_dir/publish-1.out" 2>&1
+first=$?
+
 run="$probe_dir/foreign-author"
 copy_good "$run"
 cp "$good/published.json" "$run/" 2>/dev/null
@@ -177,8 +181,6 @@ rc=$?
 [ -e "$run/published.json" ] && rc=98
 expect "public URL does not read back" 1 "reads back 40" "$rc" "$probe_dir/no-read-back.out"
 
-publish "$good" >"$probe_dir/publish-1.out" 2>&1
-first=$?
 publish "$good" >"$probe_dir/publish-2.out" 2>&1
 second=$?
 url1="$(grep -o 'https://github.com/[^ ]*#issuecomment-[0-9]*' "$probe_dir/publish-1.out")"
