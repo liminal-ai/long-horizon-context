@@ -37,7 +37,7 @@
     "node": ">=24.3.0"
   },
   "dependencies": {
-    "effect": "^3.21.2",
+    "effect": "4.1.2",
     "js-tiktoken": "^1.0.21"
   },
   "devDependencies": {
