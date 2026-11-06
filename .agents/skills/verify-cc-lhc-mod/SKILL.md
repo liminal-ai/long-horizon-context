@@ -264,7 +264,7 @@ claude --version   # record it; every drive pins it with DISABLE_AUTOUPDATER=1
 ```
 
 Every drive that runs alongside other agents sets its own evidence dir,
-`VERIFY_EVIDENCE=<your run folder>/evidence`. The default lists sit in the main
+`VERIFY_EVIDENCE=<your run folder>/proof/evidence`. The default lists sit in the main
 checkout and are shared, so another agent's `cleanup.sh` kills your sessions
 and removes your homes.
 
@@ -403,9 +403,9 @@ Feature drives are in [features/README.md](features/README.md).
 Evidence dir is `$VERIFY_EVIDENCE`, one folder per run, because the machine
 is shared: its `tmux.txt` and `homes.txt` are the only things `cleanup.sh`
 may kill or delete. Set it once at the start of a run and export it, for
-example `export VERIFY_EVIDENCE=$(mktemp -d <main checkout>/.pstack/runs/verify-cc-lhc-mod/run-XXXX)`.
+example `export VERIFY_EVIDENCE=$(mktemp -d <main checkout>/.pstack/runs/verify-cc-lhc-mod/proof/run-XXXX)`.
 Unset, each helper makes a fresh `run-<time>-XXXX` folder under
-`.pstack/runs/verify-cc-lhc-mod` in the main checkout (the first entry of
+`.pstack/runs/verify-cc-lhc-mod/proof` in the main checkout (the first entry of
 `git worktree list`) and prints the line to export. Throwaway homes go under `$VERIFY_SCRATCH_ROOT`,
 default `${XDG_STATE_HOME:-~/.local/state}/verify-cc-lhc-mod/scratch`. The
 path stays short because the socket path must fit in 107 bytes, and outside
@@ -448,7 +448,8 @@ Read-only diagnostics, per home:
 
 Save the pane (`stop.sh <session> <file>`) and copy the logs and transcripts
 a verdict cites into the evidence dir before cleanup: the transcripts live in
-the home, so cleanup removes them.
+the home, so cleanup removes them. Receipts in a verdict, a PR or a report
+cite files under a run's `proof/` only, never a scratch dir or a home.
 
 ## Cleanup
 
@@ -470,7 +471,11 @@ made in your report. Only an opted-out session leaves its transcript under
 ## Re-verification
 
 - Reruns every drive and the seam check: a change under `packages/cc-lhc-mod/`
-  outside `test/` and Markdown, or a Claude Code version change.
+  outside `test/` and Markdown, or a Claude Code version change. When the
+  brief routes a `packages/lhc` or `packages/claude-adapter` change or a root
+  change here, rerun the same: the sidecar imports both at startup
+  (`sidecar/src/main.ts` and `server.ts`), and its binding, capture,
+  compaction, derivations and retrieval run their code.
 - Reruns every drive: a change to `helpers/lib.sh` or `helpers/launch.sh`. The
   seam check runs `claude -p` itself and does not read them.
 - Reruns `helpers/compare-cases.sh`, `compare.mjs` on a saved export that
@@ -488,5 +493,10 @@ made in your report. Only an opted-out session leaves its transcript under
 - Reruns the capture perf drive: a change to `mod/hooks/capture.ts`,
   `sidecar/src/capture/`, the sidecar's `/capture` route, or
   `helpers/capture-perf.sh`.
-- Carries: text in this skill and `features/` that changes no setup, action,
-  assertion or evidence. `doctor.sh` always reruns.
+- Carries: the rerun rules above take precedence. A change only in packages
+  the brief does not route here, or in `packages/cc-lhc-mod/test/`, carries.
+  Markdown that is test input, such as fixtures and goldens, follows the
+  `test/` rule. Prose-only Markdown anywhere, top-level `docs/` and this
+  skill included, carries only when it changes no lane's setup, actions,
+  assertions, expected outcomes, evidence or cleanup. Any path no rule here
+  names reruns every drive and the seam check. `doctor.sh` always reruns.

@@ -43,6 +43,16 @@ else
   note "live turn auth: none in env; the live turn will SKIP (export ANTHROPIC_API_KEY, CLAUDE_CODE_OAUTH_TOKEN, or ANTHROPIC_AUTH_TOKEN)"
 fi
 
+if [ -z "${MEMBASE_REPO:-}" ]; then
+  note "MEMBASE_REPO unset; membank-tools will PARTIAL and membank-live will SKIP"
+elif [ ! -f "$MEMBASE_REPO/.agents/skills/verify-membase/scripts/lane.sh" ]; then
+  note "WARN MEMBASE_REPO $MEMBASE_REPO has no .agents/skills/verify-membase/scripts/lane.sh; membank-tools will PARTIAL and membank-live will SKIP"
+elif [ ! -d "$MEMBASE_REPO/node_modules" ]; then
+  note "WARN MEMBASE_REPO $MEMBASE_REPO is not installed (no node_modules); install it there with scripts/offline-install.sh"
+else
+  note "membase checkout: $MEMBASE_REPO at $(git -C "$MEMBASE_REPO" rev-parse HEAD 2>/dev/null || echo 'unknown (not a git checkout)')"
+fi
+
 if [ "$fail" -eq 0 ]; then
   echo "VERIFY-CLAUDE-LHC doctor: PASS worth driving"
 else

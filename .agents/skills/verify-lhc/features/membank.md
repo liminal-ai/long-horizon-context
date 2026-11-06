@@ -40,6 +40,8 @@ node .agents/skills/verify-lhc/helpers/membank-perf.mjs --socket <path> --bank b
 
 Pass line: `verify-lhc membank-perf: PASS`. It constructs the SDK 20 times each at trunk and at head without membase and at head with membase, interleaved, in one process. Then it runs 5 fresh Node processes that each construct the SDK once without membase and once with it, and it calls `membank.get` 500 times on the bank's first item. It fails when the head construction median without membase is more than 5 ms above trunk's, when the cold handshake (first construction with membase in a fresh process, minus the first without) has a median over 250 ms, or when the `membank.get` p95 is over 10 ms. It prints the warm handshake from the one-process runs without a rule. `--runs`, `--cold-runs` and `--calls` change the counts. Without `--trunk-dist` it skips the trunk comparison.
 
+Where the bars come from. The 250 ms cold-handshake bar replaced an earlier 50 ms bar, an unmeasured guess, after slice 1 measured a median of about 128 to 130 ms (`.pstack/runs/membase-slice1/proof/LH-2/` in the main checkout). The 5 ms construction bar and the 10 ms `membank.get` p95 bar were set in the slice-1 plan without a measurement, so neither is established.
+
 The full set of codes, a membase run at another API version included, runs headless in `pnpm --filter lhc e2e` (see the skill's Drive section).
 
 ## Gotchas

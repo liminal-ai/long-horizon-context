@@ -468,7 +468,7 @@ warning. Every drive here writes settings, so never opt out of the isolated
 config, set your own evidence dir, and use a cheap model:
 
 ```sh
-export VERIFY_EVIDENCE=<run folder>/evidence
+export VERIFY_EVIDENCE=<run folder>/proof/evidence
 $V/helpers/launch.sh "$S" -- --model haiku
 $V/helpers/say.sh "$S" "/lhc"
 node $V/helpers/shot.mjs png "$S" panel.png

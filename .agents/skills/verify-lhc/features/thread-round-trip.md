@@ -26,3 +26,10 @@ Pass line: `verify-lhc round-trip: PASS`. The drive seeds 6 closed turns, serves
 - `listTurns` includes the still-open turn after the last `turn_end`; closed seeded turns are `t1…t6`.
 - Manual mode does nothing until `work.drain` runs. The serve methods render recorded message text either way; undrained intake shows up as fallback composition in turn renderings and compact bands, which can look like missing smoothing.
 - The CLI wants a home (`registry.sqlite` + `threads/`), not a bare thread file.
+- Exports of two independently seeded threads differ only in `.threadId`, `.exportedAt` and each `.turns[].messages[].recordedAt`, because seeded turn and message ids (`t1`, `m1`, ...) are deterministic. To compare two seeded exports, delete exactly those three fields, never every `recordedAt` key recursively, keep the raw exports beside the normalized ones, and show that a content change still differs. A real thread's ids are not deterministic, so this recipe does not apply to it.
+
+  ```sh
+  norm='del(.threadId, .exportedAt, .turns[].messages[].recordedAt)'
+  jq -S "$norm" a.json > a.norm.json && jq -S "$norm" b.json > b.norm.json && diff a.norm.json b.norm.json
+  jq '.turns[0].messages[0].blocks[0].content.text += " CHANGED"' b.json | jq -S "$norm" | diff -q a.norm.json - >/dev/null && echo "FAIL: a content change no longer differs"
+  ```

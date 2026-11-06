@@ -1,21 +1,25 @@
 #!/usr/bin/env node
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { LHC_BIN, LHC_DIST, fail, loadSdk } from "./lib.mjs";
+import { LHC_BIN, LHC_DIST, fail, loadSdk, reportFailure } from "./lib.mjs";
 
-const [major, minor] = process.versions.node.split(".").map(Number);
-if (major < 24 || (major === 24 && minor < 3)) fail(`node >=24.3.0 required, got ${process.versions.node}`);
-console.log(`node ${process.version} ok`);
+try {
+  const [major, minor] = process.versions.node.split(".").map(Number);
+  if (major < 24 || (major === 24 && minor < 3)) fail(`node >=24.3.0 required, got ${process.versions.node}`);
+  console.log(`node ${process.version} ok`);
 
-if (!existsSync(LHC_DIST)) fail(`missing ${LHC_DIST}; run pnpm install --filter lhc && pnpm --filter lhc run build`);
-console.log("lhc dist present");
+  if (!existsSync(LHC_DIST)) fail(`missing ${LHC_DIST}; run pnpm install --filter lhc && pnpm --filter lhc run build`);
+  console.log("lhc dist present");
 
-const help = execFileSync("node", [LHC_BIN], { encoding: "utf8" });
-if (!help.includes("usage: lhc thread")) fail(`unexpected CLI help: ${help.slice(0, 200)}`);
-console.log("lhc CLI help ok");
+  const help = execFileSync("node", [LHC_BIN], { encoding: "utf8" });
+  if (!help.includes("usage: lhc thread")) fail(`unexpected CLI help: ${help.slice(0, 200)}`);
+  console.log("lhc CLI help ok");
 
-const mod = await loadSdk();
-for (const name of ["initLhc", "createDeterministicInferenceCallbacks"]) {
-  if (typeof mod[name] !== "function") fail(`SDK export ${name} missing`);
+  const mod = await loadSdk();
+  for (const name of ["initLhc", "createDeterministicInferenceCallbacks"]) {
+    if (typeof mod[name] !== "function") fail(`SDK export ${name} missing`);
+  }
+  console.log("verify-lhc doctor: PASS");
+} catch (error) {
+  reportFailure(error);
 }
-console.log("verify-lhc doctor: PASS");

@@ -121,20 +121,30 @@ node .agents/skills/verify-lhc/helpers/check-links.mjs > "$EVIDENCE/check-links.
 grep -h PASS "$EVIDENCE"/*.txt
 ```
 
+Receipts in a verdict, a PR or a report cite files under `<run>/proof/` only, never `<run>/scratch/`.
+
 Pass lines: `verify-lhc doctor: PASS`, `verify-lhc round-trip: PASS`, `verify-lhc retrieval: PASS`, `verify-lhc rollback: PASS`, `verify-lhc compact-policy: PASS`, `verify-lhc check-links: PASS`. With a membase lane up, also save `membank.mjs` and `membank-perf.mjs` output, which print `verify-lhc membank: PASS`, `verify-lhc membank unreachable: PASS` and `verify-lhc membank-perf: PASS`. For a lane or PR, also record `git rev-parse HEAD` beside the logs. Terminal screenshots of these runs satisfy the plan's `.png` evidence names where a harness captures them.
 
 Regression companion (existing checks, not a substitute for the drives):
 
 ```sh
 pnpm --filter lhc run typecheck
-pnpm --filter lhc exec vitest run test/retrieval.test.ts test/threads.test.ts
+pnpm --filter lhc exec vitest run test/retrieval.test.ts test/threads.test.ts test/sqlite-concurrent-open.test.ts test/registry-alias-concurrency.test.ts
 ```
 
-`pnpm --filter lhc run test -- <files>` ignores the files and runs the whole suite. Tests that spawn tsx open a socket at `$TMPDIR/tsx-<uid>/<pid>.pipe`, which fails with `listen EINVAL` once that path passes 108 bytes. A `TMPDIR` under the run folder can push it past, so use a short one such as `~/.local/state/verify-lhc-tmp`.
+`registry-x20`, the registry multi-process test 20 times in a row, for the changes Re-verification names. It stops at the first failed run, keeps every run's output in the log, and prints `verify-lhc repeat-test: PASS 20 of 20` or a `FAIL:` line naming the run. A run fails when vitest exits non-zero or prints `No test files found`, which vitest otherwise exits 0 on. Twenty passes show the race did not reproduce in 20 runs. They do not measure a flake rate.
+
+```sh
+node .agents/skills/verify-lhc/helpers/repeat-test.mjs --runs 20 --log "$EVIDENCE/registry-x20.log" test/registry-alias-concurrency.test.ts
+```
+
+Promote the WAL stress script (`.pstack/runs/membase-slice1/proof/WAL-RACE/verifier/stress.mjs` in the main checkout) only after one of these tests flakes in CI or in a suite run, and fix its exit status and timeout first.
+
+`pnpm --filter lhc run test -- <files>` ignores the files and runs the whole suite. Tests that spawn tsx, `registry-alias-concurrency.test.ts` among them, open a socket at `$TMPDIR/tsx-<uid>/<pid>.pipe`, which fails with `listen EINVAL` once that path passes 108 bytes. A `TMPDIR` under the run folder can push it past, so use a short one such as `~/.local/state/verify-lhc-tmp`.
 
 ## Cleanup
 
-Drives delete their temp homes in a `finally` block. Remove a `--keep` home with the helper, not a raw `rm` (it refuses anything but a `verify-lhc-*` home directly under `<run>/scratch/`):
+Drives delete their temp homes in a `finally` block, also when an assertion fails: `fail()` throws, and each helper's outer catch prints `FAIL: <reason>` and exits 1 after the `finally` ran. Remove a `--keep` home with the helper, not a raw `rm` (it refuses anything but a `verify-lhc-*` home directly under `<run>/scratch/`):
 
 ```sh
 node .agents/skills/verify-lhc/helpers/cleanup.mjs <printed-dir>
@@ -154,6 +164,7 @@ All under [helpers/](helpers/), plain node ESM, importing the built SDK from `pa
 - `helpers/compact-policy.mjs` — get, set, refuse, copy and fork the compact pair. Flag: `--migrate FILE` backs up a real thread file and migrates the copy.
 - `helpers/membank.mjs` — attach, list, get and detach against a membase socket. Flags: `--socket PATH`, `--bank NAME`, `--expect FILE`, `--expect-unreachable`.
 - `helpers/membank-perf.mjs` — construction time with and without membase, warm and in fresh processes, and `membank.get` latency. Flags: `--socket PATH`, `--bank NAME`, `--trunk-dist FILE`, `--runs N`, `--cold-runs N`, `--calls N`.
+- `helpers/repeat-test.mjs` — runs `pnpm --filter lhc exec vitest run <files>` up to `--runs N` times (default 20), stops at the first run that exits non-zero or finds no test files, and appends each run's output to `--log FILE`. Files are relative to `packages/lhc`.
 - `helpers/cleanup.mjs` — removes `--keep` homes. Args: one or more printed dirs.
 - `helpers/check-links.mjs` — every relative link and `helpers/*.mjs` path in this skill resolves on disk.
 
@@ -161,9 +172,10 @@ Feature map: [features/README.md](features/README.md).
 
 ## Re-verification
 
-Every lane here runs only `packages/lhc`, through its built `dist/` and `bin/lhc`.
+Every lane here runs only `packages/lhc`, through its built `dist/` and `bin/lhc`. Which other skills a `packages/lhc` change reruns is in the table in `.agents/merge-brief.md`.
 
-- **Reruns every lane:** a change in `packages/lhc/` outside `test/` and Markdown, to the lockfile entries lhc resolves, or to `helpers/lib.mjs`. A change to the root `package.json` or `pnpm-workspace.yaml`, or to the Node or pnpm version `.github/workflows/pr-checks.yml` pins, counts too. A rebase onto a trunk that changed any of these counts. The same change reruns every `verify-claude-lhc` drive, its live drives included, because the claude-lhc sidecar loads `packages/lhc/dist`. That skill's Re-verification section says how.
+- **Reruns every lane:** a change in `packages/lhc/` outside `test/` and Markdown, or to `helpers/lib.mjs`. When the brief routes a root change here (the root `package.json`, `pnpm-workspace.yaml`, the lockfile, or the Node or pnpm version `.github/workflows/pr-checks.yml` pins), rerun every lane too. A rebase onto a trunk that changed any of these counts.
 - **Reruns one lane:** a change to that lane's helper or its block in Drive.
-- **Reruns the membank drive, its perf probe and `pnpm --filter lhc e2e`:** a change to `vendor/membase/`, to the membase checkout they run against, or to `packages/lhc/e2e/`.
-- **Carries:** a change only in other packages, `packages/lhc/test/`, or text in this skill and its `features/` that changes no lane's setup, actions, assertions, expected outcomes, evidence or cleanup. `doctor.mjs` and `check-links.mjs` always rerun.
+- **Reruns the membank drive, its perf probe and `pnpm --filter lhc e2e`:** a change to `packages/lhc/e2e/` or to the membase checkout they run against. When the brief routes a `vendor/membase/` change here, rerun the same three.
+- **Reruns `registry-x20`:** a change to `packages/lhc/src/shared-tech/storage.ts`, to the callers that open databases through it (`threads/internal/create.ts`, `threads/internal/registry.ts`, `shared-tech/logging/`), or to the Node version `pr-checks.yml` pins, on top of what the rules above rerun. Also a change to `helpers/repeat-test.mjs`.
+- **Carries:** the rerun rules above take precedence. A change only in packages the brief does not route here, or in `packages/lhc/test/`, carries. Markdown that is test input, such as fixtures and goldens, follows the `test/` rule. Prose-only Markdown anywhere, top-level `docs/` and this skill included, carries only when it changes no lane's setup, actions, assertions, expected outcomes, evidence or cleanup. Any path no rule here names reruns every lane. `doctor.mjs` and `check-links.mjs` always rerun.

@@ -6,7 +6,7 @@ MAIN_CHECKOUT="$(git -C "$REPO_ROOT" worktree list --porcelain 2>/dev/null | sed
 # One folder per run: its tmux.txt and homes.txt are the only things cleanup.sh may kill or delete.
 # Machines are shared, so an unset VERIFY_EVIDENCE gets a fresh folder, never a shared one.
 if [ -z "${VERIFY_EVIDENCE:-}" ]; then
-  runs="${MAIN_CHECKOUT:-$REPO_ROOT}/.pstack/runs/verify-cc-lhc-mod"
+  runs="${MAIN_CHECKOUT:-$REPO_ROOT}/.pstack/runs/verify-cc-lhc-mod/proof"
   mkdir -p "$runs"
   VERIFY_EVIDENCE="$(mktemp -d "$runs/run-$(date +%Y%m%dT%H%M%S)-XXXX")"
   echo "VERIFY_EVIDENCE=$VERIFY_EVIDENCE  # export it for the rest of this run" >&2
