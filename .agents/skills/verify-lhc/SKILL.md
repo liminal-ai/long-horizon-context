@@ -153,7 +153,7 @@ All under [helpers/](helpers/), plain node ESM, importing the built SDK from `pa
 - `helpers/rollback.mjs` — rollback behind the compact point, append, recompact, CLI export. Flag: `--keep`.
 - `helpers/compact-policy.mjs` — get, set, refuse, copy and fork the compact pair. Flag: `--migrate FILE` backs up a real thread file and migrates the copy.
 - `helpers/membank.mjs` — attach, list, get and detach against a membase socket. Flags: `--socket PATH`, `--bank NAME`, `--expect FILE`, `--expect-unreachable`.
-- `helpers/membank-perf.mjs` — construction time with and without membase, and `membank.get` latency. Flags: `--socket PATH`, `--bank NAME`, `--trunk-dist FILE`, `--runs N`, `--calls N`.
+- `helpers/membank-perf.mjs` — construction time with and without membase, warm and in fresh processes, and `membank.get` latency. Flags: `--socket PATH`, `--bank NAME`, `--trunk-dist FILE`, `--runs N`, `--cold-runs N`, `--calls N`.
 - `helpers/cleanup.mjs` — removes `--keep` homes. Args: one or more printed dirs.
 - `helpers/check-links.mjs` — every relative link and `helpers/*.mjs` path in this skill resolves on disk.
 

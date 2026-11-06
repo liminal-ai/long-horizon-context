@@ -38,7 +38,7 @@ Pass line: `verify-lhc membank unreachable: PASS`. It prints the rejection and i
 node .agents/skills/verify-lhc/helpers/membank-perf.mjs --socket <path> --bank books --trunk-dist <trunk checkout>/packages/lhc/dist/index.js
 ```
 
-Pass line: `verify-lhc membank-perf: PASS`. It constructs the SDK 20 times each at trunk and at head without membase and at head with membase, interleaved, then calls `membank.get` 500 times on the bank's first item. It fails when the head construction median without membase is more than 5 ms above trunk's, when the handshake adds more than 50 ms to the median, or when the `membank.get` p95 is over 10 ms. `--runs` and `--calls` change the counts. Without `--trunk-dist` it skips the trunk comparison.
+Pass line: `verify-lhc membank-perf: PASS`. It constructs the SDK 20 times each at trunk and at head without membase and at head with membase, interleaved, in one process. Then it runs 5 fresh Node processes that each construct the SDK once without membase and once with it, and it calls `membank.get` 500 times on the bank's first item. It fails when the head construction median without membase is more than 5 ms above trunk's, when the cold handshake (first construction with membase in a fresh process, minus the first without) has a median over 250 ms, or when the `membank.get` p95 is over 10 ms. It prints the warm handshake from the one-process runs without a rule. `--runs`, `--cold-runs` and `--calls` change the counts. Without `--trunk-dist` it skips the trunk comparison.
 
 The full set of codes, a membase run at another API version included, runs headless in `pnpm --filter lhc e2e` (see the skill's Drive section).
 
