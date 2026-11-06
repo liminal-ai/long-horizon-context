@@ -1,6 +1,6 @@
 # Long Horizon Context: Domain Design
 
-Last verified against code: 2026-10-27. Precedence when facts disagree: code, then README, then this doc.
+Last verified against code: 2026-11-06. Precedence when facts disagree: code, then README, then this doc.
 
 This document describes each domain in more depth: what it stores, the operations it provides, and the other domains it calls. It builds on the vocabulary in 01-core-concepts.md.
 
@@ -8,7 +8,7 @@ This document describes each domain in more depth: what it stores, the operation
 
 A domain is both a vocabulary area and a service surface. The operations a domain exposes are the same operations everywhere they are reached: the host calls them as SDK functions in-process, and other domains call them in-process when they need work the domain owns. When one domain needs something from another, it calls that domain's surface. It does not reach into the other domain's storage or internal modules. (Thread-view still has direct reads against derivation and event-aggregate tables as its own selection inputs; message, turn, and chunk material comes from the owner domains. The remaining direct reads are known cleanup debt, not a design choice.) One domain can coordinate a flow that spans several, the way `intake-stream` records a batch and calls `messages` and `turns` along the way, but the called domains keep ownership of their own work.
 
-The SDK object returned by `initLhc` carries the domain namespaces `threads`, `intakeStream`, `messages`, `turns`, `retrieval`, `threadView`, `compactContinuation`, and `inspect`. It also carries the `logging` and `work` surfaces, the resolved `config`, the `scheduler`, and `drainSettled(ref)`, which resolves when no drain is running or pending for the thread.
+The SDK object returned by `initLhc` carries the domain namespaces `threads`, `intakeStream`, `messages`, `turns`, `retrieval`, `threadView`, `compactContinuation`, `inspect`, and `membank`. It also carries the `logging` and `work` surfaces, the resolved `config`, the `scheduler`, and `drainSettled(ref)`, which resolves when no drain is running or pending for the thread.
 
 ## Shared-tech utils
 
@@ -474,6 +474,46 @@ sequenceDiagram
   D-->>N: domain data
   N-->>C: report
 ```
+
+## Membank
+
+The `membank` domain connects a thread to a bank in membase, the per-machine service that stores banks of lessons and skills in Convex. It writes nothing to the thread file. Membase stores the attachment and the items, keyed by the thread id.
+
+### Configuring membase
+
+A host turns the domain on by passing `membase: { socketPath }` to `initLhc`, the path of membase's Unix socket. With it set, `initLhc` returns a promise. It loads the membase client, calls membase's `Health` RPC with the contract's API version, and resolves to the SDK only when `Health` answers. Otherwise the promise rejects with a `MembaseHandshakeError` whose `code` names the failure:
+
+- `membase_unreachable`: the RPC transport failed, as with a missing socket or a refused connection, or no answer came within 5,000 ms.
+- `membase_version_mismatch`: membase runs another API version than the vendored contract.
+- `membase_unavailable`: membase answered with `NotEnrolled`, `SecretFileUnreadable`, `Unauthorized` or `StoreUnavailable`, so it cannot serve this machine.
+
+A missing or blank `socketPath` rejects with a `TypeError`. With `membase` set, every construction failure arrives as a rejection, including the config `TypeError`s that a call without `membase` throws. Without `membase`, `initLhc` stays synchronous and never loads the membase client. The overloads make the two cases separate types: a config whose `membase` is optional does not compile, so a host branches on it.
+
+The client is built from `@membase/contract`, vendored as `vendor/membase/membase-contract-0.1.0.tgz` from membase's `packages/contract/scripts/pack.sh`, over `NodeHttpClient.layerUndiciOptions({ connect: { socketPath } })` from `@effect/platform-node` (`membank/internal/client.ts`). Each operation opens its own client and closes it, so the SDK holds no connection between calls. A contract change in membase means repacking and re-vendoring the tarball, and the handshake catches a mismatch at construction.
+
+### The operations
+
+Each operation takes a `ThreadRef`. Once its checks pass, it reads the thread's id with `threads.info` and makes one membase call:
+
+- `attach(ref, bank)` attaches the thread to the named bank and returns `{ threadId, bank, machine, attachedAt }`. Attaching a thread to the bank it is already attached to succeeds.
+- `detach(ref)` removes the attachment and returns `{ threadId, bank }`.
+- `attachment(ref)` returns the thread's attachment.
+- `list(ref, kind?)` returns the attached bank's item summaries, `{ id, kind, title, description, status }`. A `kind` of `lesson` or `skill` lists only that kind.
+- `get(ref, id)` returns one item of the attached bank: the summary fields plus `body`, `citations`, `createdAt`, and `updatedAt`. Lesson ids are `L<n>` and skill ids are `S<n>`.
+
+Every operation returns an `OpResult` and checks in this order. An SDK built without `membase` answers `membank_not_configured`. A bank name, item id, or kind that fails the contract's schema answers `invalid_membank_input` before any call. A thread ref that does not resolve answers the threads domain's own code, such as `thread_not_found`. Then membase's tagged errors map to stable codes:
+
+| Membase error | Code |
+| --- | --- |
+| `NotAttached` | `not_attached` |
+| `AlreadyAttached` (attaching to another bank) | `already_attached` |
+| `BankNotFound` | `bank_not_found` |
+| `ItemNotFound` | `item_not_found` |
+| `NotEnrolled`, `SecretFileUnreadable`, `Unauthorized`, `StoreUnavailable` | `membase_unavailable` |
+| `VersionMismatch` (handshake only) | `membase_version_mismatch` |
+| a failed RPC transport, or no answer within 5,000 ms | `membase_unreachable` |
+
+The reason for a membase error names the tag and its fields, such as `ItemNotFound bank=books id=L9`. The reason for `membase_unreachable` names the socket and the underlying error, such as `connect ENOENT`. Membase answers `attachment`, `list`, and `get` from its memory once it has loaded the bank, and `attach` and `detach` write to Convex.
 
 
 

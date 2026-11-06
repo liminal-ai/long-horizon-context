@@ -1,6 +1,6 @@
 ---
 name: verify-lhc
-description: Verify core lhc (Long Horizon Context SDK) end to end: thread round trip through the SDK and lhc CLI, retrieval (getTurns/getMessages), host rollback, and the thread's compact policy. Use when asked to verify, smoke-test, or regression-check packages/lhc.
+description: Verify core lhc (Long Horizon Context SDK) end to end: thread round trip through the SDK and lhc CLI, retrieval (getTurns/getMessages), host rollback, the thread's compact policy, and the membank domain against a live membase. Use when asked to verify, smoke-test, or regression-check packages/lhc.
 ---
 
 # verify-lhc
@@ -14,6 +14,7 @@ Surface facts (from the code, re-check if a drive breaks):
 - Deterministic inference: `createDeterministicInferenceCallbacks()` with `tokenFamily: "o200k"`, `mode: "manual"`. No network, no real model.
 - Serving is `threadView.getLlmRequestContext` / `getSessionThreadView`; compact is `threadView.compact`; retrieval is `retrieval.getTurns` / `getMessages` by `t…` / `m…` id.
 - The compact policy is `threads.getCompactPolicy` / `threads.setCompactPolicy`, two nullable columns on `thread_metadata` (thread schema 14). Opening a schema-13 file through the SDK or the CLI migrates it in place.
+- Membank is `sdk.membank.attach` / `detach` / `attachment` / `list` / `get`. It needs a running membase: `initLhc({ ...config, membase: { socketPath } })` returns a promise that rejects with `MembaseHandshakeError` (`code` `membase_unreachable`, `membase_version_mismatch` or `membase_unavailable`) unless membase answers `Health`. Without `membase`, every `membank` op answers `membank_not_configured`.
 - A host rollback is one `rollback` intake event with payload `{ keepThroughEventOrder }`. Every served view and the CLI export drop what was recorded after the anchor. `turns.listTurns` and the export keep the open turn, empty when every member was hidden; `messages.list({ includeDeleted: true })` still shows hidden messages as `deleted: true`.
 
 ## Launch
@@ -40,7 +41,7 @@ If doctor fails on a missing dist, run the Launch build. Do not drive on a faile
 
 ## Drive
 
-Four seeded drives. Each prints one `PASS` line and exits non-zero on any failed assertion.
+Four seeded drives need nothing running. The membank drive needs a membase lane. Each drive prints one `PASS` line and exits non-zero on any failed assertion.
 
 Round trip — create, append, compact, serve ([features/thread-round-trip.md](features/thread-round-trip.md)):
 
@@ -79,6 +80,23 @@ node .agents/skills/verify-lhc/helpers/compact-policy.mjs --migrate <schema-13 t
 - User-only check: a new thread reads `null`, and after `setCompactPolicy` it, its copy and its fork read back the same pair.
 - Outcome check: `--migrate` backs up a real thread file into the temp home, opens the copy, and shows `user_version` 14, a `null` policy and the source's event count. The source is opened read-only and never changes.
 
+Membank: attach, list, get, detach against membase ([features/membank.md](features/membank.md)). Start and seed a membase lane through the membase repo's `verify-membase` skill first. The feature file gives the steps.
+
+```sh
+node .agents/skills/verify-lhc/helpers/membank.mjs --socket <membase socket> --bank <seeded bank>
+node .agents/skills/verify-lhc/helpers/membank.mjs --socket <stopped membase socket> --expect-unreachable
+node .agents/skills/verify-lhc/helpers/membank-perf.mjs --socket <membase socket> --bank <seeded bank> --trunk-dist <trunk>/packages/lhc/dist/index.js
+```
+
+- User-only check: every item the bank holds comes back through `list` and `get` with the text membase stored (`--expect <items.json>` checks it exactly).
+- Outcome check: with membase stopped, `initLhc` rejects with `membase_unreachable` in under 5 seconds.
+
+The headless e2e drives every membank operation and error code against a real membase and dev Convex. It boots its own lane with `lane.sh` from `$MEMBASE_REPO` (default `~/lim-v2/code/membase`, which must be installed with `scripts/offline-install.sh`), and runs a second membase service at API version 2 for the mismatch case. It needs Docker, so CI does not run it:
+
+```sh
+MEMBASE_REPO=<membase checkout> pnpm --filter lhc e2e
+```
+
 CLI thread ops against an existing home are covered in [features/cli-thread-ops.md](features/cli-thread-ops.md). Use `--keep` on the round trip to leave its home in place for manual CLI poking:
 
 ```sh
@@ -103,7 +121,7 @@ node .agents/skills/verify-lhc/helpers/check-links.mjs > "$EVIDENCE/check-links.
 grep -h PASS "$EVIDENCE"/*.txt
 ```
 
-Pass lines: `verify-lhc doctor: PASS`, `verify-lhc round-trip: PASS`, `verify-lhc retrieval: PASS`, `verify-lhc rollback: PASS`, `verify-lhc compact-policy: PASS`, `verify-lhc check-links: PASS`. For a lane or PR, also record `git rev-parse HEAD` beside the logs. Terminal screenshots of these runs satisfy the plan's `.png` evidence names where a harness captures them.
+Pass lines: `verify-lhc doctor: PASS`, `verify-lhc round-trip: PASS`, `verify-lhc retrieval: PASS`, `verify-lhc rollback: PASS`, `verify-lhc compact-policy: PASS`, `verify-lhc check-links: PASS`. With a membase lane up, also save `membank.mjs` and `membank-perf.mjs` output, which print `verify-lhc membank: PASS`, `verify-lhc membank unreachable: PASS` and `verify-lhc membank-perf: PASS`. For a lane or PR, also record `git rev-parse HEAD` beside the logs. Terminal screenshots of these runs satisfy the plan's `.png` evidence names where a harness captures them.
 
 Regression companion (existing checks, not a substitute for the drives):
 
@@ -122,7 +140,7 @@ Drives delete their temp homes in a `finally` block. Remove a `--keep` home with
 node .agents/skills/verify-lhc/helpers/cleanup.mjs <printed-dir>
 ```
 
-Nothing writes outside the temp home except evidence you redirect yourself. No processes are left running; there is no server.
+Nothing writes outside the temp home except evidence you redirect yourself. No processes are left running; there is no server. A membase lane is the exception: stop it with `lane.sh down <lane-dir>` from the membase checkout, which stops only that lane's service and Convex container.
 
 ## Helpers
 
@@ -134,6 +152,8 @@ All under [helpers/](helpers/), plain node ESM, importing the built SDK from `pa
 - `helpers/retrieval.mjs` — `getTurns`/`getMessages` served + unserved assertions.
 - `helpers/rollback.mjs` — rollback behind the compact point, append, recompact, CLI export. Flag: `--keep`.
 - `helpers/compact-policy.mjs` — get, set, refuse, copy and fork the compact pair. Flag: `--migrate FILE` backs up a real thread file and migrates the copy.
+- `helpers/membank.mjs` — attach, list, get and detach against a membase socket. Flags: `--socket PATH`, `--bank NAME`, `--expect FILE`, `--expect-unreachable`.
+- `helpers/membank-perf.mjs` — construction time with and without membase, and `membank.get` latency. Flags: `--socket PATH`, `--bank NAME`, `--trunk-dist FILE`, `--runs N`, `--calls N`.
 - `helpers/cleanup.mjs` — removes `--keep` homes. Args: one or more printed dirs.
 - `helpers/check-links.mjs` — every relative link and `helpers/*.mjs` path in this skill resolves on disk.
 
@@ -145,4 +165,5 @@ Every lane here runs only `packages/lhc`, through its built `dist/` and `bin/lhc
 
 - **Reruns every lane:** a change in `packages/lhc/` outside `test/` and Markdown, to the lockfile entries lhc resolves, or to `helpers/lib.mjs`. A change to the root `package.json` or `pnpm-workspace.yaml`, or to the Node or pnpm version `.github/workflows/pr-checks.yml` pins, counts too. A rebase onto a trunk that changed any of these counts. The same change reruns every `verify-claude-lhc` drive, its live drives included, because the claude-lhc sidecar loads `packages/lhc/dist`. That skill's Re-verification section says how.
 - **Reruns one lane:** a change to that lane's helper or its block in Drive.
+- **Reruns the membank drive, its perf probe and `pnpm --filter lhc e2e`:** a change to `vendor/membase/`, to the membase checkout they run against, or to `packages/lhc/e2e/`.
 - **Carries:** a change only in other packages, `packages/lhc/test/`, or text in this skill and its `features/` that changes no lane's setup, actions, assertions, expected outcomes, evidence or cleanup. `doctor.mjs` and `check-links.mjs` always rerun.

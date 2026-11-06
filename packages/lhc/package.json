@@ -31,12 +31,15 @@
     "test:all": "pnpm run test && pnpm run test:integration",
     "format:check": "biome format .",
     "verify": "pnpm run format:check && pnpm run lint && pnpm run typecheck && pnpm run test",
-    "verify:all": "pnpm run format:check && pnpm run lint && pnpm run typecheck && pnpm run test:all"
+    "verify:all": "pnpm run format:check && pnpm run lint && pnpm run typecheck && pnpm run test:all",
+    "e2e": "vitest run --config e2e/vitest.config.ts"
   },
   "engines": {
     "node": ">=24.3.0"
   },
   "dependencies": {
+    "@effect/platform-node": "4.1.2",
+    "@membase/contract": "0.1.0",
     "effect": "4.1.2",
     "js-tiktoken": "^1.0.21"
   },

@@ -6,6 +6,13 @@ settings:
 
 overrides:
   effect: file:vendor/npm/effect-4.1.2.tgz
+  '@effect/platform-node': file:vendor/npm/effect-platform-node-4.1.2.tgz
+  '@effect/platform-node-shared': file:vendor/npm/effect-platform-node-shared-4.1.2.tgz
+  '@membase/contract': file:vendor/membase/membase-contract-0.1.0.tgz
+  '@types/ws': file:vendor/npm/types-ws-8.18.2.tgz
+  undici: file:vendor/npm/undici-8.12.3.tgz
+  ws: file:vendor/npm/ws-8.22.1.tgz
+  '@effect/platform-node>redis': '-'
   '@anthropic-ai/claude-agent-sdk>@anthropic-ai/claude-agent-sdk-darwin-arm64': '-'
   '@anthropic-ai/claude-agent-sdk>@anthropic-ai/claude-agent-sdk-darwin-x64': '-'
   '@anthropic-ai/claude-agent-sdk>@anthropic-ai/claude-agent-sdk-linux-arm64': '-'
@@ -140,6 +147,12 @@ importers:
 
   packages/lhc:
     dependencies:
+      '@effect/platform-node':
+        specifier: file:../../vendor/npm/effect-platform-node-4.1.2.tgz
+        version: file:vendor/npm/effect-platform-node-4.1.2.tgz(effect@file:vendor/npm/effect-4.1.2.tgz)
+      '@membase/contract':
+        specifier: file:../../vendor/membase/membase-contract-0.1.0.tgz
+        version: file:vendor/membase/membase-contract-0.1.0.tgz(effect@file:vendor/npm/effect-4.1.2.tgz)
       effect:
         specifier: file:../../vendor/npm/effect-4.1.2.tgz
         version: file:vendor/npm/effect-4.1.2.tgz
@@ -249,6 +262,20 @@ packages:
   '@edge-runtime/vm@5.0.0':
     resolution: {integrity: sha512-NKBGBSIKUG584qrS1tyxVpX/AKJKQw5HgjYEnPLC0QsTw79JrGn+qUr8CXFb955Iy7GUdiiUv1rJ6JBGvaKb6w==}
     engines: {node: '>=18'}
+
+  '@effect/platform-node-shared@file:vendor/npm/effect-platform-node-shared-4.1.2.tgz':
+    resolution: {integrity: sha512-wSwl9A/G1hcVvF8nLI+YfB3EyOIDvWS6+lsTZBkmgDnPBL7m8YWZF+1HD+mdEsb52SUGfukip46Q3gRwSdk3QA==, tarball: file:vendor/npm/effect-platform-node-shared-4.1.2.tgz}
+    version: 4.1.2
+    engines: {node: '>=22.19.0'}
+    peerDependencies:
+      effect: ^4.1.2
+
+  '@effect/platform-node@file:vendor/npm/effect-platform-node-4.1.2.tgz':
+    resolution: {integrity: sha512-ye0UjxORdd5Qu3paZ1LljgGOALWHt7muP9VTpjUSCNfcesiB/Hm7wPJIvZeu4gnwpTe5BtEnO1VHngWqjJp8mA==, tarball: file:vendor/npm/effect-platform-node-4.1.2.tgz}
+    version: 4.1.2
+    engines: {node: '>=22.19.0'}
+    peerDependencies:
+      effect: ^4.1.2
 
   '@emnapi/core@1.10.0':
     resolution: {integrity: sha512-yq6OkJ4p82CAfPl0u9mQebQHKPJkY7WrIuk205cTYnYe+k2Z8YBh11FrbRG/H6ihirqcacOgl2BIO8oyMQLeXw==}
@@ -465,6 +492,12 @@ packages:
   '@lydell/node-pty@1.2.0-beta.12':
     resolution: {integrity: sha512-qIK890UwPupoj07osVvgOIa++1mxeHbcGry4PKRHhNVNs81V2SCG34eJr46GybiOmBtc8Sj5PB1/GGM5PL549g==}
 
+  '@membase/contract@file:vendor/membase/membase-contract-0.1.0.tgz':
+    resolution: {integrity: sha512-mG7FxGF5tZzc+8Z3G3P+TIWMBV8EMb+C+/J/p65NwyamjKan9YqEM30TCEHnhE8LiujPi0l3LQ1nrmFmFUHatw==, tarball: file:vendor/membase/membase-contract-0.1.0.tgz}
+    version: 0.1.0
+    peerDependencies:
+      effect: 4.1.2
+
   '@modelcontextprotocol/sdk@1.30.0':
     resolution: {integrity: sha512-xKd8OIzlqNzcqcNumGAa6g+PW2kjD5vrpcKOnfldAUPP3j7lnqMPwlTXQm8gF+UwH72z0lqaRbjr9hqGz0eITA==}
     engines: {node: '>=18'}
@@ -615,6 +648,10 @@ packages:
 
   '@types/node@24.12.4':
     resolution: {integrity: sha512-GUUEShf+PBCGW2KaXwcIt3Yk+e3pkKwWKb9GSyM9WQVE+ep2jzmHdGsHzu4wgcZy5fN9FBdVzjpBQsYlpfpgLA==}
+
+  '@types/ws@file:vendor/npm/types-ws-8.18.2.tgz':
+    resolution: {integrity: sha512-67MQl+fpWKVTT1NYdnmo3U4sc/xPo/zQBncVnI74qmQa0z/b+1g6iYqNmGCPbxO+zz2aklb08a0oHfegiVd0/w==, tarball: file:vendor/npm/types-ws-8.18.2.tgz}
+    version: 8.18.2
 
   '@vitest/expect@4.1.8':
     resolution: {integrity: sha512-h3nDO677RDLEGlBxyQ5CW8RlMThSKSRLUePLOx09gNIWRL40edgA1GCZSZgf1W55MFAG6/Sw14KeaAnqv0NKdQ==}
@@ -1422,6 +1459,11 @@ packages:
   undici-types@7.16.0:
     resolution: {integrity: sha512-Zz+aZWSj8LE6zoxD+xrjh4VfkIG8Ya6LvYkZqtUQGJPZjYl53ypCaUwWqo7eI0x66KBGeRo+mlBEkMSeSZ38Nw==}
 
+  undici@file:vendor/npm/undici-8.12.3.tgz:
+    resolution: {integrity: sha512-+fdndUTwBP86cVjihTp21hZHo7d6oj1c/47XPA3lL8mM0XHs+C4EkcjmgRsFnFk2f/UONGDy9ItBItmXsLOQHw==, tarball: file:vendor/npm/undici-8.12.3.tgz}
+    version: 8.12.3
+    engines: {node: '>=22.19.0'}
+
   unique-filename@4.0.0:
     resolution: {integrity: sha512-XSnEewXmQ+veP7xX2dS5Q4yZAvO40cBN2MWkJ7D/6sW4Dg6wYBNwM1Vrnz1FhH5AdeLIlUXRI9e28z1YZi71NQ==}
     engines: {node: ^18.17.0 || >=20.5.0}
@@ -1548,6 +1590,19 @@ packages:
   wrappy@1.0.2:
     resolution: {integrity: sha512-l4Sp/DRseor9wL6EvV2+TuQn63dMkPjZ/sp9XkghTEbV9KlPS1xUsZ3u7/IQO4wxtcFB4bgpQPRcR3QCvezPcQ==}
 
+  ws@file:vendor/npm/ws-8.22.1.tgz:
+    resolution: {integrity: sha512-oyL6OPYme/CmiFvNuGzeoxCJ4nOrZE2O1FwM9MWM1AsGri6nLXB2pg+lNA8aLeXMSav0J6eIVS1j6vUPzUtK9g==, tarball: file:vendor/npm/ws-8.22.1.tgz}
+    version: 8.22.1
+    engines: {node: '>=10.0.0'}
+    peerDependencies:
+      bufferutil: ^4.0.1
+      utf-8-validate: '>=5.0.2'
+    peerDependenciesMeta:
+      bufferutil:
+        optional: true
+      utf-8-validate:
+        optional: true
+
   yallist@4.0.0:
     resolution: {integrity: sha512-3wdGidZyq5PB084XLES5TpOSRA3wjXAlIWMhum2kRcv/41Sn2emQ0dycQW4uZXLejwKvg6EsvbdlVL+FYEct7A==}
 
@@ -1626,6 +1681,24 @@ snapshots:
     dependencies:
       '@edge-runtime/primitives': 6.0.0
     optional: true
+
+  '@effect/platform-node-shared@file:vendor/npm/effect-platform-node-shared-4.1.2.tgz(effect@file:vendor/npm/effect-4.1.2.tgz)':
+    dependencies:
+      '@types/ws': file:vendor/npm/types-ws-8.18.2.tgz
+      effect: file:vendor/npm/effect-4.1.2.tgz
+      ws: file:vendor/npm/ws-8.22.1.tgz
+    transitivePeerDependencies:
+      - bufferutil
+      - utf-8-validate
+
+  '@effect/platform-node@file:vendor/npm/effect-platform-node-4.1.2.tgz(effect@file:vendor/npm/effect-4.1.2.tgz)':
+    dependencies:
+      '@effect/platform-node-shared': file:vendor/npm/effect-platform-node-shared-4.1.2.tgz(effect@file:vendor/npm/effect-4.1.2.tgz)
+      effect: file:vendor/npm/effect-4.1.2.tgz
+      undici: file:vendor/npm/undici-8.12.3.tgz
+    transitivePeerDependencies:
+      - bufferutil
+      - utf-8-validate
 
   '@emnapi/core@1.10.0':
     dependencies:
@@ -1767,6 +1840,10 @@ snapshots:
       '@lydell/node-pty-win32-arm64': 1.2.0-beta.12
       '@lydell/node-pty-win32-x64': 1.2.0-beta.12
 
+  '@membase/contract@file:vendor/membase/membase-contract-0.1.0.tgz(effect@file:vendor/npm/effect-4.1.2.tgz)':
+    dependencies:
+      effect: file:vendor/npm/effect-4.1.2.tgz
+
   '@modelcontextprotocol/sdk@1.30.0(zod@4.4.3)':
     dependencies:
       '@hono/node-server': 2.1.1(hono@4.13.5)
@@ -1888,6 +1965,10 @@ snapshots:
   '@types/node@24.12.4':
     dependencies:
       undici-types: 7.16.0
+
+  '@types/ws@file:vendor/npm/types-ws-8.18.2.tgz':
+    dependencies:
+      '@types/node': 24.12.4
 
   '@vitest/expect@4.1.8':
     dependencies:
@@ -2734,6 +2815,8 @@ snapshots:
 
   undici-types@7.16.0: {}
 
+  undici@file:vendor/npm/undici-8.12.3.tgz: {}
+
   unique-filename@4.0.0:
     dependencies:
       unique-slug: 5.0.0
@@ -2816,6 +2899,8 @@ snapshots:
       strip-ansi: 7.2.0
 
   wrappy@1.0.2: {}
+
+  ws@file:vendor/npm/ws-8.22.1.tgz: {}
 
   yallist@4.0.0: {}
 

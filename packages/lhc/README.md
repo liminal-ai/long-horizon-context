@@ -29,6 +29,8 @@ const sdk = initLhc({
 
 Config mistakes are programmer errors at construction and **throw**. Operating failures after construction return `OpResult` values.
 
+With `membase: { socketPath }` in the config, `initLhc` returns a `Promise<Lhc>` instead. It calls membase's `Health` RPC first and rejects with a `MembaseHandshakeError` (`code` `membase_unreachable`, `membase_version_mismatch` or `membase_unavailable`) unless membase answers, so a session configured for membase never starts without it. Config mistakes reject that promise too. See [`membank`](#membank--membase-lessons-and-skills).
+
 ### Inference Configuration
 
 Exactly one of two paths:
@@ -96,6 +98,7 @@ interface Lhc {
   turns:        TurnsSurface;
   threadView:   ThreadViewSurface;
   inspect:      InspectSurface;
+  membank:      MembankSurface;
   logging:      LoggingSurface;
   work:         WorkSurface;
   config:       ResolvedSdkConfig;
@@ -191,6 +194,18 @@ Idempotency: each event carries an `idempotencyKey`. Re-delivering an event with
 | `overview` | `(ref) → OpResult<InspectOverview>` | Thread identity, event/message/turn/chunk counts, derivation states, view summary. |
 | `health` | `(ref) → OpResult<HealthReport>` | Derivation state bucketing, failure detail, repair preview, capture gap detection. |
 | `view` | `(ref) → OpResult<ViewContentsReport>` | Stored snapshot contents with serving-cost measurement. |
+
+### `membank` — Membase Lessons and Skills
+
+Calls membase over its Unix socket. Each operation resolves the ref to its thread id and returns an `OpResult`. An SDK built without `membase` answers `membank_not_configured`.
+
+| Operation | Signature | Description |
+|---|---|---|
+| `attach` | `(ref, bank: string) → OpResult<MembankAttachment>` | Attach the thread to a bank. Attaching again to the same bank succeeds. |
+| `detach` | `(ref) → OpResult<{ threadId, bank }>` | Remove the attachment. |
+| `attachment` | `(ref) → OpResult<MembankAttachment>` | The thread's `{ threadId, bank, machine, attachedAt }`. |
+| `list` | `(ref, kind?: "lesson" \| "skill") → OpResult<MembankItemSummary[]>` | The attached bank's `{ id, kind, title, description, status }`, optionally one kind. |
+| `get` | `(ref, id: string) → OpResult<MembankItem>` | One item (`L<n>` or `S<n>`) with `body`, `citations`, `createdAt`, `updatedAt`. |
 
 ### `logging` — Operational and Derivation Logs
 
@@ -478,11 +493,20 @@ interface ErrorResult {
 | `invalid_bounds` | caller | Bad list bounds option |
 | `invalid_compact_policy` | caller | Compact pair not positive integers, or target at or above trigger |
 | `unknown_format` | caller | Materialize format not `"pi-session"` |
+| `membank_not_configured` | caller | `membank` op on an SDK built without `membase` |
+| `invalid_membank_input` | caller | Bank name, item id or kind fails the membase contract's schema |
+| `not_attached` | caller | Thread has no membank attachment |
+| `already_attached` | caller | `attach` names another bank than the thread's current one |
+| `bank_not_found` | caller | `attach` names a bank membase does not have |
+| `item_not_found` | caller | `get` names an id the attached bank does not have |
 | `turn_state_corrupt` | corruption | Multiple open turns or other turn invariant violation |
 | `source_damaged` | corruption | Handler found corrupt source record; derivation blocked |
 | `unknown_work_kind` | corruption | Unregistered work kind at dispatch |
 | `derivation_completion_mismatch` | corruption | Handler writes don't match queued derivation targets |
 | `storage_failure` | system | SQLite or filesystem error |
+| `membase_unreachable` | system | Membase RPC transport failed, or no answer within 5,000 ms |
+| `membase_unavailable` | system | Membase answered `NotEnrolled`, `SecretFileUnreadable`, `Unauthorized` or `StoreUnavailable` |
+| `membase_version_mismatch` | system | Membase runs another API version (`initLhc` handshake only) |
 | `provider_failure` | system | Inference retry budget exhausted |
 | `derivation_retry_scheduled` | system | Turn-owned synchronous derive failed retryably; requeued |
 
