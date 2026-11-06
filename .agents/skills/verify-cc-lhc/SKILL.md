@@ -177,6 +177,81 @@ through this helper, never a raw `rm`. Evidence survives cleanup at the evidence
 dir above — confirm `results.txt` and the pane captures still exist after
 cleanup before reporting a drive done.
 
+## Capture and publish
+
+A PR that changes what a user sees (the panel, the forwarded pane, help or
+receipt text) carries before-and-after screenshots in one PR comment. The
+verifier makes them while it drives the change, parent against head, and the
+lead opens each one at acceptance. The scripts live in `.agents/verify-media/`,
+shared with `verify-cc-lhc-mod`. Run them from the head checkout.
+
+1. Build a clean checkout at the PR's head and one at its merge base
+   (`git merge-base origin/main <head>`), each per Launch. Every capture
+   records its checkout's commit, and `publish.mjs` refuses a run whose head
+   side is not the PR's current head, whose base side is not the merge base,
+   or that a checkout made while `git status` showed changes. That is the
+   whole dirty check: a file Git hides from `git status` (an
+   `assume-unchanged` or `skip-worktree` index flag) passes it. Root
+   `pnpm run test` writes only `build/story0/`, which Git ignores.
+2. Drive the same steps on each side under a throwaway HOME, and capture each
+   step's screen from its tmux session. Steps pair by name. The panel preview
+   is a real screen that needs no auth (`$co` is the side's checkout,
+   `$side` is `base` or `head`, `$media` is
+   `<main checkout>/.pstack/runs/<run>/proof/media-<pr>`):
+
+   ```sh
+   source .agents/skills/verify-cc-lhc/helpers/lib.sh && make_isolation
+   s="cc-lhc-media-$side-$$"
+   tmux new-session -d -s "$s" -x 100 -y 30 -c "$ISO_HOME/work" \
+     "$(iso_cmd_env) node $co/packages/cc-lhc/dist/bin.js preview --fixture normal-first-launch --geometry normal --raw; exec sleep 600"
+   node .agents/verify-media/capture.mjs --checkout "$co" --session "$s" --side "$side" \
+     --step panel-first-launch --wait-for "Long Horizon Context" "$media"
+   tmux kill-session -t "=$s"
+   ```
+
+   For a live panel drive, run `capture.mjs` on the live session at the step
+   the PR changes, such as `/status` drawn after a settled turn. It writes
+   `<side>/<step>.png`, the pane text as `<step>.txt`, and `<step>.json`
+   with the commit, the side's run id and the sha256 of the PNG and the
+   text. The first capture into a side makes its run id, so capture each
+   run into a fresh `$media`. It refuses, and writes nothing, when the pane
+   shows a token-shaped string (`sk-…`, `ANTHROPIC_AUTH_TOKEN`, `Bearer …`,
+   a secret-named `KEY=value` assignment, a JWT, GitHub, Slack or AWS key
+   shapes), checking the text as shown and with line breaks removed, so a
+   token the terminal wraps mid-word still refuses. A token split by a
+   box border the app draws (`│`) is not caught, so never drive a screen
+   that shows a credential. Never capture a screen showing a real person's
+   data; the throwaway HOME rules above keep the operator's own out.
+3. Publish:
+
+   ```sh
+   node .agents/verify-media/publish.mjs --pr <n> --title "verify-cc-lhc control panel" \
+     --note "<what the PR changes on this screen>" "$media"
+   ```
+
+   It uploads each PNG to Cloudflare Images on the Liminal.builder account
+   (`CLOUDFLARE_ACCOUNT_ID`, default `e8e382d5bf8ec24ee2125188819b995c`)
+   through the `cf` CLI, under `lhc/<random uuid>/`, as unsigned URLs by
+   the lead's decision, since they show only disposable test data and signed
+   URLs expire inside GitHub. It fails unless each public URL serves a PNG
+   of the uploaded size. Before any upload it refuses a PNG or text whose
+   hash differs from its `<step>.json`, and a side whose captures carry more
+   than one run id. That proves the files belong together, not that both
+   sides drove the same actions. It then adds or updates the one comment
+   marked `<!-- lhc-captures -->` that the `gh` user wrote, base and head
+   side by side per step with both commits named, and never edits another
+   author's comment. It checks that comment's state before uploading, and
+   refuses state it could not have written. Its `published.json` makes a rerun upload nothing and
+   update the same comment in place. A run on a new head replaces the old
+   head's runs.
+4. Link the comment in the review. `.agents/verify-media/probes.sh` runs the
+   broken cases (token shapes on screen, dirty checkout, wrong commit,
+   swapped PNG, mixed runs, another author's comment, broken comment state,
+   failed upload, URL that does not read back, rerun) against a real PR.
+
+Video goes to Cloudflare Stream once Lee buys it. Until then a recording
+stays in the run's `proof/` folder, and the review names its path.
+
 ## Helpers
 
 All under `.agents/skills/verify-cc-lhc/helpers/`, all executable:
@@ -212,3 +287,4 @@ Every seeded drive runs `packages/cc-lhc/dist/bin.js` with the staged `cc-lhc-na
 - **Reruns `drive-rebuild.sh` and `drive-smart-compact.sh`:** a change to `helpers/seed-thread.mjs` or `test/fixtures/claude-2.1.226-model-fallback-sequence.jsonl`.
 - **Reruns one drive:** a change to its `drive-*.sh`, to `capture-bound-claude.mjs` (`drive-capture.sh`), or to `check-rebuilt-content.mjs` or `read-seam-view.mjs` (`drive-smart-compact.sh`). Run `probe-checks.sh` too when the change touches an assertion in `drive-capture.sh` or `drive-smart-compact.sh`, `capture_ingested` in `lib.sh`, or any helper they or `probe-checks.sh` use.
 - **Carries:** the rerun rules above take precedence. A change only in packages the brief does not route here, or in other `packages/cc-lhc/test/` files, carries. Markdown that is test input, such as fixtures and goldens, follows the `test/` rules. Prose-only Markdown anywhere, top-level `docs/` and this skill included, carries only when it changes no lane's setup, actions, assertions, expected outcomes, evidence or cleanup. Any path no rule here names reruns every drive. `doctor.sh` and `link-check.mjs` always rerun.
+- **Carries every drive:** a change only to `.agents/verify-media/`. Those scripts make pictures and grade nothing. Run `.agents/verify-media/probes.sh` and one capture of each changed script.
