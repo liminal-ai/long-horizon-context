@@ -451,6 +451,40 @@ a verdict cites into the evidence dir before cleanup: the transcripts live in
 the home, so cleanup removes them. Receipts in a verdict, a PR or a report
 cite files under a run's `proof/` only, never a scratch dir or a home.
 
+## Capture and publish
+
+A PR that changes what a user sees (the LHC panel, `/lhc` output, the status
+line, a transcript notice) carries before-and-after screenshots in one PR
+comment. The verifier makes them while it drives the change, parent against
+head, and the lead opens each one at acceptance. The scripts live in
+`.agents/verify-media/`, shared with `verify-cc-lhc`, whose Capture and
+publish section holds the full recipe. Run them from the head checkout.
+
+- Build a clean checkout at the PR's head and one at its merge base
+  (`git merge-base origin/main <head>`), each per Launch, and start each
+  side's session with that checkout's own `helpers/launch.sh`, so each pane
+  loads its own `dist/plugin`.
+- Drive the same steps on both sides. At each step the PR changes, capture
+  the screen in place of `shot.mjs png`:
+
+  ```sh
+  node .agents/verify-media/capture.mjs --checkout <side's checkout> --session <session> \
+    --side base|head --step <name> [--wait-for <text>] <main checkout>/.pstack/runs/<run>/proof/media-<pr>
+  ```
+
+  It refuses, and writes nothing, when the pane shows a token-shaped string.
+  Keep credentials out of the pane as Launch says, and never capture a
+  screen showing a real person's data.
+- Publish with `node .agents/verify-media/publish.mjs --pr <n> --title
+  "verify-cc-lhc-mod <feature>" --note "<what changed>" <that folder>`, and
+  link the comment it prints in the review. It checks the commits, uploads
+  to Cloudflare Images, checks each URL reads back, and adds or updates the
+  one `<!-- lhc-captures -->` comment. A rerun uploads nothing.
+
+Video goes to Cloudflare Stream once Lee buys it. Until then a
+`shot.mjs record` video stays in the run's evidence dir, and the review
+names its path.
+
 ## Cleanup
 
 ```sh
@@ -500,3 +534,6 @@ made in your report. Only an opted-out session leaves its transcript under
   skill included, carries only when it changes no lane's setup, actions,
   assertions, expected outcomes, evidence or cleanup. Any path no rule here
   names reruns every drive and the seam check. `doctor.sh` always reruns.
+- Carries every drive: a change only to `helpers/shot.mjs` or
+  `.agents/verify-media/`. They make pictures and grade nothing. Run
+  `.agents/verify-media/probes.sh` and one capture of each changed script.
