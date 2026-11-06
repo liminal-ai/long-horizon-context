@@ -14,3 +14,6 @@ packages/ccode/
 memory/
 
 .pstack/
+
+# Receipt the cc-lhc story0 process-capability test writes on every root test run.
+/build/story0/

@@ -4,16 +4,18 @@ import { createHash, randomUUID } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
-import { STEP, tokenShaped } from "./capture.mjs";
+import { STEP, sha256, tokenShaped } from "./capture.mjs";
 
 const USAGE = `usage: publish.mjs --pr <n> [--title <text>] [--note <text>] <run dir>
   Publishes one capture.mjs run to a pull request of liminal-ai/long-horizon-context. Checks that every head capture
   ran at the PR's current head and every base capture at its merge base with the PR's base branch, none with
-  uncommitted changes, with the same steps on both sides and no token-shaped text. Uploads each PNG to Cloudflare
-  Images under lhc/<random uuid>/, unsigned, through the cf CLI, and checks that its public URL serves a PNG of the
-  same size. Writes published.json, so a second publish of the same run uploads nothing.
-  Then adds or updates the one PR comment marked <!-- lhc-captures -->: one section per run for the PR's
-  head, each step's base and head side by side. A run on a new head replaces the old head's runs.
+  uncommitted changes, with the same steps on both sides and no token-shaped text. Each PNG and text must match the
+  hashes capture.mjs recorded, and each side's captures must carry one run id, so the files belong together.
+  Checks the state of the gh user's PR comment marked <!-- lhc-captures --> before any upload. Uploads each PNG to
+  Cloudflare Images under lhc/<random uuid>/, unsigned, through the cf CLI, and checks that its public URL serves a
+  PNG of the same size. Writes published.json, so a second publish of the same run uploads nothing.
+  Then adds or updates that comment, never another author's: one section per run for the PR's head, each step's base
+  and head side by side. A run on a new head replaces the old head's runs.
   Reads CLOUDFLARE_ACCOUNT_ID, defaulting to the Liminal.builder account. Needs gh and cf, logged in.`;
 
 const MARKER = "<!-- lhc-captures -->";
@@ -53,13 +55,21 @@ function readRun(dir) {
       const meta = join(sideDir, `${step}.json`);
       const text = join(sideDir, `${step}.txt`);
       if (!existsSync(meta) || !existsSync(text)) fail(`${sideDir}/${step}.png has no ${step}.json or ${step}.txt`);
-      const token = tokenShaped(readFileSync(text, "utf8"));
+      const textBytes = readFileSync(text);
+      const token = tokenShaped(textBytes.toString("utf8"));
       if (token) fail(`${sideDir}/${step}.txt holds a token-shaped string (${token.slice(0, 6)}…); never publish it`);
       const png = readFileSync(join(sideDir, `${step}.png`));
       const size = pngSize(png);
       if (!size) fail(`${sideDir}/${step}.png is not a PNG`);
-      return { step, png, size, file: join(sideDir, `${step}.png`), ...JSON.parse(readFileSync(meta, "utf8")) };
+      const m = JSON.parse(readFileSync(meta, "utf8"));
+      if (m.step !== step || m.side !== side || typeof m.run !== "string" || !m.run)
+        fail(`${meta} is not capture.mjs metadata for ${side} ${step}; recapture`);
+      if (m.png !== sha256(png) || m.text !== sha256(textBytes))
+        fail(`${sideDir}/${step}.png or ${step}.txt is not the pair capture.mjs wrote; recapture`);
+      return { step, png, size, file: join(sideDir, `${step}.png`), run: m.run, sha: m.sha, dirty: m.dirty };
     });
+    const runs = [...new Set(captures.map((c) => c.run))];
+    if (runs.length !== 1) fail(`${side} captures come from more than one run: ${runs.join(", ")}; recapture into one run dir`);
     const dirty = captures.find((c) => c.dirty);
     if (dirty) fail(`${side} ${dirty.step} ran at ${dirty.sha} with uncommitted changes; commit, push and recapture`);
     const shas = [...new Set(captures.map((c) => c.sha))];
@@ -106,6 +116,36 @@ function digestOf(sides) {
   for (const side of SIDES)
     for (const c of sides[side].captures) h.update(`${side}/${c.step}\0${c.sha}\0`).update(c.png);
   return h.digest("hex");
+}
+
+/** The runs a marked comment holds. Fails, before anything uploads, on a state block publish.mjs could not have written. */
+function stateOf(comment) {
+  const bad = (why) => fail(`comment ${comment.id} is marked ${MARKER} but its state ${why}; fix or delete it by hand`);
+  const raw = STATE.exec(comment.body)?.[1];
+  if (!raw) bad("block is missing");
+  let state;
+  try {
+    state = JSON.parse(raw);
+  } catch {
+    bad("is not JSON");
+  }
+  const sha = (v) => typeof v === "string" && /^[0-9a-f]{40}$/.test(v);
+  const url = (v) => typeof v === "string" && v.startsWith("https://");
+  const ok =
+    sha(state?.head) &&
+    Array.isArray(state.runs) &&
+    state.runs.every(
+      (r) =>
+        typeof r?.id === "string" &&
+        typeof r.title === "string" &&
+        typeof r.note === "string" &&
+        sha(r.base) &&
+        sha(r.head) &&
+        Array.isArray(r.steps) &&
+        r.steps.every((s) => typeof s?.step === "string" && STEP.test(s.step) && url(s.base) && url(s.head)),
+    );
+  if (!ok) bad("does not hold a head commit and its runs");
+  return state;
 }
 
 const text = (s) => s.replaceAll("&", "&amp;").replaceAll("<", "&lt;");
@@ -169,6 +209,20 @@ async function main() {
   if (sides.base.sha !== mergeBase)
     fail(`base captures ran at ${sides.base.sha}, not the merge base ${mergeBase} with ${pr.baseRefName}`);
 
+  const me = gh(["api", "user", "--jq", ".login"]).trim();
+  const found = gh([
+    "api",
+    "--paginate",
+    `repos/${repo}/issues/${values.pr}/comments`,
+    "--jq",
+    `.[] | {id, login: .user.login, body}`,
+  ])
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => JSON.parse(line));
+  const existing = found.find((c) => c.login === me && c.body.startsWith(MARKER)) ?? null;
+  const prev = existing ? stateOf(existing) : null;
+
   const digest = digestOf(sides);
   const done = join(dir, "published.json");
   const cached = existsSync(done) ? JSON.parse(readFileSync(done, "utf8")) : null;
@@ -195,15 +249,6 @@ async function main() {
     writeFileSync(done, `${JSON.stringify({ digest, run }, null, 2)}\n`);
   }
 
-  const found = gh([
-    "api",
-    "--paginate",
-    `repos/${repo}/issues/${values.pr}/comments`,
-    "--jq",
-    `.[] | select(.body | startswith("${MARKER}")) | {id, body}`,
-  ]).trim();
-  const existing = found ? JSON.parse(found.split("\n")[0]) : null;
-  const prev = existing ? JSON.parse(STATE.exec(existing.body)?.[1] ?? "null") : null;
   const kept = prev?.head === pr.headRefOid ? prev.runs : [];
   const runs = kept.some((r) => r.id === run.id) ? kept.map((r) => (r.id === run.id ? run : r)) : [...kept, run];
   const body = JSON.stringify({ body: render({ head: pr.headRefOid, runs }) });

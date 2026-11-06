@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { execFileSync } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { pathToFileURL } from "node:url";
@@ -10,7 +11,7 @@ const USAGE = `usage: capture.mjs --checkout <dir> --session <tmux session> --si
                   [--wait-for <text>] <run dir>
   Captures the tmux session's screen into <run dir>/<side>/<step>.png, with the pane text beside it as <step>.txt
   and the commit of <dir> (the checkout whose build the pane runs) and whether it had uncommitted changes as
-  <step>.json. --wait-for waits up to 15 s for <text> on screen and fails without it. Refuses, and writes
+  <step>.json, with the side's run id and the sha256 of the PNG and the text. --wait-for waits up to 15 s for <text> on screen and fails without it. Refuses, and writes
   nothing, when the pane text holds a token-shaped string.
   Capture the same steps on base and head; publish.mjs pairs them by step name.`;
 
@@ -23,14 +24,27 @@ const TOKEN_SHAPES = [
   /github_pat_[A-Za-z0-9_]{20,}/,
   /\bxox[abprs]-[A-Za-z0-9-]{10,}/,
   /\bAKIA[0-9A-Z]{16}\b/,
+  /[A-Za-z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIALS?)[A-Za-z0-9_]*\s*=\s*["']?[A-Za-z0-9+/._~-]{16,}/i,
+  /eyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}/,
 ];
 
+/** Scans the text as shown and with every line break removed, so a token the pane wrapped mid-word still matches. */
 export function tokenShaped(text) {
-  for (const shape of TOKEN_SHAPES) {
-    const m = shape.exec(text);
-    if (m) return m[0];
-  }
+  for (const view of [text, text.replaceAll("\n", "")])
+    for (const shape of TOKEN_SHAPES) {
+      const m = shape.exec(view);
+      if (m) return m[0];
+    }
   return null;
+}
+
+export const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
+
+/** One id per side of a run dir, made by its first capture, so a capture copied in from another run carries a different id. */
+function runIdOf(dir) {
+  const file = join(dir, ".run-id");
+  if (!existsSync(file)) writeFileSync(file, `${randomUUID()}\n`, { flag: "wx" });
+  return readFileSync(file, "utf8").trim();
 }
 
 export const STEP = /^[a-z0-9][a-z0-9-]*$/;
@@ -82,9 +96,11 @@ function main() {
   const commit = commitOf(resolve(checkout));
   const dir = join(resolve(positionals[0]), side);
   mkdirSync(dir, { recursive: true });
-  renderPng(screen, join(dir, `${step}.png`));
+  const png = join(dir, `${step}.png`);
+  renderPng(screen, png);
   writeFileSync(join(dir, `${step}.txt`), text);
-  writeFileSync(join(dir, `${step}.json`), `${JSON.stringify({ step, side, ...commit }, null, 2)}\n`);
+  const meta = { step, side, run: runIdOf(dir), ...commit, png: sha256(readFileSync(png)), text: sha256(text) };
+  writeFileSync(join(dir, `${step}.json`), `${JSON.stringify(meta, null, 2)}\n`);
   console.log(`capture: ${join(dir, `${step}.png`)} at ${commit.sha}${commit.dirty ? " (dirty)" : ""}`);
 }
 

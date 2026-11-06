@@ -180,7 +180,10 @@ shared with `verify-cc-lhc-mod`. Run them from the head checkout.
    (`git merge-base origin/main <head>`), each per Launch. Every capture
    records its checkout's commit, and `publish.mjs` refuses a run whose head
    side is not the PR's current head, whose base side is not the merge base,
-   or that a checkout with uncommitted changes made.
+   or that a checkout made while `git status` showed changes. That is the
+   whole dirty check: a file Git hides from `git status` (an
+   `assume-unchanged` or `skip-worktree` index flag) passes it. Root
+   `pnpm run test` writes only `build/story0/`, which Git ignores.
 2. Drive the same steps on each side under a throwaway HOME, and capture each
    step's screen from its tmux session. Steps pair by name. The panel preview
    is a real screen that needs no auth (`$co` is the side's checkout,
@@ -199,10 +202,14 @@ shared with `verify-cc-lhc-mod`. Run them from the head checkout.
 
    For a live panel drive, run `capture.mjs` on the live session at the step
    the PR changes, such as `/status` drawn after a settled turn. It writes
-   `<side>/<step>.png`, the pane text as `<step>.txt` and the commit as
-   `<step>.json`. It refuses, and writes nothing, when the pane shows a
-   token-shaped string (`sk-…`, `ANTHROPIC_AUTH_TOKEN`, `Bearer …`, GitHub,
-   Slack or AWS key shapes). Never capture a screen showing a real person's
+   `<side>/<step>.png`, the pane text as `<step>.txt`, and `<step>.json`
+   with the commit, the side's run id and the sha256 of the PNG and the
+   text. The first capture into a side makes its run id, so capture each
+   run into a fresh `$media`. It refuses, and writes nothing, when the pane
+   shows a token-shaped string (`sk-…`, `ANTHROPIC_AUTH_TOKEN`, `Bearer …`,
+   a secret-named `KEY=value` assignment, a JWT, GitHub, Slack or AWS key
+   shapes), checking the text as shown and with line breaks removed, so a
+   token the pane wraps mid-word still refuses. Never capture a screen showing a real person's
    data; the throwaway HOME rules above keep the operator's own out.
 3. Publish:
 
@@ -216,14 +223,20 @@ shared with `verify-cc-lhc-mod`. Run them from the head checkout.
    through the `cf` CLI, under `lhc/<random uuid>/`, as unsigned URLs by
    the lead's decision, since they show only disposable test data and signed
    URLs expire inside GitHub. It fails unless each public URL serves a PNG
-   of the uploaded size. It then adds or updates the one comment marked
-   `<!-- lhc-captures -->`, base and head side by side per step with both
-   commits named. Its `published.json` makes a rerun upload nothing and
+   of the uploaded size. Before any upload it refuses a PNG or text whose
+   hash differs from its `<step>.json`, and a side whose captures carry more
+   than one run id. That proves the files belong together, not that both
+   sides drove the same actions. It then adds or updates the one comment
+   marked `<!-- lhc-captures -->` that the `gh` user wrote, base and head
+   side by side per step with both commits named, and never edits another
+   author's comment. It checks that comment's state before uploading, and
+   refuses state it could not have written. Its `published.json` makes a rerun upload nothing and
    update the same comment in place. A run on a new head replaces the old
    head's runs.
 4. Link the comment in the review. `.agents/verify-media/probes.sh` runs the
-   broken cases (token on screen, dirty checkout, wrong commit, failed
-   upload, URL that does not read back, rerun) against a real PR.
+   broken cases (token shapes on screen, dirty checkout, wrong commit,
+   swapped PNG, mixed runs, another author's comment, broken comment state,
+   failed upload, URL that does not read back, rerun) against a real PR.
 
 Video goes to Cloudflare Stream once Lee buys it. Until then a recording
 stays in the run's `proof/` folder, and the review names its path.

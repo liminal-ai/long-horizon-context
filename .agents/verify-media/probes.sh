@@ -36,7 +36,11 @@ expect() {
     failures=$((failures + 1))
   fi
 }
-screen() { tmux kill-session -t "=$session" 2>/dev/null; tmux new-session -d -s "$session" -x 80 -y 8 "printf '%s\n' '$1'; exec sleep 120"; }
+screen() {
+  printf '%s\n' "$1" >"$probe_dir/screen.txt"
+  tmux kill-session -t "=$session" 2>/dev/null
+  tmux new-session -d -s "$session" -x "${2:-80}" -y 8 "cat '$probe_dir/screen.txt'; exec sleep 120"
+}
 capture() { node "$here/capture.mjs" --session "$session" --step probe --wait-for "$2" --checkout "$1" --side "$3" "$4"; }
 publish() { node "$here/publish.mjs" --pr "$pr" "$@"; }
 
@@ -49,6 +53,21 @@ capture "$head_co" "sk-ant" head "$run" >"$probe_dir/token.out" 2>&1
 rc=$?
 [ -e "$run/head/probe.png" ] && echo "token capture wrote a PNG" >>"$probe_dir/token.out" && rc=99
 expect "token-shaped text on screen" 1 "capture REFUSED: the pane shows a token-shaped string" "$rc" "$probe_dir/token.out"
+
+# Synthetic credentials only, in the shapes the #81 verifier showed slipping through.
+token_case() {
+  local name="$1" text="$2" width="$3" wait="$4" label="$5"
+  run="$probe_dir/$name"
+  screen "$text" "$width"
+  capture "$head_co" "$wait" head "$run" >"$probe_dir/$name.out" 2>&1
+  rc=$?
+  [ -e "$run/head/probe.png" ] && echo "token capture wrote a PNG" >>"$probe_dir/$name.out" && rc=99
+  expect "$label" 1 "capture REFUSED: the pane shows a token-shaped string" "$rc" "$probe_dir/$name.out"
+}
+token_case env-key "KEY=0123456789abcdef0123456789abcdef01234567" 100 "KEY=" "env-style secret assignment"
+token_case jwt "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJzeW50aGV0aWMtcHJvYmUifQ.c3ludGhldGljc2lnbmF0dXJl" 120 "eyJ" "JWT"
+token_case bearer-newline $'Bearer\nsyntheticOauthToken0123456789' 100 "Bearer" "Bearer token on the next line"
+token_case bearer-wrap "$(printf '%77s' '')Bearer syntheticOauthToken0123456789" 80 "Bea" "Bearer split by the pane's line wrap"
 
 run="$probe_dir/dirty"
 screen "probe screen"
@@ -67,6 +86,72 @@ publish "$run" >"$probe_dir/wrong-commit.out" 2>&1
 expect "head captured at another commit" 1 "not PR $pr's head" $? "$probe_dir/wrong-commit.out"
 
 copy_good() { mkdir -p "$1" && cp -r "$good/base" "$good/head" "$1/"; }
+first_step() { basename "$(ls "$good/head/"*.png | head -n1)" .png; }
+
+run="$probe_dir/mixed-png-text"
+copy_good "$run"
+cp "$probe_dir/dirty/head/probe.png" "$run/head/$(first_step).png"
+publish "$run" >"$probe_dir/mixed-png-text.out" 2>&1
+expect "PNG swapped in from another capture" 1 "is not the pair capture.mjs wrote" $? "$probe_dir/mixed-png-text.out"
+
+run="$probe_dir/mixed-runs"
+copy_good "$run"
+cp "$probe_dir/dirty/base/probe."* "$run/base/"
+cp "$probe_dir/dirty/head/probe."* "$run/head/"
+publish "$run" >"$probe_dir/mixed-runs.out" 2>&1
+expect "one side's captures from two runs" 1 "captures come from more than one run" $? "$probe_dir/mixed-runs.out"
+
+# A stub gh answers as user probe-me, lists the comments a case sets, records writes, and passes PR reads to the real gh.
+stub="$probe_dir/stub"
+mkdir -p "$stub"
+cat >"$stub/gh" <<'STUB'
+#!/usr/bin/env bash
+if [ "$1 $2" = "api user" ]; then echo probe-me; exit 0; fi
+if [ "$2" = "--paginate" ]; then cat "$STUB_COMMENTS"; exit 0; fi
+if [ "$2" = "-X" ]; then
+  echo "$3 $4" >>"$STUB_LOG"
+  echo '{"html_url":"https://github.com/stub#issuecomment-1"}'
+  exit 0
+fi
+exec "$REAL_GH" "$@"
+STUB
+cat >"$stub/cf" <<'STUB'
+#!/usr/bin/env bash
+echo "cf $*" >>"$STUB_LOG"
+exit 1
+STUB
+chmod +x "$stub/gh" "$stub/cf"
+stub_publish() {
+  : >"$probe_dir/$1.log"
+  STUB_COMMENTS="$probe_dir/$1.comments" STUB_LOG="$probe_dir/$1.log" REAL_GH="$(command -v gh)" \
+    PATH="$stub:$PATH" publish "$probe_dir/$1" >"$probe_dir/$1.out" 2>&1
+}
+head_sha="$(git -C "$head_co" rev-parse HEAD)"
+
+run="$probe_dir/foreign-author"
+copy_good "$run"
+cp "$good/published.json" "$run/" 2>/dev/null
+printf '{"id":987654321,"login":"another-person","body":"<!-- lhc-captures -->\\n<!-- lhc-captures-state {\\"head\\":\\"%s\\",\\"runs\\":[]} -->"}\n' \
+  "$head_sha" >"$probe_dir/foreign-author.comments"
+stub_publish foreign-author
+rc=$?
+if [ "$rc" = 0 ] && grep -q "^added comment" "$probe_dir/foreign-author.out" &&
+  grep -q "^POST " "$probe_dir/foreign-author.log" && ! grep -q 987654321 "$probe_dir/foreign-author.log"; then
+  row "another author's marked comment" "exit 0, posts its own comment, never edits theirs" "PASS: $(tr '\n' ' ' <"$probe_dir/foreign-author.log")"
+else
+  row "another author's marked comment" "exit 0, posts its own comment, never edits theirs" \
+    "FAIL: exit $rc, $(tr '\n' ' ' <"$probe_dir/foreign-author.log" | cut -c1-140)"
+  failures=$((failures + 1))
+fi
+
+run="$probe_dir/malformed-state"
+copy_good "$run"
+printf '{"id":123,"login":"probe-me","body":"<!-- lhc-captures -->\\n<!-- lhc-captures-state {not json} -->"}\n' \
+  >"$probe_dir/malformed-state.comments"
+stub_publish malformed-state
+rc=$?
+[ -s "$probe_dir/malformed-state.log" ] && echo "stub saw: $(cat "$probe_dir/malformed-state.log")" >>"$probe_dir/malformed-state.out" && rc=97
+expect "own marked comment with broken state" 1 "its state is not JSON" "$rc" "$probe_dir/malformed-state.out"
 
 run="$probe_dir/upload-fails"
 copy_good "$run"

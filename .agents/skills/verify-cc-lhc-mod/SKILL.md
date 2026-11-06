@@ -473,13 +473,18 @@ publish section holds the full recipe. Run them from the head checkout.
   ```
 
   It refuses, and writes nothing, when the pane shows a token-shaped string.
+  Capture each run into a fresh folder: `publish.mjs` refuses a side whose
+  captures come from more than one run, or whose PNG and text are not the
+  pair `capture.mjs` hashed.
   Keep credentials out of the pane as Launch says, and never capture a
   screen showing a real person's data.
 - Publish with `node .agents/verify-media/publish.mjs --pr <n> --title
   "verify-cc-lhc-mod <feature>" --note "<what changed>" <that folder>`, and
   link the comment it prints in the review. It checks the commits, uploads
   to Cloudflare Images, checks each URL reads back, and adds or updates the
-  one `<!-- lhc-captures -->` comment. A rerun uploads nothing.
+  one `<!-- lhc-captures -->` comment the `gh` user wrote, never another
+  author's. A rerun uploads nothing. Its dirty check is what `git status`
+  shows, as `verify-cc-lhc` explains.
 
 Video goes to Cloudflare Stream once Lee buys it. Until then a
 `shot.mjs record` video stays in the run's evidence dir, and the review
