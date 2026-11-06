@@ -42,7 +42,9 @@ Preconditions:
   `VERIFY_CC_LHC_CAPTURE_BIN` set to the bare repo stand-in, which exits
   before the bind. The drive must fail with `capture ingested nothing`
   (summary `lines=0 … thread=none`), and pass again with the default
-  child.
+  child. It also feeds `capture_ingested` (in `lib.sh`, which reads the
+  summary's `key=value` tokens in any order) a reordered summary that
+  must pass, and a zero-count and a wrong-thread summary that must fail.
 - **Isolation outcome.** The same drive asserts no `<sid>.jsonl` exists
   under the operator's real `~/.claude/projects`.
 - **Interactive entry (live only).** In an isolated tmux session with a

@@ -16,11 +16,8 @@ RC="$(run_in_tmux capture "$LOG" \
 grep -qx "ok" "$LOG" && pass "user-visible reply 'ok' on stdout" || fail "no 'ok' reply in capture.log"
 SUMMARY="$(grep -m1 '^cc-lhc-capture ' "$LOG")"
 OWNED="$(grep -o 'owns thread th_[0-9a-f]*' "$ISO_HOME/.cc-lhc/wrapper.log" 2>/dev/null | head -1 | awk '{print $3}')"
-LINES="$(echo "$SUMMARY" | sed -n 's/.* lines=\([0-9]*\) .*/\1/p')"
-EVENTS="$(echo "$SUMMARY" | sed -n 's/.* events=\([0-9]*\) .*/\1/p')"
-BOUND="$(echo "$SUMMARY" | sed -n 's/.* thread=\([^ ]*\).*/\1/p')"
-if [ "${LINES:-0}" -gt 0 ] && [ "${EVENTS:-0}" -gt 0 ] && [ -n "$OWNED" ] && [ "$BOUND" = "$OWNED" ]; then
-  pass "capture ingested the session into the owned thread (lines=$LINES events=$EVENTS thread=$BOUND)"
+if capture_ingested "$SUMMARY" "$OWNED"; then
+  pass "capture ingested the session into the owned thread ($SUMMARY)"
 else
   fail "capture ingested nothing into the owned thread ${OWNED:-?}: ${SUMMARY:-no cc-lhc-capture line}"
 fi

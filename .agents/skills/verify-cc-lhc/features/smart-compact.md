@@ -66,19 +66,32 @@ Preconditions:
   `node helpers/check-rebuilt-content.mjs --source OLD.jsonl --rebuilt
   NEW.jsonl`. It grades the rebuilt prefix, the lines before the last
   `[runtime note]`. Whatever follows that note is the resumed child's own
-  output. `[context · …]` blocks may summarize older turns. Every other
-  user or assistant text entry must appear in the source and, in order,
-  match the source's trailing entries. It fails with `entry not in
-  source` (for example, a CLI `<system-reminder>` in front of a prompt),
-  `entry duplicated`, `differs from source tail`, or `user entry kept
-  verbatim and also inside a compacted block`. Prints `OK …` and exits 0
-  on a clean rebuild.
+  output. It compares one text block at a time on both sides, because
+  the writer emits one assistant line per block, and it drops
+  `[runtime note]` lines on both sides. The product renders every source
+  entry before its compact point as `[context · …]` blocks and copies
+  the rest verbatim, so the other entries must be an exact, in-order
+  suffix of the source, and any source entries left out need at least
+  one context block. It fails with `entry not in source` (for example, a
+  CLI `<system-reminder>` in front of a prompt), `entry duplicated`,
+  `differs from source tail`, `history lost`, or `user entry kept
+  verbatim and also inside a compacted block`. The transcript's context
+  blocks carry no record of which turns they cover, so that last one
+  fires only when the retained prompt's text appears in a block and in
+  no compacted source entry. Prints `OK …` and exits 0 on a clean
+  rebuild.
 - **Broken-case probe.** `helpers/probe-checks.sh` runs the seeded drive,
   then feeds the check copies of its rebuilt transcript with a
   reminder-prefixed duplicate prompt, an exact duplicate, an injected
-  assistant notice, a reordered pair, and a turn both compacted and kept
-  verbatim. Each must fail with its reason, and the unmodified copy must
-  pass. Results go to `probe/` in the evidence dir.
+  assistant notice, a reordered pair, a turn both compacted and kept
+  verbatim, only the runtime note, and the context blocks removed. Each
+  must fail with its reason, and the unmodified copy must pass. Three
+  more good cases must pass: a short retained prompt (`yes`) that also
+  appears inside an older turn's compacted answer, a source holding an
+  earlier compact receipt rebuilt unchanged with a new one, and a
+  two-text-block assistant reply sent through the built intake, view
+  and writer by `helpers/roundtrip-multiblock.mjs`. Results go to
+  `probe/` in the evidence dir.
 - **Carried work (live only).** Ask Claude to start a background shell
   (`sleep 25 && echo <marker>`), compact, wait, and send a prompt that
   asks for its output. Grade the marker in Claude's answer and the
