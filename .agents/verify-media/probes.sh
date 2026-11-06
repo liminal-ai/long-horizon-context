@@ -101,7 +101,7 @@ cp "$probe_dir/dirty/head/probe."* "$run/head/"
 publish "$run" >"$probe_dir/mixed-runs.out" 2>&1
 expect "one side's captures from two runs" 1 "captures come from more than one run" $? "$probe_dir/mixed-runs.out"
 
-# A stub gh answers as user probe-me, lists the comments a case sets, records writes, and passes PR reads to the real gh.
+# A stub gh answers as user probe-me, lists the comments a case sets, records writes, and passes PR reads to gh on the original PATH.
 stub="$probe_dir/stub"
 mkdir -p "$stub"
 cat >"$stub/gh" <<'STUB'
@@ -113,7 +113,7 @@ if [ "$2" = "-X" ]; then
   echo '{"html_url":"https://github.com/stub#issuecomment-1"}'
   exit 0
 fi
-exec "$REAL_GH" "$@"
+PATH="$REAL_PATH" exec gh "$@"
 STUB
 cat >"$stub/cf" <<'STUB'
 #!/usr/bin/env bash
@@ -123,7 +123,7 @@ STUB
 chmod +x "$stub/gh" "$stub/cf"
 stub_publish() {
   : >"$probe_dir/$1.log"
-  STUB_COMMENTS="$probe_dir/$1.comments" STUB_LOG="$probe_dir/$1.log" REAL_GH="$(command -v gh)" \
+  STUB_COMMENTS="$probe_dir/$1.comments" STUB_LOG="$probe_dir/$1.log" REAL_PATH="$PATH" \
     PATH="$stub:$PATH" publish "$probe_dir/$1" >"$probe_dir/$1.out" 2>&1
 }
 head_sha="$(git -C "$head_co" rev-parse HEAD)"
