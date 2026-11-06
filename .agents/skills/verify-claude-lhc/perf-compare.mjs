@@ -48,6 +48,10 @@ for (const side of ["base", "head"]) {
       if (!drive) problems.push(`${side} sample ${i + 1} (${run.file}) has no ${name}`);
       else if (drive.status !== "pass") problems.push(`${side} sample ${i + 1} (${run.file}) ${name} is ${drive.status}`);
     }
+    for (const name of seededNames(run.drives)) {
+      const ms = run.drives[name].ms;
+      if (!Number.isFinite(ms) || ms < 0) problems.push(`${side} sample ${i + 1} (${run.file}) ${name} has invalid ms ${JSON.stringify(ms)}`);
+    }
     const shared = baseline.reduce((sum, name) => sum + (run.drives[name]?.ms ?? 0), 0);
     const all = seededNames(run.drives).reduce((sum, name) => sum + run.drives[name].ms, 0);
     sums[side].push(shared);
