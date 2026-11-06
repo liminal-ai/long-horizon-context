@@ -47,7 +47,7 @@ A thread is the durable container for one ongoing conversation. The `threads` do
 
 The thread file is authoritative for its own identity. It stores its thread id once, as identity metadata. The records inside it (events, messages, turns) do not each carry the thread id, because the file is the thread. The thread registry is a convenience lookup over the thread files, not the authority.
 
-Thread files are schema-versioned (current version 13) and migrate forward on open, so a file written by an older build is brought current the first time a newer build touches it. An unsupported version is refused before use. An old thread file is not stranded when the schema moves.
+Thread files are schema-versioned (`CURRENT_THREAD_SCHEMA_VERSION` in `shared-tech/storage.ts`) and migrate forward on open, so a file written by an older build is brought current the first time a newer build touches it. An unsupported version is refused before use. An old thread file is not stranded when the schema moves.
 
 ### Creating a thread
 
@@ -90,11 +90,17 @@ A user who wants to see their threads starts at the threads domain. `listThreads
 
 ### Copying, forking, and repairing threads
 
-The threads domain also carries the cross-home operations (`threads/fork.ts`). `copyThread` copies a thread file into another home and registry, optionally under a new id. `bindHost` binds the copy to a session id on the target host. `writeIdentityNote` records where the copy came from. `repairDerivations` re-derives failed derivations under a named token family. `exportHistory` returns the thread's history in a portable shape. The `lhc thread` command line (`copy`, `bind`, `note`, `health`, `repair`, `export`, `fork`) composes these operations. A fork between hosts on different providers compacts the copy under the `handoff` profile, so no closed turn survives raw and the target host never renders the source host's tool blocks.
+The threads domain also carries the cross-home operations (`threads/fork.ts`). `copyThread` copies a thread file into another home and registry, optionally under a new id. `bindHost` binds the copy to a session id on the target host. `writeIdentityNote` records where the copy came from. `repairDerivations` re-derives failed derivations under a named token family. `exportHistory` returns the thread's history in a portable shape. `adoptThreadCopy` copies a thread file into a registry under its original id, opening the source read-only and without requiring the source to be idle. `discardCopy` removes a copy's registry row and deletes its file, and refuses a copy that is already bound to a host alias. The `lhc thread` command line (`copy`, `bind`, `note`, `health`, `repair`, `export`, `fork`) composes these operations. A fork between hosts on different providers compacts the copy under the `handoff` profile, so no closed turn survives raw and the target host never renders the source host's tool blocks.
+
+### Per-thread compact policy
+
+A thread can carry its own compact policy: a `trigger` and a `target`, both in tokens. `setCompactPolicy` stores it in the thread file's metadata row. It refuses a trigger or target that is not a positive integer, and a target at or above the trigger, with `invalid_compact_policy`. `getCompactPolicy` returns the stored policy, or `null` when none has been set. Thread schema v14 added the two columns (`migrateCompactPolicyV14` in `shared-tech/thread-migrate.ts`), so a thread migrated from v13 reads `null` until a host sets one.
+
+LHC stores the policy and never acts on it. The host owns the trigger decision. claude-lhc stores its configured policy on a thread's first run, then on resume reads the thread's stored policy back in place of its own setting.
 
 ## Intake stream
 
-As a harness runs it produces a stream of events. An event is one recorded thing that happened in the thread. The closed vocabulary (`EVENT_KINDS` in `intake-stream/internal/validate.ts`) has ten kinds:
+As a harness runs it produces a stream of events. An event is one recorded thing that happened in the thread. The closed vocabulary (`EVENT_KINDS` in `intake-stream/internal/validate.ts`) has eleven kinds:
 
 - `user_prompt`: a prompt from the user, or an automated prompt that stands in for one
 - `assistant_text`: assistant output text
@@ -106,6 +112,7 @@ As a harness runs it produces a stream of events. An event is one recorded thing
 - `runtime_note`: a note from the harness or runtime
 - `compact_continuation_marker`: the durable boundary a mid-turn compact writes before the turn continues over the rebuilt view
 - `turn_end`: a marker that the current turn is complete
+- `rollback`: the host rewound its session, so everything recorded after a named event order is hidden
 
 The `intake-stream` domain takes these events in and writes them into the thread in the order they happened. It is the only way thread content enters the system from a harness.
 
@@ -168,9 +175,16 @@ There is always exactly one open turn. Thread creation seeds the first open turn
 | `user_prompt` | has members | close current turn (+ queue work), open new turn, prompt is first member |
 | `turn_end` | has members | close current turn (+ queue work), open new empty turn |
 | `turn_end` | has no members | no-op |
+| `rollback` | any | no turn transition; see below |
 | any other event | — | add to current turn |
 
 More than one open turn is a hard error during this phase. An invalid thread is caught and triaged instead of producing quietly wrong turns later.
+
+### Rollback
+
+A host that rewinds its own session sends a `rollback` event. Its payload names `keepThroughEventOrder`, the last event order that stays visible, and an optional `reason`. claude-lhc sends one when Claude Code resumes at an earlier message. The anchor must name a position recorded before the rollback itself. Otherwise the whole batch is refused with `invalid_event`.
+
+Intake applies the rollback in the same batch transaction by calling `turns.applyRollback`. It produces no message and does not change the open turn. Every live message recorded after the anchor is soft-deleted. A closed turn left with no live member is marked deleted. A stored compact view whose compact point sits past the anchor is dropped, so the thread serves uncompacted until the next compact. The derivation cascade then runs. Hidden messages, hidden turns, and emptied chunks drop their derivations. A turn or chunk that still has a live member re-derives. The source events stay in the event log. Events recorded after the rollback append and serve as usual.
 
 ### What the result reports
 
@@ -180,7 +194,7 @@ The result reports, per event, whether it was recorded or skipped as a duplicate
 
 A message is the readable form of activity in a thread. The `messages` domain owns the message-and-block view of the conversation. It creates that view from source events, lets callers read it, and provides the place where later message-level edits and deletes happen.
 
-Events and messages are different records. Events are the ordered source stream received from a harness. Messages are the normalized view created from those events so the rest of the system can read, list, edit, group, and assemble thread history. A `turn_end` changes turn state but does not produce a message. Every other kind does, including `compact_continuation_marker`.
+Events and messages are different records. Events are the ordered source stream received from a harness. Messages are the normalized view created from those events so the rest of the system can read, list, edit, group, and assemble thread history. A `turn_end` changes turn state but does not produce a message. A `rollback` hides messages but does not produce one. Every other kind does, including `compact_continuation_marker`.
 
 ### Creating messages
 
@@ -223,6 +237,8 @@ The messages domain lists and shows messages for a thread. It is the lowest-leve
 - `report` returns derivation state for a set of messages without their content.
 
 Reads surface stored state. They never repair, derive, or block on missing work.
+
+Thread-view reads live messages inside its own read transaction through `messages.readLiveMessages(db)`. It takes an open database handle rather than a `ThreadRef` and returns the non-deleted messages in record order.
 
 ```mermaid
 sequenceDiagram
@@ -273,6 +289,8 @@ sequenceDiagram
 ```
 
 Closed turns are structurally immutable: no writer changes a closed turn's membership. Message edits and removes inside a closed turn rebuild its derivations, never its roster.
+
+The turns surface also carries `applyRollback`, which intake calls on its write transaction to apply a `rollback` event (see [Rollback](#rollback)).
 
 The domain also reads turn **steps**: the host-supplied step indices on a turn's events, grouped into complete step edges (`readTurnSteps`, `readActiveTurnSteps`). Mid-turn compact splits an open turn only at complete, host-recorded steps. A turn with no step edges cannot split.
 
@@ -423,7 +441,7 @@ Validation is strict and cheap: id shape is checked before any read, and invalid
 
 ### Impressions
 
-Every id requested through a retrieval operation writes one **impression** row in the thread file (the `retrieval_impression` table, arrived at thread schema v6; current schema v13): the id, the requesting surface, whether it was served, at what size, under which call. An impression means the SDK served the content into a result. It is an upper bound on model exposure, not a delivery receipt. Downstream signals (restatement, follow-up pulls) are the delivery-weighted evidence. Impressions are written in the retrieval transaction and nothing on the serving path reads them. `retrieval.listImpressions` reads the log back for analysis.
+Every id requested through a retrieval operation writes one **impression** row in the thread file (the `retrieval_impression` table, arrived at thread schema v6): the id, the requesting surface, whether it was served, at what size, under which call. An impression means the SDK served the content into a result. It is an upper bound on model exposure, not a delivery receipt. Downstream signals (restatement, follow-up pulls) are the delivery-weighted evidence. Impressions are written in the retrieval transaction and nothing on the serving path reads them. `retrieval.listImpressions` reads the log back for analysis.
 
 ### What hosts add
 

@@ -1,4 +1,4 @@
-import { Either, ParseResult, Schema } from "effect";
+import { Result, Schema, SchemaIssue } from "effect";
 import { type ErrorResult, isApiBlock, isPlainRecord } from "../../shared-tech/index.js";
 
 export const EVENT_KINDS = [
@@ -17,21 +17,21 @@ export const EVENT_KINDS = [
 
 const SERVER_GENERATED_FIELDS = ["eventOrder", "recordedAt", "threadEventId", "schemaVersion"] as const;
 
-const DECODE_OPTIONS = { onExcessProperty: "error", errors: "first" } as const;
+const DECODE_OPTIONS = { onExcessProperty: "error", errors: "first", reportInput: true } as const;
 
-const NonEmptyString = Schema.String.pipe(Schema.minLength(1));
-const StepIndex = Schema.Number.pipe(Schema.int(), Schema.nonNegative());
+const NonEmptyString = Schema.String.check(Schema.isMinLength(1));
+const StepIndex = Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0));
 
-const ThreadRefSchema = Schema.Union(
+const ThreadRefSchema = Schema.Union([
   Schema.Struct({
     threadId: NonEmptyString,
     registryPath: Schema.optional(Schema.String),
   }),
   Schema.Struct({ filePath: NonEmptyString }),
-);
+]);
 
 const EventEnvelopeSchema = Schema.Struct({
-  eventKind: Schema.Literal(...EVENT_KINDS),
+  eventKind: Schema.Literals(EVENT_KINDS),
   idempotencyKey: NonEmptyString,
   actor: NonEmptyString,
   harness: NonEmptyString,
@@ -42,17 +42,17 @@ const TextPayloadSchema = Schema.Struct({ text: Schema.String });
 const UserPromptPayloadSchema = Schema.Struct({
   text: Schema.String,
   steer: Schema.optional(Schema.Boolean),
-  blocks: Schema.optional(Schema.Array(Schema.Record({ key: Schema.String, value: Schema.Unknown }))),
+  blocks: Schema.optional(Schema.Array(Schema.Record(Schema.String, Schema.Unknown))),
 });
 const AssistantTextPayloadSchema = Schema.Struct({
   text: Schema.String,
-  providerUsage: Schema.optional(Schema.Record({ key: Schema.String, value: Schema.Unknown })),
+  providerUsage: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
   provider: Schema.optional(Schema.String),
   model: Schema.optional(Schema.String),
   api: Schema.optional(Schema.String),
   stepIndex: Schema.optional(StepIndex),
 });
-const BlockSchema = Schema.Record({ key: Schema.String, value: Schema.Unknown });
+const BlockSchema = Schema.Record(Schema.String, Schema.Unknown);
 const AssistantThinkingPayloadSchema = Schema.Struct({
   text: Schema.String,
   signature: Schema.optional(Schema.String),
@@ -63,13 +63,13 @@ const AssistantThinkingPayloadSchema = Schema.Struct({
   stepIndex: Schema.optional(StepIndex),
 });
 const TurnEndPayloadSchema = Schema.Struct({
-  outcome: Schema.optional(Schema.Literal("completed", "aborted")),
+  outcome: Schema.optional(Schema.Literals(["completed", "aborted"])),
   outcomeReason: Schema.optional(Schema.String),
   startedAt: Schema.optional(Schema.String),
   endedAt: Schema.optional(Schema.String),
 });
 const RollbackPayloadSchema = Schema.Struct({
-  keepThroughEventOrder: Schema.Number.pipe(Schema.int(), Schema.nonNegative()),
+  keepThroughEventOrder: StepIndex,
   reason: Schema.optional(Schema.String),
 });
 const ModelChangePayloadSchema = Schema.Struct({
@@ -83,7 +83,7 @@ const ThinkingLevelChangePayloadSchema = Schema.Struct({
 const ToolCallPayloadSchema = Schema.Struct({
   toolCallId: NonEmptyString,
   toolName: NonEmptyString,
-  arguments: Schema.Record({ key: Schema.String, value: Schema.Unknown }),
+  arguments: Schema.Record(Schema.String, Schema.Unknown),
   block: Schema.optional(BlockSchema),
   stepIndex: Schema.optional(StepIndex),
 });
@@ -157,17 +157,27 @@ const CompactContinuationMarkerPayloadSchema = Schema.Struct({
   waitForUser: Schema.Literal(false),
 });
 
-function firstIssue(error: ParseResult.ParseError): string {
-  const issues = ParseResult.ArrayFormatter.formatErrorSync(error);
-  const issue = issues[0];
+const formatIssues = SchemaIssue.makeFormatterStandardSchemaV1({
+  leafHook: (issue) => {
+    if (issue._tag === "UnexpectedKey" && issue.ast._tag === "Objects") {
+      const expected = issue.ast.propertySignatures.map((field) => JSON.stringify(field.name)).join(" | ");
+      return `is unexpected, expected: ${expected}`;
+    }
+    if (issue._tag === "MissingKey") return "is missing";
+    return SchemaIssue.defaultLeafHook(issue);
+  },
+});
+
+function firstIssue(error: Schema.SchemaError): string {
+  const issue = formatIssues(error.issue).issues[0];
   if (issue === undefined) return "invalid value";
-  if (issue.path.length === 0) return issue.message;
+  if (issue.path === undefined || issue.path.length === 0) return issue.message;
   return `"${issue.path.join(".")}" ${issue.message}`;
 }
 
-function decodeIssue<A, I>(schema: Schema.Schema<A, I, never>, value: unknown): string | undefined {
-  const decoded = Schema.decodeUnknownEither(schema, DECODE_OPTIONS)(value);
-  return Either.isLeft(decoded) ? firstIssue(decoded.left) : undefined;
+function decodeIssue<S extends Schema.ConstraintDecoder<unknown>>(schema: S, value: unknown): string | undefined {
+  const decoded = Schema.decodeUnknownResult(schema, DECODE_OPTIONS)(value);
+  return Result.isFailure(decoded) ? firstIssue(decoded.failure) : undefined;
 }
 
 function callerError(reason: string, eventIndex?: number): ErrorResult {
@@ -223,9 +233,9 @@ function validateOneEvent(event: unknown, index: number): ErrorResult | undefine
     return callerError(`event: unknown event kind "${kind}"`, index);
   }
 
-  const envelope = Schema.decodeUnknownEither(EventEnvelopeSchema, DECODE_OPTIONS)(event);
-  if (Either.isLeft(envelope)) {
-    return callerError(`event: ${firstIssue(envelope.left)}`, index);
+  const envelope = Schema.decodeUnknownResult(EventEnvelopeSchema, DECODE_OPTIONS)(event);
+  if (Result.isFailure(envelope)) {
+    return callerError(`event: ${firstIssue(envelope.failure)}`, index);
   }
 
   const payload = record["payload"];
@@ -234,7 +244,7 @@ function validateOneEvent(event: unknown, index: number): ErrorResult | undefine
   }
 
   let issue: string | undefined;
-  switch (envelope.right.eventKind) {
+  switch (envelope.success.eventKind) {
     case "turn_end":
       issue = decodeIssue(TurnEndPayloadSchema, payload);
       break;

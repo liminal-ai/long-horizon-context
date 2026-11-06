@@ -7,6 +7,7 @@ allowBuilds:
   protobufjs: false
 
 overrides:
+  effect: "file:vendor/npm/effect-4.1.2.tgz"
   # claude-lhc: the sidecar drives the Claude Code binary t3code points it at
   # (pathToClaudeCodeExecutable); the SDK's bundled platform binaries are not installed.
   "@anthropic-ai/claude-agent-sdk>@anthropic-ai/claude-agent-sdk-darwin-arm64": "-"
