@@ -863,7 +863,7 @@ const drives = {
       assert((await plain.stop()) === 0, "the sidecar without membase did not exit 0");
       assert(JSON.stringify(without) === JSON.stringify(["get_turns", "get_messages"]), `lhc tools without membase: ${without}`);
       const gate = membaseGate();
-      if (gate.skip) return `lhc tools without membase: ${without.join(",")}; with membase SKIP: ${gate.skip}`;
+      if (gate.skip) return { partial: `lhc tools without membase: ${without.join(",")}; with membase SKIP: ${gate.skip}` };
       const withTools = await withMembaseLane(scratch, evidenceDir, gate, async ({ socketPath }) => {
         const s = new Sidecar(scratch, "with-membase");
         sidecars.push(s);
@@ -1920,6 +1920,9 @@ async function main() {
       if (detail?.skip) {
         console.log(`VERIFY-CLAUDE-LHC ${name}: SKIP ${detail.skip}`);
         summary.drives[name] = { status: "skip", detail: detail.skip, ms: Date.now() - t0 };
+      } else if (detail?.partial) {
+        console.log(`VERIFY-CLAUDE-LHC ${name}: PARTIAL ${detail.partial} (${Date.now() - t0}ms)`);
+        summary.drives[name] = { status: "partial", detail: detail.partial, ms: Date.now() - t0 };
       } else {
         console.log(`VERIFY-CLAUDE-LHC ${name}: PASS ${detail} (${Date.now() - t0}ms)`);
         summary.drives[name] = { status: "pass", detail, ms: Date.now() - t0 };

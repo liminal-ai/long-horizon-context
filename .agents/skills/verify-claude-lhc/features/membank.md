@@ -33,7 +33,7 @@ list and calls them like any MCP tool.
 - `drive.mjs membank-unreachable` needs nothing beyond the build.
 - `MEMBASE_REPO=<installed membase checkout> drive.mjs membank-tools` boots
   its own membase lane. Without `MEMBASE_REPO` it checks only the tool list
-  without membase.
+  without membase and reports `PARTIAL`.
 - `CLAUDE_LHC_LIVE=1 MEMBASE_REPO=<checkout> drive.mjs membank-live` runs
   two real turns, one on an attached thread and one on an unattached thread.
   It costs two short model turns per run.
