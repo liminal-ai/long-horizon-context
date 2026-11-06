@@ -483,9 +483,9 @@ The `membank` domain connects a thread to a bank in membase, the per-machine ser
 
 A host turns the domain on by passing `membase: { socketPath }` to `initLhc`, the path of membase's Unix socket. With it set, `initLhc` returns a promise. It loads the membase client, calls membase's `Health` RPC with the contract's API version, and resolves to the SDK only when `Health` answers. Otherwise the promise rejects with a `MembaseHandshakeError` whose `code` names the failure:
 
-- `membase_unreachable`: the RPC transport failed, as with a missing socket or a refused connection, or no answer came within 5,000 ms.
+- `membase_unreachable`: the RPC call failed before any RPC answer arrived, as with a missing socket, a refused connection, or a reply that is not an RPC response, or no answer came within 5,000 ms.
 - `membase_version_mismatch`: membase runs another API version than the vendored contract.
-- `membase_unavailable`: membase answered with `NotEnrolled`, `SecretFileUnreadable`, `Unauthorized` or `StoreUnavailable`, so it cannot serve this machine.
+- `membase_unavailable`: membase answered with `NotEnrolled`, `SecretFileUnreadable`, `Unauthorized` or `StoreUnavailable`, so it cannot serve this machine, or it answered outside the contract, such as with a defect or a value that fails the contract's schema.
 
 A missing or blank `socketPath` rejects with a `TypeError`. With `membase` set, every construction failure arrives as a rejection, including the config `TypeError`s that a call without `membase` throws. Without `membase`, `initLhc` stays synchronous and never loads the membase client. The overloads make the two cases separate types: a config whose `membase` is optional does not compile, so a host branches on it.
 
@@ -501,7 +501,7 @@ Each operation takes a `ThreadRef`. Once its checks pass, it reads the thread's 
 - `list(ref, kind?)` returns the attached bank's item summaries, `{ id, kind, title, description, status }`. A `kind` of `lesson` or `skill` lists only that kind.
 - `get(ref, id)` returns one item of the attached bank: the summary fields plus `body`, `citations`, `createdAt`, and `updatedAt`. Lesson ids are `L<n>` and skill ids are `S<n>`.
 
-Every operation returns an `OpResult` and checks in this order. An SDK built without `membase` answers `membank_not_configured`. A bank name, item id, or kind that fails the contract's schema answers `invalid_membank_input` before any call. A thread ref that does not resolve answers the threads domain's own code, such as `thread_not_found`. Then membase's tagged errors map to stable codes:
+Every operation returns an `OpResult` and checks in this order. An SDK built without `membase` answers `membank_not_configured`. A bank name, item id, or kind that fails the contract's schema answers `invalid_membank_input` before any call. A thread ref that does not resolve answers the threads domain's own code, such as `thread_not_found`. A thread id that membase's contract refuses, such as one `copyThread` was given through `newThreadId`, answers `invalid_membank_input` before any call. Then membase's answers map to stable codes:
 
 | Membase error | Code |
 | --- | --- |
@@ -509,11 +509,11 @@ Every operation returns an `OpResult` and checks in this order. An SDK built wit
 | `AlreadyAttached` (attaching to another bank) | `already_attached` |
 | `BankNotFound` | `bank_not_found` |
 | `ItemNotFound` | `item_not_found` |
-| `NotEnrolled`, `SecretFileUnreadable`, `Unauthorized`, `StoreUnavailable` | `membase_unavailable` |
+| `NotEnrolled`, `SecretFileUnreadable`, `Unauthorized`, `StoreUnavailable`, or any answer outside the contract | `membase_unavailable` |
 | `VersionMismatch` (handshake only) | `membase_version_mismatch` |
-| a failed RPC transport, or no answer within 5,000 ms | `membase_unreachable` |
+| no RPC answer (missing socket, refused connection, a reply that is not an RPC response), or none within 5,000 ms | `membase_unreachable` |
 
-The reason for a membase error names the tag and its fields, such as `ItemNotFound bank=books id=L9`. The reason for `membase_unreachable` names the socket and the underlying error, such as `connect ENOENT`. Membase answers `attachment`, `list`, and `get` from its memory once it has loaded the bank, and `attach` and `detach` write to Convex.
+The reason for a membase error names the tag and its fields, such as `ItemNotFound bank=books id=L9`. The reason for `membase_unreachable` names the socket and the underlying error, such as `connect ENOENT`, and an answer outside the contract gives `membase on <socket> answered outside its contract: <detail>`. Membase answers `attachment`, `list`, and `get` from its memory once it has loaded the bank, and `attach` and `detach` write to Convex.
 
 
 

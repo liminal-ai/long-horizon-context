@@ -1,5 +1,6 @@
 import { type ChildProcess, execFile, spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createServer as createHttpServer } from "node:http";
 import { createServer, type Server } from "node:net";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
@@ -198,6 +199,17 @@ describe("membank against a real membase", () => {
       ok: false,
       error: { code: "thread_not_found" },
     });
+    const copied = await sdk.threads.copyThread({
+      source: ref,
+      filePath: join(dir, "copied.sqlite"),
+      registryPath,
+      newThreadId: "session/42",
+    });
+    expect(copied).toMatchObject({ ok: true, value: { threadId: "session/42" } });
+    expect(await sdk.membank.attach({ threadId: "session/42", registryPath }, "books")).toMatchObject({
+      ok: false,
+      error: { code: "invalid_membank_input" },
+    });
   });
 
   it("refuses construction with membase_version_mismatch when membase speaks another API version", async () => {
@@ -240,6 +252,28 @@ describe("membank against a real membase", () => {
     const hung = await handshakeFailure(silentSocket);
     expect(hung.error).toMatchObject({ name: "MembaseHandshakeError", code: "membase_unreachable" });
     expect(String((hung.error as Error).message)).toContain("within 5000 ms");
+  });
+
+  it("refuses construction with membase_unavailable when the socket answers outside the contract", async () => {
+    const crashingSocket = join(dir, "crashing.sock");
+    const crashing = createHttpServer((request, response) => {
+      const chunks: Buffer[] = [];
+      request.on("data", (chunk: Buffer) => chunks.push(chunk));
+      request.on("end", () => {
+        const { id } = JSON.parse(Buffer.concat(chunks).toString()) as { id: string };
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(
+          JSON.stringify([
+            { _tag: "Exit", requestId: id, exit: { _tag: "Failure", cause: [{ _tag: "Die", defect: "boom" }] } },
+          ]),
+        );
+      });
+    });
+    servers.push(crashing);
+    await new Promise<void>((resolve) => crashing.listen(crashingSocket, resolve));
+    const { error } = await handshakeFailure(crashingSocket);
+    expect(error).toMatchObject({ name: "MembaseHandshakeError", code: "membase_unavailable" });
+    expect(String((error as Error).message)).toContain("answered outside its contract");
   });
 
   it("answers membase_unreachable from an SDK whose membase stopped after construction", async () => {

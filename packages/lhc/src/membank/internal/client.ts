@@ -13,6 +13,7 @@ import {
   type NotEnrolled,
   type SecretFileUnreadable,
   type StoreUnavailable,
+  ThreadId,
   type Unauthorized,
   type VersionMismatch,
 } from "@membase/contract";
@@ -63,7 +64,7 @@ function innermostMessage(error: unknown): string {
 }
 
 function describe(error: MembaseError, socketPath: string): string {
-  if (error._tag === "RpcClientError") return `membase did not answer on ${socketPath}: ${innermostMessage(error)}`;
+  if (error._tag === "RpcClientError") return `membase RPC on ${socketPath} failed: ${innermostMessage(error)}`;
   if (error._tag === "TimeoutError") {
     return `membase did not answer on ${socketPath} within ${MEMBASE_CALL_TIMEOUT_MS} ms`;
   }
@@ -73,12 +74,29 @@ function describe(error: MembaseError, socketPath: string): string {
   return [error._tag, ...fields].join(" ");
 }
 
-function toErrorResult(error: MembaseError, socketPath: string): { ok: false; error: ErrorResult } {
-  return { ok: false, error: { ...ERROR_CODES[error._tag], reason: describe(error, socketPath) } };
+function isMembaseError(error: unknown): error is MembaseError {
+  if (typeof error !== "object" || error === null || !("_tag" in error)) return false;
+  return typeof error._tag === "string" && Object.hasOwn(ERROR_CODES, error._tag);
+}
+
+function toErrorResult(failure: unknown, socketPath: string): { ok: false; error: ErrorResult } {
+  if (isMembaseError(failure)) {
+    return { ok: false, error: { ...ERROR_CODES[failure._tag], reason: describe(failure, socketPath) } };
+  }
+  const detail = failure instanceof Error ? failure.message : JSON.stringify(failure);
+  return {
+    ok: false,
+    error: {
+      errorClass: "system_error",
+      code: "membase_unavailable",
+      reason: `membase on ${socketPath} answered outside its contract: ${detail}`,
+    },
+  };
 }
 
 export interface MembaseConnection {
   call<A>(use: (client: MembaseClient) => Effect.Effect<A, MembaseError>): Promise<OpResult<A>>;
+  refuseThreadId(value: unknown): string | null;
   refuseBankName(value: unknown): string | null;
   refuseItemId(value: unknown): string | null;
   refuseItemKind(value: unknown): string | null;
@@ -94,17 +112,20 @@ export function connectMembase(socketPath: string): MembaseConnection {
   const protocol = MembaseProtocol.pipe(Layer.provide(NodeHttpClient.layerUndiciOptions({ connect: { socketPath } })));
   return {
     call: (use) =>
-      RpcClient.make(MembaseRpcs).pipe(
-        Effect.flatMap(use),
-        Effect.timeout(MEMBASE_CALL_TIMEOUT_MS),
-        Effect.scoped,
-        Effect.provide(protocol),
-        Effect.match({
-          onFailure: (error) => toErrorResult(error, socketPath),
-          onSuccess: (value) => ({ ok: true as const, value }),
-        }),
-        Effect.runPromise,
-      ),
+      RpcClient.make(MembaseRpcs)
+        .pipe(
+          Effect.flatMap(use),
+          Effect.timeout(MEMBASE_CALL_TIMEOUT_MS),
+          Effect.scoped,
+          Effect.provide(protocol),
+          Effect.runPromiseExit,
+        )
+        .then((exit) =>
+          Exit.isSuccess(exit)
+            ? { ok: true as const, value: exit.value }
+            : toErrorResult(Cause.squash(exit.cause), socketPath),
+        ),
+    refuseThreadId: (value) => refusal(Schema.decodeUnknownExit(ThreadId)(value)),
     refuseBankName: (value) => refusal(Schema.decodeUnknownExit(BankName)(value)),
     refuseItemId: (value) => refusal(Schema.decodeUnknownExit(ItemId)(value)),
     refuseItemKind: (value) => refusal(Schema.decodeUnknownExit(ItemKind)(value)),

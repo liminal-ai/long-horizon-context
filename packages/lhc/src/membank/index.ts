@@ -64,6 +64,8 @@ export function membankSurface(membase: MembaseConnection | null): MembankSurfac
     if (refused !== null) return invalidInput(refused);
     const thread = await info(ref);
     if (!thread.ok) return thread;
+    const refusedThread = membase.refuseThreadId(thread.value.threadId);
+    if (refusedThread !== null) return invalidInput(`thread ${thread.value.threadId}: ${refusedThread}`);
     return run(membase, thread.value.threadId);
   };
 

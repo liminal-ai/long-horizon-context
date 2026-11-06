@@ -494,7 +494,7 @@ interface ErrorResult {
 | `invalid_compact_policy` | caller | Compact pair not positive integers, or target at or above trigger |
 | `unknown_format` | caller | Materialize format not `"pi-session"` |
 | `membank_not_configured` | caller | `membank` op on an SDK built without `membase` |
-| `invalid_membank_input` | caller | Bank name, item id or kind fails the membase contract's schema |
+| `invalid_membank_input` | caller | Bank name, item id, kind or thread id fails the membase contract's schema |
 | `not_attached` | caller | Thread has no membank attachment |
 | `already_attached` | caller | `attach` names another bank than the thread's current one |
 | `bank_not_found` | caller | `attach` names a bank membase does not have |
@@ -504,8 +504,8 @@ interface ErrorResult {
 | `unknown_work_kind` | corruption | Unregistered work kind at dispatch |
 | `derivation_completion_mismatch` | corruption | Handler writes don't match queued derivation targets |
 | `storage_failure` | system | SQLite or filesystem error |
-| `membase_unreachable` | system | Membase RPC transport failed, or no answer within 5,000 ms |
-| `membase_unavailable` | system | Membase answered `NotEnrolled`, `SecretFileUnreadable`, `Unauthorized` or `StoreUnavailable` |
+| `membase_unreachable` | system | No RPC answer from membase (missing socket, refused connection, a reply that is not an RPC response), or none within 5,000 ms |
+| `membase_unavailable` | system | Membase answered `NotEnrolled`, `SecretFileUnreadable`, `Unauthorized` or `StoreUnavailable`, or answered outside its contract |
 | `membase_version_mismatch` | system | Membase runs another API version (`initLhc` handshake only) |
 | `provider_failure` | system | Inference retry budget exhausted |
 | `derivation_retry_scheduled` | system | Turn-owned synchronous derive failed retryably; requeued |
