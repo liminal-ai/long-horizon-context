@@ -240,6 +240,77 @@ async function compactNow(s) {
 
 const lateServer = (res) => (res.ok ? res.value : []).find((server) => server.name === "late");
 const REFUSED_CONTROLS = { rewindFiles: { userMessageId: randomUUID() }, reinitialize: {}, seedReadState: { path: "a.txt", mtime: 1 } };
+const MEMBANK_SEED = [
+  ["lesson", "Present tense in scenes", "Scene prose stays in present tense", "Write every scene in present tense."],
+  ["lesson", "Name the stakes early", "Stakes appear in the first page", "State what the character can lose on page one."],
+  ["skill", "Scene outline", "Outline a scene in five beats", "Goal, conflict, turn, cost, exit."],
+];
+const MEMBANK_PROMPT = "List the lessons and skills in this thread's membank, then fetch L1 and quote its title exactly.";
+const NOT_ATTACHED = "this thread is not attached to a membank";
+
+function membaseGate() {
+  const repo = process.env.MEMBASE_REPO;
+  if (!repo) return { skip: "needs an installed membase checkout; set MEMBASE_REPO (see verify-membase's Launch)" };
+  const lane = join(repo, ".agents/skills/verify-membase/scripts/lane.sh");
+  if (!existsSync(lane)) return { skip: `MEMBASE_REPO has no ${lane}` };
+  return { repo, lane };
+}
+
+async function withMembaseLane(scratch, evidenceDir, gate, run) {
+  const dir = join(scratch.dir, "membase-lane");
+  const transcript = [];
+  const sh = (command, args, env = {}) => {
+    const out = execFileSync(command, args, { cwd: gate.repo, encoding: "utf8", env: { ...process.env, ...env }, stdio: ["ignore", "pipe", "pipe"] });
+    transcript.push(`$ ${[command, ...args].join(" ")}\n${out}`);
+    return out;
+  };
+  try {
+    const up = sh(gate.lane, ["up", dir]);
+    const socketPath = /socket (\S+)/.exec(up)?.[1];
+    assert(socketPath, `lane.sh up printed no socket: ${up}`);
+    const home = { MEMBASE_HOME: join(dir, "home") };
+    const membase = (...args) => sh("pnpm", ["-s", "exec", "membase", ...args], home).trim();
+    const enrolled = membase("enroll", "--name", "lane");
+    membase("machine", "approve", "--yes", "--admin-key-file", join(dir, "convex/admin.key"), enrolled);
+    membase("bank", "create", "craft", "--description", "Writing craft");
+    const ids = MEMBANK_SEED.map(([kind, title, description, body]) =>
+      membase(kind, "add", "--bank", "craft", "--title", title, "--description", description, "--body", body));
+    assert(ids.join(",") === "L1,L2,S1", `seeded ids ${ids.join(",")}`);
+    return await run({ socketPath, membase });
+  } finally {
+    if (existsSync(join(dir, "convex/container"))) sh(gate.lane, ["down", dir]);
+    mkdirSync(evidenceDir, { recursive: true });
+    writeFileSync(join(evidenceDir, "membase.txt"), transcript.join("\n"));
+    if (existsSync(join(dir, "service.log"))) writeFileSync(join(evidenceDir, "membase-service.log"), readFileSync(join(dir, "service.log")));
+  }
+}
+
+async function lhcTools(s, id) {
+  await s.waitFor(() => s.logHas("context window "), "context window log line");
+  const status = await s.control(id, "mcpServerStatus", {});
+  assert(status.ok, `mcpServerStatus: ${status.error}`);
+  return (status.value.find((server) => server.name === "lhc")?.tools ?? []).map((t) => t.name);
+}
+
+function capturedToolCalls(scratch) {
+  const registry = new DatabaseSync(join(scratch.lhcHome, "registry.sqlite"), { readOnly: true });
+  const files = registry.prepare("SELECT file_path FROM threads").all().map((r) => r.file_path);
+  registry.close();
+  return files.flatMap((file) => {
+    const db = new DatabaseSync(file, { readOnly: true });
+    const rows = db.prepare("SELECT payload FROM event WHERE event_kind = 'tool_call' ORDER BY event_order").all();
+    db.close();
+    return rows.map((r) => JSON.parse(r.payload));
+  });
+}
+
+function toolUses(msgs) {
+  const uses = msgs.flatMap((m) => (m.type === "assistant" ? m.message.content : [])).filter((b) => b.type === "tool_use");
+  const results = msgs.flatMap((m) => (m.type === "user" && Array.isArray(m.message?.content) ? m.message.content : [])).filter((b) => b.type === "tool_result");
+  const text = (r) => (typeof r?.content === "string" ? r.content : (r?.content ?? []).map((b) => b.text ?? "").join(""));
+  return uses.map((u) => ({ name: u.name, input: u.input, result: text(results.find((r) => r.tool_use_id === u.id)) }));
+}
+
 const FLAG_MODEL = "claude-sonnet-4-6";
 
 async function callInScratchEnv(scratch, fn, args, { live = false, entry = "index.js", childEnvAsOpEnv = false } = {}) {
@@ -762,6 +833,117 @@ const drives = {
       assert(!existsSync(scratch.lhcHome), "a store directory was created without lhc.home");
       return `exit=1 errorFrames=1 "${errors[0].message}" store=absent`;
     } finally { scratch.cleanup(); }
+  },
+
+  async "membank-unreachable"(evidenceDir) {
+    const scratch = new Scratch("membank-unreachable");
+    try {
+      const s = new Sidecar(scratch, "membank-unreachable");
+      const socketPath = join(scratch.dir, "absent.sock");
+      s.send({ type: "start", options: baseOptions(scratch, { sessionId: randomUUID(), lhc: { home: scratch.lhcHome, compact: { trigger: 300000, target: 180000 }, membase: { socketPath } } }) });
+      const code = await s.exited;
+      s.saveEvidence(evidenceDir);
+      const errors = s.frames.filter((f) => f.type === "error");
+      assert(code === 1, `expected exit 1, got ${code}`);
+      assert(errors.length === 1 && errors[0].message.startsWith("initLhc: membase handshake failed (membase_unreachable)") && errors[0].message.includes(socketPath), `expected one error frame naming membase and the socket, got ${JSON.stringify(errors)}`);
+      assert(!existsSync(scratch.lhcHome), "a store directory was created before the membase handshake");
+      return `exit=1 errorFrames=1 "${errors[0].message}" store=absent`;
+    } finally { scratch.cleanup(); }
+  },
+
+  async "membank-tools"(evidenceDir) {
+    const scratch = new Scratch("membank-tools");
+    const sidecars = [];
+    try {
+      const plain = new Sidecar(scratch, "without-membase");
+      sidecars.push(plain);
+      plain.send({ type: "start", options: baseOptions(scratch, { sessionId: randomUUID() }) });
+      await plain.waitFor(() => plain.logHas("created thread"), "created-thread log line");
+      const without = await lhcTools(plain, 1);
+      assert((await plain.stop()) === 0, "the sidecar without membase did not exit 0");
+      assert(JSON.stringify(without) === JSON.stringify(["get_turns", "get_messages"]), `lhc tools without membase: ${without}`);
+      const gate = membaseGate();
+      if (gate.skip) return { partial: `lhc tools without membase: ${without.join(",")}; with membase SKIP: ${gate.skip}` };
+      const withTools = await withMembaseLane(scratch, evidenceDir, gate, async ({ socketPath }) => {
+        const s = new Sidecar(scratch, "with-membase");
+        sidecars.push(s);
+        s.send({ type: "start", options: baseOptions(scratch, { sessionId: randomUUID(), lhc: { home: scratch.lhcHome, compact: { trigger: 300000, target: 180000 }, membase: { socketPath } } }) });
+        await s.waitFor(() => s.logHas("created thread"), "created-thread log line");
+        const tools = await lhcTools(s, 1);
+        assert((await s.stop()) === 0, "the sidecar with membase did not exit 0");
+        return tools;
+      });
+      assert(JSON.stringify(withTools) === JSON.stringify(["get_turns", "get_messages", "membank_list", "membank_get"]), `lhc tools with membase on an unattached thread: ${withTools}`);
+      return `lhc tools without membase: ${without.join(",")}; with membase, unattached: ${withTools.join(",")}`;
+    } finally {
+      for (const s of sidecars) if (s.exitCode === undefined) await s.stop();
+      for (const s of sidecars) s.saveEvidence(evidenceDir);
+      scratch.cleanup();
+    }
+  },
+
+  async "membank-live"(evidenceDir) {
+    const auth = liveAuth();
+    if (auth.skip) return auth;
+    const gate = membaseGate();
+    if (gate.skip) return gate;
+    mkdirSync(evidenceDir, { recursive: true });
+    const scratch = new Scratch("membank-live");
+    scratch.home = join(scratch.dir, "home");
+    mkdirSync(scratch.home, { recursive: true });
+    const sidecars = [];
+    const options = (socketPath) => baseOptions(scratch, {
+      sessionId: randomUUID(),
+      permissionMode: "default",
+      allowDangerouslySkipPermissions: false,
+      lhc: { home: scratch.lhcHome, compact: { trigger: 300000, target: 180000 }, membase: { socketPath } },
+      env: { ...process.env, HOME: scratch.home, CLAUDE_CONFIG_DIR: scratch.claudeHome },
+    });
+    const ask = async (label, socketPath, attach) => {
+      const s = new Sidecar(scratch, label, { live: true });
+      sidecars.push(s);
+      s.send({ type: "start", options: options(socketPath) });
+      await s.waitFor(() => s.logHas("created thread"), "created-thread log line");
+      if (attach) attach(threadIdFrom(s));
+      const turn = await liveTurn(s, MEMBANK_PROMPT);
+      assert((await s.stop()) === 0, `${label} sidecar did not exit 0`);
+      const answer = String(turn.result?.result ?? "");
+      assert(turn.result?.subtype === "success" && turn.result.is_error !== true, `${label} turn failed: ${JSON.stringify(turn.result)}`);
+      const prompted = s.frames.filter((f) => f.type === "req" && f.method === "canUseTool" && String(f.params?.toolName).startsWith("mcp__lhc__"));
+      assert(prompted.length === 0, `${label}: the host was asked to approve ${prompted.map((f) => f.params.toolName)}`);
+      return { s, answer, uses: toolUses(s.msgs()) };
+    };
+    try {
+      return await withMembaseLane(scratch, evidenceDir, gate, async ({ socketPath, membase }) => {
+        const attached = await ask("attached", socketPath, (threadId) => membase("attach", "--thread", threadId, "--bank", "craft"));
+        writeFileSync(join(evidenceDir, "answer.txt"), `${attached.answer}\n`);
+        const list = attached.uses.findIndex((u) => u.name === "mcp__lhc__membank_list");
+        const get = attached.uses.findIndex((u, i) => i > list && u.name === "mcp__lhc__membank_get" && u.input?.id === "L1");
+        assert(list >= 0, `no mcp__lhc__membank_list call: ${JSON.stringify(attached.uses.map((u) => u.name))}`);
+        assert(MEMBANK_SEED.every(([, title]) => attached.uses[list].result.includes(title)), `membank_list answered: ${attached.uses[list].result}`);
+        assert(get > list, `no mcp__lhc__membank_get call for L1 after the list: ${JSON.stringify(attached.uses.map((u) => [u.name, u.input]))}`);
+        assert(attached.uses[get].result.includes(`title ${MEMBANK_SEED[0][1]}`) && attached.uses[get].result.includes(MEMBANK_SEED[0][3]), `membank_get L1 answered: ${attached.uses[get].result}`);
+        assert(attached.answer.includes(MEMBANK_SEED[0][1]), `the answer does not quote L1's title: ${attached.answer}`);
+        const captured = capturedToolCalls(scratch).map((p) => JSON.stringify(p));
+        assert(captured.some((p) => p.includes("mcp__lhc__membank_list")) && captured.some((p) => p.includes("mcp__lhc__membank_get")), "the LHC thread did not capture both membank tool calls");
+        const timings = attached.s.stderr.flatMap((l) => /membank_get \S+ answered in ([\d.]+) ms/.exec(l)?.[1] ?? []).map(Number);
+        assert(timings.length > 0 && timings.every((ms) => ms <= 100), `membank_get handler times ${timings.join(",")} ms (bar 100 ms per call)`);
+
+        const unattached = await ask("unattached", socketPath, null);
+        writeFileSync(join(evidenceDir, "unattached.txt"), [...unattached.uses.map((u) => `${u.name} ${JSON.stringify(u.input)} -> ${u.result}`), "", unattached.answer, ""].join("\n"));
+        const membankUses = unattached.uses.filter((u) => u.name.startsWith("mcp__lhc__membank_"));
+        assert(membankUses.length > 0 && membankUses.every((u) => u.result === NOT_ATTACHED), `unattached membank answers: ${JSON.stringify(membankUses)}`);
+        assert(MEMBANK_SEED.every(([, title]) => !unattached.answer.includes(title)), `the unattached answer names a seeded item: ${unattached.answer}`);
+        assert(/(not|n['’]t) attached/i.test(unattached.answer), `the unattached answer does not report the missing membank: ${unattached.answer}`);
+        return `attached: ${attached.uses.map((u) => u.name.replace("mcp__lhc__", "")).join(" > ")}, membank_get ${timings.join("/")} ms, answer quotes "${MEMBANK_SEED[0][1]}"; unattached: ${membankUses.length} call(s) answered "${NOT_ATTACHED}"`;
+      });
+    } finally {
+      for (const s of sidecars) if (s.exitCode === undefined) await s.stop();
+      mkdirSync(evidenceDir, { recursive: true });
+      for (const s of sidecars) s.saveEvidence(evidenceDir);
+      writeFileSync(join(evidenceDir, "transcript.jsonl"), sidecars.flatMap((s) => s.frames.map((f) => JSON.stringify({ sidecar: s.label, ...f }))).join("\n") + "\n");
+      scratch.cleanup();
+    }
   },
 
   async "compact-policy"(evidenceDir) {
@@ -1472,7 +1654,10 @@ const drives = {
         `const usage = await q.getContextUsage();`,
         `q.close();`,
         `for await (const _ of q) {}`,
-        `process.stdout.write(JSON.stringify({ entry: import.meta.resolve("claude-lhc"), created: /created thread \\S+/.exec(stderr.join(""))?.[0] ?? null, window: usage?.rawMaxTokens ?? null }));`,
+        `const absent = { socketPath: cwd + "/absent.sock" };`,
+        `const m = query({ prompt: { async *[Symbol.asyncIterator]() { await new Promise(() => {}); } }, options: { cwd, model: "claude-sonnet-5", pathToClaudeCodeExecutable: process.env.CLAUDE_BIN ?? "claude", env: { ...process.env, CLAUDE_CONFIG_DIR: claudeHome }, stderr: () => {}, lhc: { home: lhcHome, compact: { trigger: 700000, target: 140000 }, membase: absent } } });`,
+        `const membaseError = await (async () => { try { for await (const _ of m) {} return null; } catch (e) { return e.message; } })();`,
+        `process.stdout.write(JSON.stringify({ entry: import.meta.resolve("claude-lhc"), created: /created thread \\S+/.exec(stderr.join(""))?.[0] ?? null, window: usage?.rawMaxTokens ?? null, membaseError }));`,
       ].join("\n"));
       const out = JSON.parse(run(process.execPath, ["check.mjs", scratch.cwd, scratch.lhcHome, scratch.claudeHome], project, { ...process.env, CLAUDE_LHC_NO_INFERENCE: "1" }));
       await until(() => scratchProcesses(scratch).length === 0, "the packed sidecar and its claude to exit after close()", 15_000);
@@ -1482,13 +1667,14 @@ const drives = {
       assert(!existsSync(join(project, "node_modules/claude-adapter")), "claude-adapter was installed beside the tarball instead of inside it");
       assert(out.created && typeof out.window === "number", `the packed query() did not start a thread and answer getContextUsage: ${JSON.stringify(out)}`);
       assert(scratch.threads().length === 1, `expected 1 thread file, got ${scratch.threads().length}`);
+      assert(out.membaseError?.startsWith("initLhc: membase handshake failed (membase_unreachable)"), `the packed query() with lhc.membase did not reach the membase handshake: ${out.membaseError}`);
       const installed = JSON.parse(readFileSync(join(project, "node_modules/claude-lhc/package.json"), "utf8"));
       assert(installed.sideEffects === false && installed.exports?.["./client"], `the installed manifest lacks sideEffects: false or ./client: ${JSON.stringify({ sideEffects: installed.sideEffects, exports: installed.exports })}`);
       const bundle = await bundleInstalledClient(project, evidenceDir);
       assert(bundle.forbidden.length === 0, `the installed claude-lhc/client bundles ${bundle.forbidden.join(", ")}`);
       const missing = CLIENT_EXPORTS.filter((name) => !bundle.exports.includes(name));
       assert(missing.length === 0, `the installed claude-lhc/client bundle does not export ${missing.join(", ")}`);
-      return `${basename(tarball)} installed in a scratch project; query() from its dist/index.js ran the default sidecar: ${out.created}, window ${out.window}; lhc and claude-adapter are bundled inside it; the installed claude-lhc/client bundles ${CLIENT_EXPORTS.join(", ")} with no lhc, effect, js-tiktoken or Agent SDK module`;
+      return `${basename(tarball)} installed in a scratch project; query() from its dist/index.js ran the default sidecar: ${out.created}, window ${out.window}; lhc and claude-adapter are bundled inside it; with lhc.membase at an absent socket it failed with membase_unreachable; the installed claude-lhc/client bundles ${CLIENT_EXPORTS.join(", ")} with no lhc, effect, js-tiktoken or Agent SDK module`;
     } finally {
       mkdirSync(evidenceDir, { recursive: true });
       writeFileSync(join(evidenceDir, "packed-install.log"), `${log.join("\n")}\n`);
@@ -1720,7 +1906,7 @@ async function main() {
   const which = process.argv[2] ?? "all";
   const names =
     which === "all"
-      ? ["start", "start-no-home", "compact", "compact-policy", "restart", "resume-superseded-alias", "resume-unknown", "resume-empty", "thread-start", "rollback", "rollback-unknown-anchor", "rollback-restart", "rollback-synthetic-anchor", "rollback-compact", "rollback-projected-anchor", "window-shrink", "compact-above-base", "controls", "controls-refused", "set-compact-policy", "fork", "history", "client-ops", "client", "turn", "rollback-live", "rollback-live-compact", "controls-live", "fork-live", "subagent-live", "prompt-order-live", "resume-cache-live", "consumer"]
+      ? ["start", "start-no-home", "compact", "compact-policy", "restart", "resume-superseded-alias", "resume-unknown", "resume-empty", "thread-start", "rollback", "rollback-unknown-anchor", "rollback-restart", "rollback-synthetic-anchor", "rollback-compact", "rollback-projected-anchor", "window-shrink", "compact-above-base", "controls", "controls-refused", "set-compact-policy", "membank-unreachable", "membank-tools", "fork", "history", "client-ops", "client", "turn", "rollback-live", "rollback-live-compact", "controls-live", "fork-live", "subagent-live", "prompt-order-live", "resume-cache-live", "membank-live", "consumer"]
       : [which];
   const summary = { evidence: EVIDENCE, startedAt: new Date().toISOString(), drives: {} };
   let failed = false;
@@ -1734,6 +1920,9 @@ async function main() {
       if (detail?.skip) {
         console.log(`VERIFY-CLAUDE-LHC ${name}: SKIP ${detail.skip}`);
         summary.drives[name] = { status: "skip", detail: detail.skip, ms: Date.now() - t0 };
+      } else if (detail?.partial) {
+        console.log(`VERIFY-CLAUDE-LHC ${name}: PARTIAL ${detail.partial} (${Date.now() - t0}ms)`);
+        summary.drives[name] = { status: "partial", detail: detail.partial, ms: Date.now() - t0 };
       } else {
         console.log(`VERIFY-CLAUDE-LHC ${name}: PASS ${detail} (${Date.now() - t0}ms)`);
         summary.drives[name] = { status: "pass", detail, ms: Date.now() - t0 };

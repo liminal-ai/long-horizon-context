@@ -57,7 +57,7 @@ import {
   projectView,
 } from "./projection/project.js";
 import { parseCompactPolicy, parseSidecarOptions, type SidecarRequestMethod, type WireOptions } from "./protocol.js";
-import { createRetrievalServer, RETRIEVAL_SERVER_NAME, RETRIEVAL_TOOL_NAMES } from "./retrieval.js";
+import { createRetrievalServer, lhcToolNames, RETRIEVAL_SERVER_NAME } from "./retrieval.js";
 import { appendRollback, type RollbackAnchor, resolveRollbackAnchor } from "./rollbackAnchor.js";
 import { abortSummaryWorkers } from "./summaryWorker.js";
 import {
@@ -227,6 +227,7 @@ export class ClaudeLhcSession {
   #windowRead: Promise<number | null> = Promise.resolve(null);
   #windowReads = 0;
   #forceRebuildFailure = false;
+  #membank = false;
   #tokenFamily: ResolvedTokenFamily = seedTokenFamilyFromStartModel("");
   #lastModelId: string | null = null;
   #closed = false;
@@ -271,7 +272,10 @@ export class ClaudeLhcSession {
     this.#tokenFamily = seedTokenFamilyFromStartModel(rest["model"]);
     this.#lastModelId = isRealModelId(rest["model"]) ? rest["model"] : null;
     this.#io.log(formatTokenFamilyLog(this.#tokenFamily, rest["model"]));
-    this.#lhc = createLhc({ claudeBin: this.#claudeBin, env: this.#env, tokenFamily: this.#tokenFamily.family });
+    const lhcOptions = { claudeBin: this.#claudeBin, env: this.#env, tokenFamily: this.#tokenFamily.family };
+    const { membase } = sidecarOptions;
+    this.#membank = membase !== undefined;
+    this.#lhc = membase === undefined ? createLhc(lhcOptions) : await createLhc({ ...lhcOptions, membase });
 
     if (typeof resume === "string" && resume !== "") {
       const threadId = await resolveSession(resume, this.#home);
@@ -485,7 +489,12 @@ export class ClaudeLhcSession {
 
   async #startGeneration(sessionId: string, extra: Partial<Options>): Promise<Generation> {
     const input = new InputQueue();
-    const retrieval = createRetrievalServer(this.#lhc, () => this.#thread);
+    const retrieval = createRetrievalServer(
+      this.#lhc,
+      () => this.#thread,
+      this.#membank ? { log: this.#io.log } : null,
+    );
+    const lhcTools = lhcToolNames(this.#membank);
     let gen: Generation | null = null;
     const options: Options = {
       ...(this.#base as Options),
@@ -495,9 +504,9 @@ export class ClaudeLhcSession {
       env: this.#env,
       pathToClaudeCodeExecutable: this.#claudeBin,
       mcpServers: { ...((this.#base as Options).mcpServers ?? {}), [RETRIEVAL_SERVER_NAME]: retrieval },
-      allowedTools: [...((this.#base as Options).allowedTools ?? []), ...RETRIEVAL_TOOL_NAMES],
+      allowedTools: [...((this.#base as Options).allowedTools ?? []), ...lhcTools],
       canUseTool: async (toolName, toolInput, callbackOptions) => {
-        if (RETRIEVAL_TOOL_NAMES.includes(toolName)) return { behavior: "allow", updatedInput: toolInput };
+        if (lhcTools.includes(toolName)) return { behavior: "allow", updatedInput: toolInput };
         const { signal, ...rest } = callbackOptions;
         return (await this.#io.request(
           "canUseTool",

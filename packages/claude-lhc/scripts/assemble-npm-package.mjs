@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -81,6 +81,9 @@ function bundle(root, manifest) {
 bundle(lhcRoot, lhcManifest);
 bundle(adapterRoot, adapterManifest);
 
+const contractRoot = realpathSync(join(lhcRoot, "node_modules", "@membase", "contract"));
+cpSync(contractRoot, join(outputRoot, "node_modules", "@membase", "contract"), { recursive: true });
+
 const { lhc: _workspaceLhc, "claude-adapter": _workspaceAdapter, ...thirdParty } = claudeManifest.dependencies;
 const manifest = {
   name: "claude-lhc",
@@ -95,9 +98,11 @@ const manifest = {
   exports: claudeManifest.exports,
   sideEffects: claudeManifest.sideEffects,
   files: ["bin", "dist", "README.md", "LICENSE"],
-  bundledDependencies: ["claude-adapter", "lhc"],
+  bundledDependencies: ["@membase/contract", "claude-adapter", "lhc"],
   dependencies: {
     ...thirdParty,
+    "@effect/platform-node": lhcManifest.dependencies["@effect/platform-node"],
+    "@membase/contract": lhcManifest.dependencies["@membase/contract"],
     effect: lhcManifest.dependencies.effect,
     "js-tiktoken": lhcManifest.dependencies["js-tiktoken"],
     "claude-adapter": version,

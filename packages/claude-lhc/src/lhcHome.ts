@@ -5,6 +5,8 @@ import {
   createDeterministicInferenceCallbacks,
   initLhc,
   type Lhc,
+  type MembaseConfig,
+  type SdkConfig,
   type ThreadAliasResolution,
   type ThreadRef,
   threads,
@@ -42,24 +44,23 @@ export interface LhcInstanceOptions {
   mode?: "background" | "manual";
 }
 
-export function createLhc(options: LhcInstanceOptions): Lhc {
+export function createLhc(options: LhcInstanceOptions & { membase: MembaseConfig }): Promise<Lhc>;
+export function createLhc(options: LhcInstanceOptions & { membase?: undefined }): Lhc;
+export function createLhc(options: LhcInstanceOptions & { membase?: MembaseConfig | undefined }): Lhc | Promise<Lhc> {
   const mode = options.mode ?? "background";
-  if (process.env.CLAUDE_LHC_NO_INFERENCE === "1") {
-    return initLhc({
-      mode,
-      inferenceCallbacks: createDeterministicInferenceCallbacks(),
-      tokenFamily: options.tokenFamily,
-    });
-  }
-  return initLhc({
-    mode,
-    inference: {
-      call: createSummaryWorkerModelCall({ claudeBin: options.claudeBin, env: options.env }),
-      assignments: summaryWorkerAssignments(),
-      timeoutMs: 90_000,
-    },
-    tokenFamily: options.tokenFamily,
-  });
+  const config: SdkConfig =
+    process.env.CLAUDE_LHC_NO_INFERENCE === "1"
+      ? { mode, inferenceCallbacks: createDeterministicInferenceCallbacks(), tokenFamily: options.tokenFamily }
+      : {
+          mode,
+          inference: {
+            call: createSummaryWorkerModelCall({ claudeBin: options.claudeBin, env: options.env }),
+            assignments: summaryWorkerAssignments(),
+            timeoutMs: 90_000,
+          },
+          tokenFamily: options.tokenFamily,
+        };
+  return options.membase === undefined ? initLhc(config) : initLhc({ ...config, membase: options.membase });
 }
 
 export async function createThread(cwd: string, home: string): Promise<string> {
