@@ -244,7 +244,6 @@ To install a source checkout for one host, follow the ordered setup guide:
 - [cc-lhc host](docs/onboard/05-host-cc-lhc.md)
 - [claude-lhc host](docs/onboard/06-host-claude-lhc.md)
 - [Project lexicon](docs/lexicon.md)
-- [Ethical framework](docs/ethical-framework.md)
 - [Release notes](docs/releases)
 
 ## License
