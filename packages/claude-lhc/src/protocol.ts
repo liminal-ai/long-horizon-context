@@ -33,8 +33,8 @@ import type { ControlMethod } from "./controls.js";
  * `lhc` block, which never reaches the SDK:
  *   lhc.home — the LHC store directory (registry and thread files). Required.
  *   lhc.compact — the compact policy a new thread stores. A resumed thread keeps its own.
- *   lhc.membase — { socketPath } of the machine's membase service. The sidecar passes it to
- *   initLhc and adds the membank tools to the lhc MCP server.
+ *   lhc.membase — { socketPath } of the machine's membase service. Its presence adds the
+ *   membank tools to the lhc MCP server.
  *   lhc.forceRebuildFailure — every compact rebuild throws before touching LHC
  *   (proof scripts exercise the failure path with a live model; never set by t3code).
  * `resumeSessionAt` is a host rollback to that message. The sidecar records it in LHC
