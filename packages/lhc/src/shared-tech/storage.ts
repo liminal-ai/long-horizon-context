@@ -13,11 +13,38 @@ export function openDatabase(path: string): DatabaseSync {
   const modeRow = db.prepare("PRAGMA journal_mode").get() as { journal_mode: string } | undefined;
   const mode = String(modeRow?.journal_mode ?? "").toLowerCase();
   if (mode !== "wal") {
-    db.exec("PRAGMA journal_mode = WAL;");
+    switchToWal(db);
   }
   db.exec("PRAGMA foreign_keys = ON;");
   db.exec("PRAGMA synchronous = NORMAL;");
   return db;
+}
+
+const SQLITE_BUSY = 5;
+const WAL_RETRY_PAUSE_MS = 10;
+
+// The WAL switch upgrades a read lock to a write lock, and SQLite returns
+// SQLITE_BUSY at once for that upgrade instead of calling the busy handler.
+function switchToWal(db: DatabaseSync): void {
+  const deadline = Date.now() + SQLITE_BUSY_TIMEOUT_MS;
+  let lastBusy: unknown = Object.assign(new Error("database is locked"), { errcode: SQLITE_BUSY });
+  try {
+    for (;;) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) throw lastBusy;
+      db.exec(`PRAGMA busy_timeout = ${remaining};`);
+      try {
+        db.exec("PRAGMA journal_mode = WAL;");
+        return;
+      } catch (error) {
+        if ((error as { errcode?: number }).errcode !== SQLITE_BUSY || Date.now() >= deadline) throw error;
+        lastBusy = error;
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, WAL_RETRY_PAUSE_MS);
+      }
+    }
+  } finally {
+    db.exec(`PRAGMA busy_timeout = ${SQLITE_BUSY_TIMEOUT_MS};`);
+  }
 }
 
 export function databasePathFor(db: DatabaseSync): string | undefined {
