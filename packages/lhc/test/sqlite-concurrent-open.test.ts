@@ -1,8 +1,9 @@
 import { once } from "node:events";
+import { DatabaseSync } from "node:sqlite";
 import { Worker } from "node:worker_threads";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeterministicInferenceCallbacks, initLhc, type Lhc, retrieval } from "../src/index.js";
-import { openDatabase } from "../src/shared-tech/storage.js";
+import { openDatabase, SQLITE_BUSY_TIMEOUT_MS } from "../src/shared-tech/storage.js";
 import { o200k, type TempStore, tempStore, validEvent, withEstimator } from "./fixtures/index.js";
 
 describe("sqlite concurrent capture + retrieval", () => {
@@ -113,5 +114,20 @@ describe("openDatabase on a fresh file another connection is writing", () => {
     await once(writer, "exit");
 
     expect(mode.journal_mode).toBe("wal");
+  });
+
+  it("fails with SQLITE_BUSY without another WAL attempt once the budget is spent", () => {
+    const path = store.threadPath("spent-budget");
+    let reads = 0;
+    const spy = vi.spyOn(Date, "now").mockImplementation(() => (++reads === 1 ? 0 : SQLITE_BUSY_TIMEOUT_MS));
+    try {
+      expect(() => openDatabase(path)).toThrow(expect.objectContaining({ errcode: 5 }));
+    } finally {
+      spy.mockRestore();
+    }
+    const db = new DatabaseSync(path);
+    const mode = db.prepare("PRAGMA journal_mode").get() as { journal_mode: string };
+    db.close();
+    expect(mode.journal_mode).not.toBe("wal");
   });
 });
