@@ -38,7 +38,7 @@ expect() {
 }
 screen() { tmux kill-session -t "=$session" 2>/dev/null; tmux new-session -d -s "$session" -x 80 -y 8 "printf '%s\n' '$1'; exec sleep 120"; }
 capture() { node "$here/capture.mjs" --session "$session" --step probe --wait-for "$2" --checkout "$1" --side "$3" "$4"; }
-publish() { node "$here/publish.mjs" --pr "$pr" --title "probe" "$@"; }
+publish() { node "$here/publish.mjs" --pr "$pr" "$@"; }
 
 echo "| Case | Expected | Actual |" | tee "$probe_dir/table.md"
 echo "| --- | --- | --- |" | tee -a "$probe_dir/table.md"
