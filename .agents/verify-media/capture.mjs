@@ -5,14 +5,16 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { pathToFileURL } from "node:url";
-import { paneScreen, plainText, renderPng } from "./term-png.mjs";
+import { encodeMp4, paneScreen, plainText, recordFrames, renderPng } from "./term-png.mjs";
 
 const USAGE = `usage: capture.mjs --checkout <dir> --session <tmux session> --side base|head --step <name>
-                  [--wait-for <text>] <run dir>
+                  [--wait-for <text>] [--record <seconds>] <run dir>
   Captures the tmux session's screen into <run dir>/<side>/<step>.png, with the pane text beside it as <step>.txt
   and the commit of <dir> (the checkout whose build the pane runs) and whether it had uncommitted changes as
-  <step>.json, with the side's run id and the sha256 of the PNG and the text. --wait-for waits up to 15 s for <text> on screen and fails without it. Refuses, and writes
-  nothing, when the pane text holds a token-shaped string.
+  <step>.json, with the side's run id and the sha256 of the PNG and the text. --wait-for waits up to 15 s for <text>
+  on screen and fails without it. --record records the screen for <seconds> instead, while you drive it from another
+  shell, into <step>.mp4, with the text of every frame in <step>.txt. Refuses, and writes nothing, when the pane text
+  (any frame's, for a recording) holds a token-shaped string.
   Capture the same steps on base and head; publish.mjs pairs them by step name.`;
 
 /** Strings that look like a credential. A capture holding one is never written, so it can never be published. */
@@ -62,12 +64,22 @@ function main() {
       side: { type: "string" },
       step: { type: "string" },
       "wait-for": { type: "string" },
+      record: { type: "string" },
       help: { type: "boolean", default: false },
     },
     allowPositionals: true,
   });
   const { checkout, session, side, step } = values;
-  if (values.help || !checkout || !session || !step || positionals.length !== 1 || !["base", "head"].includes(side)) {
+  const seconds = values.record === undefined ? null : Number(values.record);
+  if (
+    values.help ||
+    !checkout ||
+    !session ||
+    !step ||
+    positionals.length !== 1 ||
+    !["base", "head"].includes(side) ||
+    (seconds !== null && !(seconds > 0 && seconds <= 120))
+  ) {
     console.error(USAGE);
     process.exit(values.help ? 0 : 2);
   }
@@ -84,7 +96,10 @@ function main() {
     }
     execFileSync("sleep", ["0.2"]);
   }
-  const text = plainText(screen.ansi);
+  const recording = seconds === null ? null : recordFrames(session, seconds);
+  const text = recording
+    ? recording.frames.map((f, i) => `--- frame ${i} at +${f.at - recording.frames[0].at} ms ---\n${plainText(f.ansi)}`).join("\n")
+    : plainText(screen.ansi);
   const token = tokenShaped(text);
   if (token) {
     console.error(
@@ -96,12 +111,15 @@ function main() {
   const commit = commitOf(resolve(checkout));
   const dir = join(resolve(positionals[0]), side);
   mkdirSync(dir, { recursive: true });
-  const png = join(dir, `${step}.png`);
-  renderPng(screen, png);
+  const kind = recording ? "mp4" : "png";
+  const media = join(dir, `${step}.${kind}`);
+  if (recording) encodeMp4(recording, media);
+  else renderPng(screen, media);
   writeFileSync(join(dir, `${step}.txt`), text);
-  const meta = { step, side, run: runIdOf(dir), ...commit, png: sha256(readFileSync(png)), text: sha256(text) };
+  const meta = { step, side, run: runIdOf(dir), ...commit, [kind]: sha256(readFileSync(media)), text: sha256(text) };
   writeFileSync(join(dir, `${step}.json`), `${JSON.stringify(meta, null, 2)}\n`);
-  console.log(`capture: ${join(dir, `${step}.png`)} at ${commit.sha}${commit.dirty ? " (dirty)" : ""}`);
+  const frames = recording ? `, ${recording.frames.length} frames over ${seconds} s` : "";
+  console.log(`capture: ${media} at ${commit.sha}${commit.dirty ? " (dirty)" : ""}${frames}`);
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1]).href) main();
