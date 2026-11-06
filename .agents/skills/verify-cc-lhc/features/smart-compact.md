@@ -45,11 +45,13 @@ Preconditions:
   `pre-launch Smart Compact rebuilt:`. The seeded codeword in the new
   transcript is a `NOTE:` when missing, not a failure. When a new
   transcript exists, the drive saves it as `compact-rebuilt.jsonl` beside
-  the session it was rebuilt from (`compact-source.jsonl`) and grades it
-  with the content check below. If the seam does
-  not fire the drive exits 3 with `SKIP:` and the last `wrapper.log`
-  signal, the `pre-launch seam` line when there is one — that is a
-  recorded gap, never a pass. A failed precondition step exits 1, never 3.
+  the session it was rebuilt from (`compact-source.jsonl`), saves the
+  canonical session view as `compact-view.json`, and grades all three
+  with the content check below. A view it cannot read is a failure. If
+  the seam does not fire the drive exits 3 with `SKIP:` and the last
+  `wrapper.log` signal, the `pre-launch seam` line when there is one —
+  that is a recorded gap, never a pass. A failed precondition step exits
+  1, never 3.
 - **Manual panel (live only).** With throwaway-HOME Claude auth (see the
   live section of [`../SKILL.md`](../SKILL.md)), launch interactively in
   tmux and get past the welcome panel per
@@ -60,38 +62,72 @@ Preconditions:
   `.claude/projects`, `wrapper.log` lines `cc-lhc handoff switch
   (compact): <old> -> <new>` and `cc-lhc handoff success (compact)`, and
   the content check below passes with `--source <old>.jsonl --rebuilt
-  <new>.jsonl`. List the `.jsonl` files before and after the compact to
+  <new>.jsonl` and the view from `node helpers/read-seam-view.mjs
+  --cc-lhc-home <throwaway HOME>/.cc-lhc --rebuilt <new>.jsonl --out
+  view.json`. List the `.jsonl` files before and after the compact to
   tell old from new. Without throwaway auth: `SKIP:` with reason.
 - **Rebuilt-content check (outcome).** Run
   `node helpers/check-rebuilt-content.mjs --source OLD.jsonl --rebuilt
-  NEW.jsonl`. It grades the rebuilt prefix, the lines before the last
-  `[runtime note]`. Whatever follows that note is the resumed child's own
-  output. It compares one text block at a time on both sides, because
-  the writer emits one assistant line per block, and it drops
-  `[runtime note]` lines on both sides. The product renders every source
-  entry before its compact point as `[context · …]` blocks and copies
-  the rest verbatim, so the other entries must be an exact, in-order
-  suffix of the source, and any source entries left out need at least
-  one context block. It fails with `entry not in source` (for example, a
-  CLI `<system-reminder>` in front of a prompt), `entry duplicated`,
-  `differs from source tail`, `history lost`, or `user entry kept
-  verbatim and also inside a compacted block`. The transcript's context
-  blocks carry no record of which turns they cover, so that last one
-  fires only when the retained prompt's text appears in a block and in
-  no compacted source entry. Prints `OK …` and exits 0 on a clean
-  rebuild.
+  NEW.jsonl --view VIEW.json`. It grades the rebuilt prefix, the lines
+  before the last `[runtime note]`, which is the receipt. Whatever
+  follows the receipt is the resumed child's own output. Two oracles
+  cover the prefix, and it must satisfy both.
+  - **The canonical session view.** The writer renders the session
+    view, `[context · …]` blocks and then the retained entries, straight
+    to disk at the seam. No hook exposes it there, so
+    `helpers/read-seam-view.mjs` rereads it from the thread store in
+    `CC_LHC_HOME` afterwards. It finds the thread that ingested the
+    receipt line, by the receipt's uuid, and keeps the entries before
+    it. Each entry carries the kinds of the messages behind it. The
+    check renders the view with the production writer
+    (`buildRolloutLines`) and compares it with the prefix line for line.
+    A missing, extra, changed or reordered context block fails with
+    `context blocks: rebuilt has N, the canonical view has M` or
+    `context block N differs from the canonical view`. Any other
+    difference, including a dropped runtime note or tool line, fails
+    with `rebuilt line N differs from the writer's render of the
+    canonical view`.
+  - **The source transcript.** The check reads the source's real
+    records (`user`, `assistant` and `summary` lines) through the
+    intake's own `mapRolloutLine`, so it drops chrome and joins user
+    text blocks exactly as intake does. It reads the prefix's retained
+    lines the same way, skipping the leading context blocks and any
+    `[compact continuation]` line whose view entry comes from a typed
+    `compact_continuation_marker`. Runtime notes are not conversation on
+    either side. The retained conversation must be an exact, in-order
+    suffix of the source's conversation. Otherwise the check fails with
+    `entry not in source`, `entry duplicated` or `differs from source
+    tail`. This oracle catches what intake itself got wrong, which the
+    view carries forward. LH-245 is the live case.
+  - **What it cannot see.** It trusts LHC's band text. It proves the
+    file holds the bands LHC rendered, not that a band summarizes its
+    turns faithfully. It assumes no compact or prune ran on the thread
+    between the seam and the view read. A later one replaces the bands
+    and the check false-fails, so read the view before compacting
+    again. The source
+    oracle compares text blocks only. Tool calls, tool results and
+    thinking are graded only against the view, so an intake error in
+    those is invisible. A `[compact continuation]` line passes only
+    when the view holds the typed marker. A user prompt with the same
+    text is graded against the source.
+  - Prints `OK view_lines=… context=… retained=… source=…` and exits 0
+    on a clean rebuild.
 - **Broken-case probe.** `helpers/probe-checks.sh` runs the seeded drive,
-  then feeds the check copies of its rebuilt transcript with a
-  reminder-prefixed duplicate prompt, an exact duplicate, an injected
-  assistant notice, a reordered pair, a turn both compacted and kept
-  verbatim, only the runtime note, and the context blocks removed. Each
-  must fail with its reason, and the unmodified copy must pass. Three
-  more good cases must pass: a short retained prompt (`yes`) that also
-  appears inside an older turn's compacted answer, a source holding an
-  earlier compact receipt rebuilt unchanged with a new one, and a
-  two-text-block assistant reply sent through the built intake, view
-  and writer by `helpers/roundtrip-multiblock.mjs`. Results go to
-  `probe/` in the evidence dir.
+  then feeds the check copies of its rebuilt transcript, with its real
+  view, that hold a reminder-prefixed duplicate prompt, an exact
+  duplicate, an injected assistant notice, a reordered pair, a retained
+  prompt appended to a context block, only the runtime note, no context
+  blocks, one of the two context blocks removed, and one block's text
+  altered. Each must fail with its reason, and the unmodified copy must
+  pass. `helpers/roundtrip.mjs` then sends small cases through the built
+  intake, compact, view and writer. Six must pass: a short retained
+  prompt (`yes`) that also appears inside the older turn's compacted
+  answer, a source holding an earlier compact receipt, a two-text-block
+  assistant reply, a two-text-block user prompt, local slash-command
+  records and a synthetic `No response requested.` between two turns,
+  and a typed continuation marker. The compacted `yes` case with `yes`
+  injected into its context block must fail. Results go to `probe/` in
+  the evidence dir.
 - **Carried work (live only).** Ask Claude to start a background shell
   (`sleep 25 && echo <marker>`), compact, wait, and send a prompt that
   asks for its output. Grade the marker in Claude's answer and the
