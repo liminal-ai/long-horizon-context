@@ -90,13 +90,15 @@ A user who wants to see their threads starts at the threads domain. `listThreads
 
 ### Copying, forking, and repairing threads
 
-The threads domain also carries the cross-home operations (`threads/fork.ts`). `copyThread` copies a thread file into another home and registry, optionally under a new id. `bindHost` binds the copy to a session id on the target host. `writeIdentityNote` records where the copy came from. `repairDerivations` re-derives failed derivations under a named token family. `exportHistory` returns the thread's history in a portable shape. `adoptThreadCopy` copies a thread file into a registry under its original id, opening the source read-only and without requiring the source to be idle. `discardCopy` removes a copy's registry row and deletes its file, and refuses a copy that is already bound to a host alias. The `lhc thread` command line (`copy`, `bind`, `note`, `health`, `repair`, `export`, `fork`) composes these operations. A fork between hosts on different providers compacts the copy under the `handoff` profile, so no closed turn survives raw and the target host never renders the source host's tool blocks.
+The threads domain also carries the cross-home operations (`threads/fork.ts`). `copyThread` copies a thread file into another home and registry, optionally under a new id. `bindHost` binds the copy to a session id on the target host. `writeIdentityNote` records where the copy came from. `repairDerivations` re-derives failed derivations under a named token family. `exportHistory` returns the thread's history in a portable shape. `discardCopy` removes a copy's registry row and deletes its file, and refuses a copy that is already bound to a host alias. The `lhc thread` command line (`copy`, `bind`, `note`, `health`, `repair`, `export`, `fork`) composes `copyThread`, `bindHost`, `writeIdentityNote`, `repairDerivations` and `exportHistory`. A fork between hosts on different providers compacts the copy under the `handoff` profile, so no closed turn survives raw and the target host never renders the source host's tool blocks. claude-lhc's fork calls `discardCopy` to remove its copy when the fork fails partway.
+
+`adoptThreadCopy` (`threads/index.ts`) copies a thread file into a registry under its original id. It opens the source read-only and does not require the source to be idle. It is `copyThread` with the id kept and no idle check.
 
 ### Per-thread compact policy
 
-A thread can carry its own compact policy: a `trigger` and a `target`, both in tokens. `setCompactPolicy` stores it in the thread file's metadata row. It refuses a trigger or target that is not a positive integer, and a target at or above the trigger, with `invalid_compact_policy`. `getCompactPolicy` returns the stored policy, or `null` when none has been set. Thread schema v14 added the two columns (`migrateCompactPolicyV14` in `shared-tech/thread-migrate.ts`), so a thread migrated from v13 reads `null` until a host sets one.
+A thread can carry its own compact policy: a `trigger` and a `target`, both in tokens. `setCompactPolicy` writes it to the thread file's metadata row, replacing any stored pair on every call. It refuses a trigger or target that is not a positive integer, and a target at or above the trigger, with `invalid_compact_policy`. `getCompactPolicy` returns the stored policy, or `null` when none has been set. Thread schema v14 added the two columns (`migrateCompactPolicyV14` in `shared-tech/thread-migrate.ts`), so a thread migrated from v13 reads `null` until a host sets one.
 
-LHC stores the policy and never acts on it. The host owns the trigger decision. claude-lhc stores its configured policy on a thread's first run, then on resume reads the thread's stored policy back in place of its own setting.
+LHC stores the policy and never acts on it. The host owns the trigger decision. claude-lhc stores the start options' pair when it creates a thread. On every resume it reads the thread's policy. A stored pair wins over the start options, and when none is stored it stores the start options' pair. Its `setCompactPolicy` control overwrites the stored pair.
 
 ## Intake stream
 
@@ -238,7 +240,7 @@ The messages domain lists and shows messages for a thread. It is the lowest-leve
 
 Reads surface stored state. They never repair, derive, or block on missing work.
 
-Thread-view reads live messages inside its own read transaction through `messages.readLiveMessages(db)`. It takes an open database handle rather than a `ThreadRef` and returns the non-deleted messages in record order.
+`messages.readLiveMessages(db)` returns the non-deleted messages in record order from an open database handle. Its only caller is thread-view's legacy compact algorithm (`LHC_COMPACT_ALGORITHM=legacy`). The default bounded algorithm and the session view read messages with their own queries.
 
 ```mermaid
 sequenceDiagram
