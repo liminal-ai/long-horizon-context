@@ -38,7 +38,16 @@ export type ErrorCode =
   | "unsettled_capture_seam"
   | "forced_boundary_thread"
   | "compact_continuation_parts_thread"
-  | "invalid_compact_policy";
+  | "invalid_compact_policy"
+  | "membank_not_configured"
+  | "invalid_membank_input"
+  | "not_attached"
+  | "already_attached"
+  | "bank_not_found"
+  | "item_not_found"
+  | "membase_unreachable"
+  | "membase_unavailable"
+  | "membase_version_mismatch";
 
 export interface ErrorResult {
   errorClass: ErrorClass;

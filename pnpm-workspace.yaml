@@ -8,6 +8,14 @@ allowBuilds:
 
 overrides:
   effect: "file:vendor/npm/effect-4.1.2.tgz"
+  "@effect/platform-node": "file:vendor/npm/effect-platform-node-4.1.2.tgz"
+  "@effect/platform-node-shared": "file:vendor/npm/effect-platform-node-shared-4.1.2.tgz"
+  "@membase/contract": "file:vendor/membase/membase-contract-0.1.0.tgz"
+  "@types/ws": "file:vendor/npm/types-ws-8.18.2.tgz"
+  undici: "file:vendor/npm/undici-8.12.3.tgz"
+  ws: "file:vendor/npm/ws-8.22.1.tgz"
+  # lhc's membase client uses @effect/platform-node's HTTP client only, never its redis layer.
+  "@effect/platform-node>redis": "-"
   # claude-lhc: the sidecar drives the Claude Code binary t3code points it at
   # (pathToClaudeCodeExecutable); the SDK's bundled platform binaries are not installed.
   "@anthropic-ai/claude-agent-sdk>@anthropic-ai/claude-agent-sdk-darwin-arm64": "-"

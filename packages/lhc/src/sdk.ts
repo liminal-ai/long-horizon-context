@@ -13,12 +13,15 @@ export * as turns from "./turns/index.js";
 import * as compactContinuationDomain from "./compact-continuation/index.js";
 import * as inspectDomain from "./inspect/index.js";
 import * as intakeStreamDomain from "./intake-stream/index.js";
+import { type MembankSurface, type MembaseConfig, membankSurface } from "./membank/index.js";
+import type { MembaseConnection } from "./membank/internal/client.js";
 import * as messagesDomain from "./messages/index.js";
 import { dispatchMessageDeriveWork } from "./messages/internal/derive.js";
 import { messageWorkHandlers } from "./messages/internal/handlers.js";
 import * as retrievalDomain from "./retrieval/index.js";
 import type {
   CompactReceipt,
+  ErrorCode,
   ErrorResult,
   HostMetadata,
   LlmRequestContext,
@@ -84,6 +87,14 @@ export type {
   EventRecord,
   MessageEventInput,
 } from "./intake-stream/index.js";
+export type {
+  MembankAttachment,
+  MembankItem,
+  MembankItemKind,
+  MembankItemSummary,
+  MembankSurface,
+  MembaseConfig,
+} from "./membank/index.js";
 export type {
   Block,
   BlockType,
@@ -392,7 +403,7 @@ export interface LoggingSurface {
 }
 
 export type IntakeStreamSurface = typeof intakeStreamDomain & {
-  initLhc(config: SdkConfig): Lhc;
+  initLhc: typeof initLhc;
 };
 
 export interface Lhc {
@@ -404,6 +415,7 @@ export interface Lhc {
   threadView: ThreadViewSurface;
   compactContinuation: typeof compactContinuationDomain;
   inspect: typeof inspectDomain;
+  membank: MembankSurface;
   logging: LoggingSurface;
   config: ResolvedSdkConfig;
   scheduler: Scheduler;
@@ -563,7 +575,34 @@ function resolveInferenceCallbacks(
   });
 }
 
-export function initLhc(config: SdkConfig): Lhc {
+export class MembaseHandshakeError extends Error {
+  override readonly name = "MembaseHandshakeError";
+  readonly code: ErrorCode;
+
+  constructor(error: ErrorResult) {
+    super(`initLhc: membase handshake failed (${error.code}): ${error.reason}`);
+    this.code = error.code;
+  }
+}
+
+async function initLhcWithMembase(config: SdkConfig, membase: MembaseConfig): Promise<Lhc> {
+  if (typeof membase?.socketPath !== "string" || membase.socketPath.trim() === "") {
+    throw new TypeError(`${INIT_CONFIG_PREFIX}: membase.socketPath must be a non-empty string`);
+  }
+  const { connectMembase, handshake } = await import("./membank/internal/client.js");
+  const connection = connectMembase(membase.socketPath);
+  const health = await handshake(connection);
+  if (!health.ok) throw new MembaseHandshakeError(health.error);
+  return buildLhc(config, connection);
+}
+
+export function initLhc(config: SdkConfig & { membase: MembaseConfig }): Promise<Lhc>;
+export function initLhc(config: SdkConfig & { membase?: undefined }): Lhc;
+export function initLhc(config: SdkConfig & { membase?: MembaseConfig | undefined }): Lhc | Promise<Lhc> {
+  return config.membase === undefined ? buildLhc(config, null) : initLhcWithMembase(config, config.membase);
+}
+
+function buildLhc(config: SdkConfig, membase: MembaseConnection | null): Lhc {
   if (config.inferenceCallbacks !== undefined && config.inference !== undefined) {
     throw new TypeError(`${INIT_CONFIG_PREFIX}: exactly one of inferenceCallbacks or inference`);
   }
@@ -781,6 +820,7 @@ export function initLhc(config: SdkConfig): Lhc {
     ),
     compactContinuation: scopeSurface(compactContinuationDomain, seam),
     inspect: scopeSurface(inspectDomain, seam),
+    membank: scopeSurface(membankSurface(membase), seam),
     logging,
     config: resolved,
     scheduler,
