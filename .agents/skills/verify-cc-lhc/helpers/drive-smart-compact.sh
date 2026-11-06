@@ -37,6 +37,20 @@ if [ -n "$NEW_FILES" ]; then
   echo "$NEW_FILES" | head -1 | xargs -I{} sh -c 'grep -lq "'"$CODEWORD"'" "{}"' \
     && pass "compacted session still carries seeded history" \
     || note "codeword not in first new transcript; inspect evidence"
+  SOURCE="$(grep "/$SID.jsonl\$" "$EVIDENCE_DIR/compact-before.txt")"
+  cp "$SOURCE" "$EVIDENCE_DIR/compact-source.jsonl"
+  echo "$NEW_FILES" | head -1 | xargs -I{} cp {} "$EVIDENCE_DIR/compact-rebuilt.jsonl"
+  if ! node "$SKILL_DIR/helpers/read-seam-view.mjs" --cc-lhc-home "$ISO_HOME/.cc-lhc" \
+    --rebuilt "$EVIDENCE_DIR/compact-rebuilt.jsonl" --out "$EVIDENCE_DIR/compact-view.json" \
+    >"$EVIDENCE_DIR/compact-view.txt" 2>&1; then
+    fail "canonical session view not read: $(tr '\n' ' ' <"$EVIDENCE_DIR/compact-view.txt")"
+    finish smart-compact; exit 1
+  fi
+  node "$SKILL_DIR/helpers/check-rebuilt-content.mjs" --source "$EVIDENCE_DIR/compact-source.jsonl" \
+    --rebuilt "$EVIDENCE_DIR/compact-rebuilt.jsonl" --view "$EVIDENCE_DIR/compact-view.json" \
+    >"$EVIDENCE_DIR/compact-content.txt" 2>&1 \
+    && pass "rebuilt transcript matches the canonical view and the source ($(head -1 "$EVIDENCE_DIR/compact-content.txt"))" \
+    || fail "rebuilt transcript loses, changes or duplicates content: $(tr '\n' ' ' <"$EVIDENCE_DIR/compact-content.txt")"
   finish smart-compact; exit $?
 fi
 if [ "$RC" = "0" ] && grep -q "pre-launch Smart Compact rebuilt:" "$EVIDENCE_DIR/smart-compact-wrapper.log" 2>/dev/null; then

@@ -30,6 +30,8 @@ Isolation facts, from the code (read them before driving):
 - `CC_LHC_CLAUDE_BIN` overrides the child binary. Seeded drives point it at
   the repo's stand-in, `packages/cc-lhc/test/fixtures/oneshot-claude.mjs` —
   the production boundary where cc-lhc already isolates the closed binary.
+  The capture drive wraps it in `helpers/capture-bound-claude.mjs`, which
+  stays up until capture binds, so the one-shot is actually ingested.
   That proves wrapper behavior; it does not prove a real Claude launch.
 - Never use the operator's real `~/.claude`, `~/.cc-lhc`, credentials, or
   production data. Helpers refuse to run without a throwaway HOME.
@@ -88,7 +90,14 @@ Seeded drives (each prints `VERIFY-CC-LHC <name>: PASS`):
 .agents/skills/verify-cc-lhc/helpers/drive-rebuild.sh       # rollout write -> --resume the rebuilt session
 .agents/skills/verify-cc-lhc/helpers/drive-smart-compact.sh # forced-bounds one-shot Smart Compact (may SKIP, exit 3)
 .agents/skills/verify-cc-lhc/helpers/run-seeded-drives.sh   # all of the above, timed; 10-minute budget together
+.agents/skills/verify-cc-lhc/helpers/probe-checks.sh        # broken-case probes: capture and rebuilt-content checks must fail on broken input
 ```
+
+`probe-checks.sh` is not part of the seeded set. Run it whenever a
+capture or Smart Compact assertion, or a helper they use, changes. It
+writes each case's output under `probe/` in the evidence dir and prints
+`VERIFY-CC-LHC probe-checks: PASS` only when every broken case fails for
+its named reason and every good case passes.
 
 `drive-rebuild.sh` and `drive-smart-compact.sh` seed their precondition
 with `helpers/seed-thread.mjs` (an LHC thread with two settled text-only
@@ -180,6 +189,11 @@ All under `.agents/skills/verify-cc-lhc/helpers/`, all executable:
 | `helpers/drive-capture.sh` | `helpers/drive-capture.sh` | Scripted session capture drive |
 | `helpers/drive-rebuild.sh` | `helpers/drive-rebuild.sh` | Rebuild + resume drive |
 | `helpers/drive-smart-compact.sh` | `helpers/drive-smart-compact.sh` | Forced-bounds Smart Compact drive (exit 3 = SKIP with reason) |
+| `helpers/capture-bound-claude.mjs` | `CC_LHC_CLAUDE_BIN` for `drive-capture.sh` | Runs the repo stand-in, then waits for `cc-lhc capture ready` in `wrapper.log` |
+| `helpers/check-rebuilt-content.mjs` | `node helpers/check-rebuilt-content.mjs --source OLD.jsonl --rebuilt NEW.jsonl --view VIEW.json` | Fails when the rebuilt prefix differs from the writer's render of the canonical session view, or when its retained conversation is not the source's conversation suffix |
+| `helpers/read-seam-view.mjs` | `node helpers/read-seam-view.mjs --cc-lhc-home DIR --rebuilt NEW.jsonl --out VIEW.json` | Rereads the canonical session view a rebuild was rendered from, cut at its receipt |
+| `helpers/probe-checks.sh` | `helpers/probe-checks.sh` | Broken-case probes for the capture and rebuilt-content checks |
+| `helpers/roundtrip.mjs` | `node helpers/roundtrip.mjs <scratchDir> <outDir>` | Writes source, rebuilt and view for small cases sent through the built intake, compact, view and writer (`probe-checks.sh` cases) |
 | `helpers/seed-thread.mjs` | `node helpers/seed-thread.mjs <repoRoot> <ccLhcHome> <workDir> <codeword>` | Seed precondition thread via built `lhc` SDK |
 | `helpers/run-seeded-drives.sh` | `helpers/run-seeded-drives.sh` | All seeded drives timed, then cleanup |
 | `helpers/cleanup.sh` | `helpers/cleanup.sh` | Remove recorded temp HOMEs; keep evidence |
@@ -196,5 +210,5 @@ Every seeded drive runs `packages/cc-lhc/dist/bin.js` with the staged `cc-lhc-na
 
 - **Reruns every drive:** a change in `packages/cc-lhc/` or `packages/cc-lhc-native/` outside `test/` and Markdown, to `oneshot-claude.mjs`, or to `helpers/lib.sh`. When the brief routes a `packages/lhc` change or a root change here (the root `package.json`, `pnpm-workspace.yaml`, the lockfile, or the Node or pnpm version `.github/workflows/pr-checks.yml` pins), rerun every drive too. A rebase onto a trunk that changed any of these counts.
 - **Reruns `drive-rebuild.sh` and `drive-smart-compact.sh`:** a change to `helpers/seed-thread.mjs` or `test/fixtures/claude-2.1.226-model-fallback-sequence.jsonl`.
-- **Reruns one drive:** a change to its `drive-*.sh`.
+- **Reruns one drive:** a change to its `drive-*.sh`, to `capture-bound-claude.mjs` (`drive-capture.sh`), or to `check-rebuilt-content.mjs` or `read-seam-view.mjs` (`drive-smart-compact.sh`). Run `probe-checks.sh` too when the change touches an assertion in `drive-capture.sh` or `drive-smart-compact.sh`, `capture_ingested` in `lib.sh`, or any helper they or `probe-checks.sh` use.
 - **Carries:** the rerun rules above take precedence. A change only in packages the brief does not route here, or in other `packages/cc-lhc/test/` files, carries. Markdown that is test input, such as fixtures and goldens, follows the `test/` rules. Prose-only Markdown anywhere, top-level `docs/` and this skill included, carries only when it changes no lane's setup, actions, assertions, expected outcomes, evidence or cleanup. Any path no rule here names reruns every drive. `doctor.sh` and `link-check.mjs` always rerun.

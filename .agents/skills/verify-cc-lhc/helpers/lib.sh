@@ -34,6 +34,22 @@ fail() { echo "FAIL: $*"; echo "FAIL: $*" >>"$EVIDENCE_DIR/results.txt"; FAILURE
 skip() { echo "SKIP: $*"; echo "SKIP: $*" >>"$EVIDENCE_DIR/results.txt"; }
 note() { echo "NOTE: $*"; }
 
+summary_field() {
+  local tok toks
+  read -ra toks <<<"$1"
+  for tok in "${toks[@]}"; do
+    case "$tok" in "$2"=*) echo "${tok#*=}"; return ;; esac
+  done
+}
+
+# True when a cc-lhc-capture summary line reports lines>0 and events>0 into thread $2.
+capture_ingested() {
+  local lines events thread
+  lines="$(summary_field "$1" lines)"; events="$(summary_field "$1" events)"; thread="$(summary_field "$1" thread)"
+  [[ "$lines" =~ ^[0-9]+$ && "$events" =~ ^[0-9]+$ ]] && [ "$lines" -gt 0 ] && [ "$events" -gt 0 ] \
+    && [ -n "$2" ] && [ "$thread" = "$2" ]
+}
+
 make_isolation() {
   refuse_instruction_ancestors
   ISO_HOME="$(mktemp -d "$SCRATCH_DIR/verify-cc-lhc-home-XXXXXX")"
