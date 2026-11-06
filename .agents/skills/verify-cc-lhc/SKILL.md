@@ -129,7 +129,9 @@ Every drive appends `PASS:`/`FAIL:`/`SKIP:` lines to `results.txt`, saves
 its command log (`capture.log`, `rebuild.log`, …), its tmux pane capture
 (`<drive>-pane.txt`, the terminal transcript), the ISO `wrapper.log`, and
 the transcript JSONL it graded. `run-seeded-drives.sh` adds `timings.txt`
-(per-drive and total wall time; budget 600s together, warm).
+(per-drive and total wall time; budget 600s together, warm). Receipts in a
+verdict, a PR or a report cite files under `<run>/proof/` only, never a
+scratch dir.
 
 Proof standards:
 
@@ -192,7 +194,7 @@ Feature map: [features/README.md](features/README.md) indexes
 
 Every seeded drive runs `packages/cc-lhc/dist/bin.js` with the staged `cc-lhc-native` addon, `packages/lhc/dist`, and the stand-in `packages/cc-lhc/test/fixtures/oneshot-claude.mjs`.
 
-- **Reruns every drive:** a change in `packages/cc-lhc/`, `packages/cc-lhc-native/` or `packages/lhc/` outside `test/` and Markdown, to `oneshot-claude.mjs`, to the lockfile entries those packages resolve, or to `helpers/lib.sh`. A change to the root `package.json` or `pnpm-workspace.yaml`, or to the Node or pnpm version `.github/workflows/pr-checks.yml` pins, counts too. A rebase onto a trunk that changed any of these counts.
+- **Reruns every drive:** a change in `packages/cc-lhc/` or `packages/cc-lhc-native/` outside `test/` and Markdown, to `oneshot-claude.mjs`, or to `helpers/lib.sh`. When the brief routes a `packages/lhc` change or a root change here (the root `package.json`, `pnpm-workspace.yaml`, the lockfile, or the Node or pnpm version `.github/workflows/pr-checks.yml` pins), rerun every drive too. A rebase onto a trunk that changed any of these counts.
 - **Reruns `drive-rebuild.sh` and `drive-smart-compact.sh`:** a change to `helpers/seed-thread.mjs` or `test/fixtures/claude-2.1.226-model-fallback-sequence.jsonl`.
 - **Reruns one drive:** a change to its `drive-*.sh`.
-- **Carries:** a change only in `packages/claude-lhc` or `lhc-triage`, other `packages/cc-lhc/test/` files, or text in this skill and its `features/` that changes no lane's setup, actions, assertions, expected outcomes, evidence or cleanup. `doctor.sh` and `link-check.mjs` always rerun.
+- **Carries:** the rerun rules above take precedence. A change only in packages the brief does not route here, or in other `packages/cc-lhc/test/` files, carries. Markdown that is test input, such as fixtures and goldens, follows the `test/` rules. Prose-only Markdown anywhere, top-level `docs/` and this skill included, carries only when it changes no lane's setup, actions, assertions, expected outcomes, evidence or cleanup. Any path no rule here names reruns every drive. `doctor.sh` and `link-check.mjs` always rerun.

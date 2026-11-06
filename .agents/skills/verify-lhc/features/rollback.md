@@ -26,3 +26,10 @@ Exit 3 with `verify-lhc rollback: UNSUPPORTED (this build has no rollback event)
 - Rollback is hide-only. A second rollback can only hide more, and an anchor inside an already discarded stretch does not bring it back.
 - The open turn stays open through a rollback, even when every member is hidden. The next prompt joins it.
 - After a rollback behind the compact point, `threadView.describe` returns `null` until the next compact. That is the drop working, not a lost view.
+- Exports of two independently seeded threads differ only in `.threadId`, `.exportedAt` and each `.turns[].messages[].recordedAt`, because seeded turn and message ids (`t1`, `m1`, ...) are deterministic. To compare two seeded exports, delete exactly those three fields, never every `recordedAt` key recursively, keep the raw exports beside the normalized ones, and show that a content change still differs. A real thread's ids are not deterministic, so this recipe does not apply to it.
+
+  ```sh
+  norm='del(.threadId, .exportedAt, .turns[].messages[].recordedAt)'
+  jq -S "$norm" a.json > a.norm.json && jq -S "$norm" b.json > b.norm.json && diff a.norm.json b.norm.json
+  jq '.turns[0].messages[0].blocks[0].content.text += " CHANGED"' b.json | jq -S "$norm" | diff -q a.norm.json - >/dev/null && echo "FAIL: a content change no longer differs"
+  ```

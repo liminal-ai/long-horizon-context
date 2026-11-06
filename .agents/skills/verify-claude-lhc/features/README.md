@@ -17,6 +17,6 @@ convenient entry point is incomplete when this map lists others.
 | [Membank tools](membank.md) | `membank-unreachable`, `membank-tools` (+ live `membank-live`) | a failed membase handshake fails the start with one `error` frame; with `lhc.membase` the `lhc` server lists the two membank tools on every thread; an agent on an attached thread lists the bank and fetches an item, and on an unattached thread both tools answer `this thread is not attached to a membank` |
 | [Rollback-shaped start](rollback-shaped-start.md) | `resume-superseded-alias` | `start{resume: <superseded alias>}` resolves to the same thread and current served view — observed, not assumed |
 
-Run everything seeded: `../drive.mjs all` (from this directory:
-`../drive.mjs all`; from repo root:
-`.agents/skills/verify-claude-lhc/drive.mjs all`).
+Run everything seeded: `../drive.mjs seeded` (from this directory:
+`../drive.mjs seeded`; from repo root:
+`.agents/skills/verify-claude-lhc/drive.mjs seeded`).

@@ -18,9 +18,15 @@ function mainCheckout() {
 export const RUN_DIR = process.env.VERIFY_RUN_DIR ?? join(mainCheckout(), ".pstack", "runs", "verify-lhc");
 export const SCRATCH_ROOT = join(RUN_DIR, "scratch");
 
+class VerifyFailure extends Error {}
+
 export function fail(message) {
-  console.error(`FAIL: ${message}`);
-  process.exit(1);
+  throw new VerifyFailure(message);
+}
+
+export function reportFailure(error) {
+  console.error(`FAIL: ${error instanceof VerifyFailure ? error.message : (error?.stack ?? String(error))}`);
+  process.exitCode = 1;
 }
 
 export function unwrap(result, label) {

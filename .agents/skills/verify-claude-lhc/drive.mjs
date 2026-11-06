@@ -10,6 +10,7 @@ import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { LIVE, SEEDED } from "./drives.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(HERE, "../../..");
@@ -253,12 +254,19 @@ function membaseGate() {
   if (!repo) return { skip: "needs an installed membase checkout; set MEMBASE_REPO (see verify-membase's Launch)" };
   const lane = join(repo, ".agents/skills/verify-membase/scripts/lane.sh");
   if (!existsSync(lane)) return { skip: `MEMBASE_REPO has no ${lane}` };
-  return { repo, lane };
+  if (!existsSync(join(repo, "node_modules"))) return { skip: `MEMBASE_REPO ${repo} is not installed (no node_modules); install it there with scripts/offline-install.sh` };
+  let sha;
+  try {
+    sha = execFileSync("git", ["-C", repo, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+  } catch {
+    sha = "unknown (not a git checkout)";
+  }
+  return { repo, lane, sha };
 }
 
 async function withMembaseLane(scratch, evidenceDir, gate, run) {
   const dir = join(scratch.dir, "membase-lane");
-  const transcript = [];
+  const transcript = [`membase checkout ${gate.repo} at ${gate.sha}`];
   const sh = (command, args, env = {}) => {
     const out = execFileSync(command, args, { cwd: gate.repo, encoding: "utf8", env: { ...process.env, ...env }, stdio: ["ignore", "pipe", "pipe"] });
     transcript.push(`$ ${[command, ...args].join(" ")}\n${out}`);
@@ -283,6 +291,23 @@ async function withMembaseLane(scratch, evidenceDir, gate, run) {
     writeFileSync(join(evidenceDir, "membase.txt"), transcript.join("\n"));
     if (existsSync(join(dir, "service.log"))) writeFileSync(join(evidenceDir, "membase-service.log"), readFileSync(join(dir, "service.log")));
   }
+}
+
+async function membankP95(scratch, evidenceDir, socketPath) {
+  const [, title] = MEMBANK_SEED[0];
+  const child = spawn(process.execPath, [join(HERE, "membank-p95.mjs"), "--socket", socketPath, "--bank", "craft", "--id", "L1", "--title", title, "--dir", scratch.dir], { cwd: scratch.cwd, stdio: ["ignore", "pipe", "pipe"], detached: true });
+  scratch.groups.push(child.pid);
+  let stdout = "";
+  let stderr = "";
+  child.stdout.on("data", (c) => { stdout += c; });
+  child.stderr.on("data", (c) => { stderr += c; });
+  const code = await new Promise((r) => child.on("exit", r));
+  mkdirSync(evidenceDir, { recursive: true });
+  writeFileSync(join(evidenceDir, "handler-p95.json"), stdout);
+  if (stderr) writeFileSync(join(evidenceDir, "handler-p95.stderr.log"), stderr);
+  let result;
+  try { result = JSON.parse(stdout); } catch { result = { stdout, stderr }; }
+  return { code, result };
 }
 
 async function lhcTools(s, id) {
@@ -864,17 +889,18 @@ const drives = {
       assert(JSON.stringify(without) === JSON.stringify(["get_turns", "get_messages"]), `lhc tools without membase: ${without}`);
       const gate = membaseGate();
       if (gate.skip) return { partial: `lhc tools without membase: ${without.join(",")}; with membase SKIP: ${gate.skip}` };
-      const withTools = await withMembaseLane(scratch, evidenceDir, gate, async ({ socketPath }) => {
+      const { tools: withTools, p95 } = await withMembaseLane(scratch, evidenceDir, gate, async ({ socketPath }) => {
         const s = new Sidecar(scratch, "with-membase");
         sidecars.push(s);
         s.send({ type: "start", options: baseOptions(scratch, { sessionId: randomUUID(), lhc: { home: scratch.lhcHome, compact: { trigger: 300000, target: 180000 }, membase: { socketPath } } }) });
         await s.waitFor(() => s.logHas("created thread"), "created-thread log line");
         const tools = await lhcTools(s, 1);
         assert((await s.stop()) === 0, "the sidecar with membase did not exit 0");
-        return tools;
+        return { tools, p95: await membankP95(scratch, evidenceDir, socketPath) };
       });
       assert(JSON.stringify(withTools) === JSON.stringify(["get_turns", "get_messages", "membank_list", "membank_get"]), `lhc tools with membase on an unattached thread: ${withTools}`);
-      return `lhc tools without membase: ${without.join(",")}; with membase, unattached: ${withTools.join(",")}`;
+      assert(p95.code === 0, `membank_get handler probe failed (bar p95 < 20 ms, max <= 100 ms): ${JSON.stringify(p95.result)}`);
+      return `lhc tools without membase: ${without.join(",")}; with membase, unattached: ${withTools.join(",")}; membank_get handler x${p95.result.calls} p95 ${p95.result.p95} ms max ${p95.result.max} ms; membase ${gate.sha}`;
     } finally {
       for (const s of sidecars) if (s.exitCode === undefined) await s.stop();
       for (const s of sidecars) s.saveEvidence(evidenceDir);
@@ -1903,11 +1929,9 @@ async function main() {
     console.log(`VERIFY-CLAUDE-LHC preflight: FAIL dist missing (${ENTRY}); build: pnpm --filter lhc build && pnpm --filter claude-adapter build && pnpm --filter claude-lhc build`);
     process.exit(1);
   }
-  const which = process.argv[2] ?? "all";
-  const names =
-    which === "all"
-      ? ["start", "start-no-home", "compact", "compact-policy", "restart", "resume-superseded-alias", "resume-unknown", "resume-empty", "thread-start", "rollback", "rollback-unknown-anchor", "rollback-restart", "rollback-synthetic-anchor", "rollback-compact", "rollback-projected-anchor", "window-shrink", "compact-above-base", "controls", "controls-refused", "set-compact-policy", "membank-unreachable", "membank-tools", "fork", "history", "client-ops", "client", "turn", "rollback-live", "rollback-live-compact", "controls-live", "fork-live", "subagent-live", "prompt-order-live", "resume-cache-live", "membank-live", "consumer"]
-      : [which];
+  const groups = { all: [...SEEDED, ...LIVE], seeded: SEEDED, live: LIVE };
+  const args = process.argv.length > 2 ? process.argv.slice(2) : ["all"];
+  const names = [...new Set(args.flatMap((arg) => groups[arg] ?? [arg]))];
   const summary = { evidence: EVIDENCE, startedAt: new Date().toISOString(), drives: {} };
   let failed = false;
   for (const name of names) {
