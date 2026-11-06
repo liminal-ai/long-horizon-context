@@ -1654,7 +1654,10 @@ const drives = {
         `const usage = await q.getContextUsage();`,
         `q.close();`,
         `for await (const _ of q) {}`,
-        `process.stdout.write(JSON.stringify({ entry: import.meta.resolve("claude-lhc"), created: /created thread \\S+/.exec(stderr.join(""))?.[0] ?? null, window: usage?.rawMaxTokens ?? null }));`,
+        `const absent = { socketPath: cwd + "/absent.sock" };`,
+        `const m = query({ prompt: { async *[Symbol.asyncIterator]() { await new Promise(() => {}); } }, options: { cwd, model: "claude-sonnet-5", pathToClaudeCodeExecutable: process.env.CLAUDE_BIN ?? "claude", env: { ...process.env, CLAUDE_CONFIG_DIR: claudeHome }, stderr: () => {}, lhc: { home: lhcHome, compact: { trigger: 700000, target: 140000 }, membase: absent } } });`,
+        `const membaseError = await (async () => { try { for await (const _ of m) {} return null; } catch (e) { return e.message; } })();`,
+        `process.stdout.write(JSON.stringify({ entry: import.meta.resolve("claude-lhc"), created: /created thread \\S+/.exec(stderr.join(""))?.[0] ?? null, window: usage?.rawMaxTokens ?? null, membaseError }));`,
       ].join("\n"));
       const out = JSON.parse(run(process.execPath, ["check.mjs", scratch.cwd, scratch.lhcHome, scratch.claudeHome], project, { ...process.env, CLAUDE_LHC_NO_INFERENCE: "1" }));
       await until(() => scratchProcesses(scratch).length === 0, "the packed sidecar and its claude to exit after close()", 15_000);
@@ -1664,13 +1667,14 @@ const drives = {
       assert(!existsSync(join(project, "node_modules/claude-adapter")), "claude-adapter was installed beside the tarball instead of inside it");
       assert(out.created && typeof out.window === "number", `the packed query() did not start a thread and answer getContextUsage: ${JSON.stringify(out)}`);
       assert(scratch.threads().length === 1, `expected 1 thread file, got ${scratch.threads().length}`);
+      assert(out.membaseError?.startsWith("initLhc: membase handshake failed (membase_unreachable)"), `the packed query() with lhc.membase did not reach the membase handshake: ${out.membaseError}`);
       const installed = JSON.parse(readFileSync(join(project, "node_modules/claude-lhc/package.json"), "utf8"));
       assert(installed.sideEffects === false && installed.exports?.["./client"], `the installed manifest lacks sideEffects: false or ./client: ${JSON.stringify({ sideEffects: installed.sideEffects, exports: installed.exports })}`);
       const bundle = await bundleInstalledClient(project, evidenceDir);
       assert(bundle.forbidden.length === 0, `the installed claude-lhc/client bundles ${bundle.forbidden.join(", ")}`);
       const missing = CLIENT_EXPORTS.filter((name) => !bundle.exports.includes(name));
       assert(missing.length === 0, `the installed claude-lhc/client bundle does not export ${missing.join(", ")}`);
-      return `${basename(tarball)} installed in a scratch project; query() from its dist/index.js ran the default sidecar: ${out.created}, window ${out.window}; lhc and claude-adapter are bundled inside it; the installed claude-lhc/client bundles ${CLIENT_EXPORTS.join(", ")} with no lhc, effect, js-tiktoken or Agent SDK module`;
+      return `${basename(tarball)} installed in a scratch project; query() from its dist/index.js ran the default sidecar: ${out.created}, window ${out.window}; lhc and claude-adapter are bundled inside it; with lhc.membase at an absent socket it failed with membase_unreachable; the installed claude-lhc/client bundles ${CLIENT_EXPORTS.join(", ")} with no lhc, effect, js-tiktoken or Agent SDK module`;
     } finally {
       mkdirSync(evidenceDir, { recursive: true });
       writeFileSync(join(evidenceDir, "packed-install.log"), `${log.join("\n")}\n`);

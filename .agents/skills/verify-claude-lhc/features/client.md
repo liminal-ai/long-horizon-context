@@ -94,7 +94,10 @@ under `build/`, runs `npm pack` on it, installs the tarball in a scratch
 project, and imports `claude-lhc` there. It passes when the import
 resolves to the installed `dist/index.js`, the tarball bundles
 `node_modules/lhc`, and `query()` with the default sidecar creates a
-thread and answers `getContextUsage`. It then bundles
+thread and answers `getContextUsage`. A second `query()` with
+`lhc.membase` at an absent socket must fail with
+`initLhc: membase handshake failed (membase_unreachable)`, which shows the
+installed package loads the membase client. It then bundles
 `export * from "claude-lhc/client"` in the scratch project with esbuild,
 which resolves the installed manifest's `./client` entry to
 `node_modules/claude-lhc/dist/client/index.js`, and saves the metafile as

@@ -226,7 +226,8 @@ Reference: https://platform.claude.com/docs/en/build-with-claude/preserved-think
 ## Publishing
 
 `node scripts/assemble-npm-package.mjs --source-sha <commit>` writes `build/claude-lhc-npm`
-(dist, bin, README, LICENSE, and the `lhc` core bundled under node_modules). Run `npm pack` on it
+(dist, bin, README, LICENSE, and the `lhc` core, `claude-adapter` and the vendored
+`@membase/contract` bundled under node_modules). Run `npm pack` on it
 for the tarball. `.github/workflows/publish-claude-lhc-<version>.yml` rebuilds that tarball from the
 pinned commit, checks its sha256 against the reviewed hash, and publishes it (dispatch only).
 `pnpm --filter claude-lhc pack` is not that tarball: it bundles no core. Before a release, run
