@@ -26,7 +26,6 @@ const MARKER = "<!-- lhc-captures -->";
 const STATE = /<!-- lhc-captures-state (\{.*\}) -->/;
 const ACCOUNT = process.env.CLOUDFLARE_ACCOUNT_ID || "e8e382d5bf8ec24ee2125188819b995c";
 const SIDES = ["base", "head"];
-const KINDS = ["png", "mp4"];
 const STREAM_KEEP_DAYS = 90;
 
 function fail(message) {

@@ -258,8 +258,8 @@ session from another shell while it records:
 
 ```sh
 node .agents/verify-media/capture.mjs --checkout "$co" --session "$s" --side "$side" \
-  --step compact-notice --record 8 "$media" &
-tmux send-keys -t "=$s" '/compact' Enter
+  --step <step> --record 8 "$media" &
+tmux send-keys -t "=$s:" '<the keys the step drives>' Enter
 wait
 ```
 
