@@ -132,7 +132,7 @@ pnpm --filter lhc run typecheck
 pnpm --filter lhc exec vitest run test/retrieval.test.ts test/threads.test.ts test/sqlite-concurrent-open.test.ts test/registry-alias-concurrency.test.ts
 ```
 
-`registry-x20`, the registry multi-process test 20 times in a row, for the changes Re-verification names. It stops at the first failed run, keeps every run's output in the log, and prints `verify-lhc repeat-test: PASS 20 of 20` or `FAIL: run <n> of 20 exited <code>`. Twenty passes show the race did not reproduce in 20 runs. They do not measure a flake rate.
+`registry-x20`, the registry multi-process test 20 times in a row, for the changes Re-verification names. It stops at the first failed run, keeps every run's output in the log, and prints `verify-lhc repeat-test: PASS 20 of 20` or a `FAIL:` line naming the run. A run fails when vitest exits non-zero or prints `No test files found`, which vitest otherwise exits 0 on. Twenty passes show the race did not reproduce in 20 runs. They do not measure a flake rate.
 
 ```sh
 node .agents/skills/verify-lhc/helpers/repeat-test.mjs --runs 20 --log "$EVIDENCE/registry-x20.log" test/registry-alias-concurrency.test.ts
@@ -164,7 +164,7 @@ All under [helpers/](helpers/), plain node ESM, importing the built SDK from `pa
 - `helpers/compact-policy.mjs` — get, set, refuse, copy and fork the compact pair. Flag: `--migrate FILE` backs up a real thread file and migrates the copy.
 - `helpers/membank.mjs` — attach, list, get and detach against a membase socket. Flags: `--socket PATH`, `--bank NAME`, `--expect FILE`, `--expect-unreachable`.
 - `helpers/membank-perf.mjs` — construction time with and without membase, warm and in fresh processes, and `membank.get` latency. Flags: `--socket PATH`, `--bank NAME`, `--trunk-dist FILE`, `--runs N`, `--cold-runs N`, `--calls N`.
-- `helpers/repeat-test.mjs` — runs `pnpm --filter lhc exec vitest run <files>` up to `--runs N` times (default 20), stops at the first failed run, and appends each run's output to `--log FILE`. Files are relative to `packages/lhc`.
+- `helpers/repeat-test.mjs` — runs `pnpm --filter lhc exec vitest run <files>` up to `--runs N` times (default 20), stops at the first run that exits non-zero or finds no test files, and appends each run's output to `--log FILE`. Files are relative to `packages/lhc`.
 - `helpers/cleanup.mjs` — removes `--keep` homes. Args: one or more printed dirs.
 - `helpers/check-links.mjs` — every relative link and `helpers/*.mjs` path in this skill resolves on disk.
 

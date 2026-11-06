@@ -28,7 +28,7 @@ for (const file of mdFiles) {
     catch { failures.push(`${file.split("/").slice(-2).join("/")}: broken link ${target}`); }
   }
 }
-for (const helper of ["doctor.sh", "drive.mjs", "cleanup.sh", "check-links.mjs"]) {
+for (const helper of ["doctor.sh", "drive.mjs", "cleanup.sh", "check-links.mjs", "membank-p95.mjs", "perf-compare.mjs"]) {
   try { accessSync(join(HERE, helper), constants.X_OK); }
   catch { failures.push(`helper not executable: ${helper}`); }
   if (!skill.includes(helper)) failures.push(`SKILL.md does not name helper ${helper}`);

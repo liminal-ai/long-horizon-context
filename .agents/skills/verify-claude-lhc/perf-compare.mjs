@@ -58,7 +58,7 @@ console.log("not checked from the files: that the runs were warm and interleaved
 
 if (problems.length > 0) {
   for (const problem of problems) console.log(`invalid: ${problem}`);
-  console.log(`VERIFY-CLAUDE-LHC perf-compare: FAIL ${problems.length} invalid sample(s)`);
+  console.log(`VERIFY-CLAUDE-LHC perf-compare: FAIL ${problems.length} invalid sample problem(s)`);
   process.exit(1);
 }
 

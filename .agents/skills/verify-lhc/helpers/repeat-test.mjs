@@ -24,8 +24,10 @@ try {
       encoding: "utf8",
       timeout: RUN_TIMEOUT_MS,
     });
-    appendFileSync(log, `=== run ${run} of ${runs}: exit ${result.status} signal ${result.signal}\n${result.stdout}${result.stderr}\n`);
+    const output = `${result.stdout}${result.stderr}`;
+    appendFileSync(log, `=== run ${run} of ${runs}: exit ${result.status} signal ${result.signal}\n${output}\n`);
     if (result.status !== 0) fail(`run ${run} of ${runs} exited ${result.status ?? result.signal}; log ${log}`);
+    if (output.includes("No test files found")) fail(`run ${run} of ${runs} found no test files; log ${log}`);
     console.log(`run ${run} of ${runs}: pass`);
   }
   console.log(`verify-lhc repeat-test: PASS ${runs} of ${runs} (log ${log})`);
