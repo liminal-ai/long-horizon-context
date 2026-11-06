@@ -209,7 +209,9 @@ shared with `verify-cc-lhc-mod`. Run them from the head checkout.
    shows a token-shaped string (`sk-…`, `ANTHROPIC_AUTH_TOKEN`, `Bearer …`,
    a secret-named `KEY=value` assignment, a JWT, GitHub, Slack or AWS key
    shapes), checking the text as shown and with line breaks removed, so a
-   token the pane wraps mid-word still refuses. Never capture a screen showing a real person's
+   token the terminal wraps mid-word still refuses. A token split by a
+   box border the app draws (`│`) is not caught, so never drive a screen
+   that shows a credential. Never capture a screen showing a real person's
    data; the throwaway HOME rules above keep the operator's own out.
 3. Publish:
 

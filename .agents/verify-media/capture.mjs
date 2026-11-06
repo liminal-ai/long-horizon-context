@@ -24,7 +24,7 @@ const TOKEN_SHAPES = [
   /github_pat_[A-Za-z0-9_]{20,}/,
   /\bxox[abprs]-[A-Za-z0-9-]{10,}/,
   /\bAKIA[0-9A-Z]{16}\b/,
-  /[A-Za-z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIALS?)[A-Za-z0-9_]*\s*=\s*["']?[A-Za-z0-9+/._~-]{16,}/i,
+  /[A-Za-z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIALS?)[A-Za-z0-9_]*\s*=\s*(?:"[^"\n]{16,}|'[^'\n]{16,}|[^\s"'`]{16,})/i,
   /eyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}/,
 ];
 

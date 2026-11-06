@@ -65,6 +65,8 @@ token_case() {
   expect "$label" 1 "capture REFUSED: the pane shows a token-shaped string" "$rc" "$probe_dir/$name.out"
 }
 token_case env-key "KEY=0123456789abcdef0123456789abcdef01234567" 100 "KEY=" "env-style secret assignment"
+token_case env-key-punct "KEY=synthetic!Key@12345#6789" 100 "KEY=" "secret assignment with punctuation"
+token_case password-quoted 'PASSWORD="synthetic!Password@1234#"' 100 "PASSW" "quoted password with punctuation"
 token_case jwt "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJzeW50aGV0aWMtcHJvYmUifQ.c3ludGhldGljc2lnbmF0dXJl" 120 "eyJ" "JWT"
 token_case bearer-newline $'Bearer\nsyntheticOauthToken0123456789' 100 "Bearer" "Bearer token on the next line"
 token_case bearer-wrap "$(printf '%77s' '')Bearer syntheticOauthToken0123456789" 80 "Bea" "Bearer split by the pane's line wrap"
