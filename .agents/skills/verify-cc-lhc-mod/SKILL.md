@@ -454,8 +454,8 @@ cite files under a run's `proof/` only, never a scratch dir or a home.
 ## Capture and publish
 
 A PR that changes what a user sees (the LHC panel, `/lhc` output, the status
-line, a transcript notice) carries before-and-after screenshots in one PR
-comment. The verifier makes them while it drives the change, parent against
+line, a transcript notice) carries before-and-after screenshots or videos in
+one PR comment. The verifier makes them while it drives the change, parent against
 head, and the lead opens each one at acceptance. The scripts live in
 `.agents/verify-media/`, shared with `verify-cc-lhc`, whose Capture and
 publish section holds the full recipe. Run them from the head checkout.
@@ -486,9 +486,12 @@ publish section holds the full recipe. Run them from the head checkout.
   author's. A rerun uploads nothing. Its dirty check is what `git status`
   shows, as `verify-cc-lhc` explains.
 
-Video goes to Cloudflare Stream once Lee buys it. Until then a
-`shot.mjs record` video stays in the run's evidence dir, and the review
-names its path.
+For a change that moves, record the step as a video with
+`capture.mjs --record <seconds>` while you drive the session, in place of
+`shot.mjs record`. `publish.mjs` uploads it to Cloudflare Stream and shows
+its thumbnail linked to the watch page. `verify-cc-lhc`'s Capture and
+publish section gives the command and what it checks. `shot.mjs record`
+stays for evidence that is not published.
 
 ## Cleanup
 

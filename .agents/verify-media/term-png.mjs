@@ -133,3 +133,43 @@ export function renderPng({ ansi, columns, rows }, out) {
     rmSync(work, { recursive: true, force: true });
   }
 }
+
+/** Samples the pane every 200 ms for `seconds`, keeping each frame whose screen differs from the last. */
+export function recordFrames(session, seconds) {
+  const frames = [];
+  const end = Date.now() + seconds * 1000;
+  while (Date.now() < end) {
+    const at = Date.now();
+    const shown = paneScreen(session);
+    if (frames.at(-1)?.ansi !== shown.ansi) frames.push({ ...shown, at });
+    const wait = 200 - (Date.now() - at);
+    if (wait > 0) execFileSync("sleep", [String(wait / 1000)]);
+  }
+  return { frames, end };
+}
+
+/** Encodes recorded frames to an MP4 at 10 fps, each frame held until the next one appeared. */
+export function encodeMp4({ frames, end }, out) {
+  const work = mkdtempSync(join(tmpdir(), "term-mp4-"));
+  try {
+    const list = [];
+    frames.forEach((frame, i) => {
+      const png = join(work, `${String(i).padStart(5, "0")}.png`);
+      renderPng(frame, png);
+      const next = frames[i + 1]?.at ?? end;
+      list.push(`file '${png}'`, `duration ${((next - frame.at) / 1000).toFixed(3)}`);
+    });
+    list.push(list.at(-2));
+    writeFileSync(join(work, "list.txt"), `${list.join("\n")}\n`);
+    execFileSync(
+      "ffmpeg",
+      [
+        ...["-y", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", join(work, "list.txt")],
+        ...["-vf", "fps=10,scale=trunc(iw/2)*2:trunc(ih/2)*2", "-pix_fmt", "yuv420p", resolve(out)],
+      ],
+      { stdio: "inherit" },
+    );
+  } finally {
+    rmSync(work, { recursive: true, force: true });
+  }
+}

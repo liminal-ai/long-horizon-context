@@ -180,7 +180,7 @@ cleanup before reporting a drive done.
 ## Capture and publish
 
 A PR that changes what a user sees (the panel, the forwarded pane, help or
-receipt text) carries before-and-after screenshots in one PR comment. The
+receipt text) carries before-and-after screenshots or videos in one PR comment. The
 verifier makes them while it drives the change, parent against head, and the
 lead opens each one at acceptance. The scripts live in `.agents/verify-media/`,
 shared with `verify-cc-lhc-mod`. Run them from the head checkout.
@@ -247,10 +247,42 @@ shared with `verify-cc-lhc-mod`. Run them from the head checkout.
 4. Link the comment in the review. `.agents/verify-media/probes.sh` runs the
    broken cases (token shapes on screen, dirty checkout, wrong commit,
    swapped PNG, mixed runs, another author's comment, broken comment state,
-   failed upload, URL that does not read back, rerun) against a real PR.
+   failed upload, URL that does not read back, a video changed after capture
+   or outside the run dir, a failed video upload, a video that never becomes
+   ready, rerun) against a real PR.
 
-Video goes to Cloudflare Stream once Lee buys it. Until then a recording
-stays in the run's `proof/` folder, and the review names its path.
+For a change that moves (a spinner, a transcript notice that appears, a
+panel redraw), record a video instead of a screenshot at that step. Add
+`--record <seconds>` to the same `capture.mjs` call, start it, and drive the
+session from another shell while it records:
+
+```sh
+node .agents/verify-media/capture.mjs --checkout "$co" --session "$s" --side "$side" \
+  --step <step> --record 8 "$media" &
+tmux send-keys -t "=$s:" '<the keys the step drives>' Enter
+wait
+```
+
+It samples the screen every 200 ms and writes `<step>.mp4`, every distinct
+frame's text in `<step>.txt`, and `<step>.json` with the same commit, run id
+and hashes a screenshot gets. It refuses, and writes nothing, when any
+frame's text is token-shaped. The video is encoded only from those frames,
+and all their text is checked. Frames are sampled, so a screen that shows
+only briefly can fall between samples and be missed. A step is a PNG or a video on both sides, never one of each.
+`publish.mjs` gives a video the same checks as a PNG, and refuses one that
+resolves outside the run dir. It uploads the video to Cloudflare Stream
+through a one-time direct upload URL from `cf stream videos direct-upload
+create`, so no API token leaves the `cf` CLI. The video is unsigned for the
+same reason the screenshots are, and Stream deletes it after 90 days because
+storage is metered. The publish waits up to `--ready-timeout` seconds
+(default 300) for `readyToStream` with a duration, then checks that the
+thumbnail, the HLS manifest and the watch page serve. It refuses any upload,
+thumbnail, manifest or watch URL that is not https on a Cloudflare Stream
+host. A video that never
+becomes ready fails the publish and posts nothing. The comment shows the
+video's last frame as a thumbnail linked to its Stream watch page, base and
+head side by side. `published.json` records each upload as it lands, so a
+rerun after a failure waits on the same video instead of uploading it again.
 
 ## Helpers
 
