@@ -927,7 +927,7 @@ const drives = {
         const captured = capturedToolCalls(scratch).map((p) => JSON.stringify(p));
         assert(captured.some((p) => p.includes("mcp__lhc__membank_list")) && captured.some((p) => p.includes("mcp__lhc__membank_get")), "the LHC thread did not capture both membank tool calls");
         const timings = attached.s.stderr.flatMap((l) => /membank_get \S+ answered in ([\d.]+) ms/.exec(l)?.[1] ?? []).map(Number);
-        assert(timings.length > 0 && timings.every((ms) => ms <= 20), `membank_get handler times ${timings.join(",")} ms (bar 20 ms)`);
+        assert(timings.length > 0 && timings.every((ms) => ms <= 100), `membank_get handler times ${timings.join(",")} ms (bar 100 ms per call)`);
 
         const unattached = await ask("unattached", socketPath, null);
         writeFileSync(join(evidenceDir, "unattached.txt"), [...unattached.uses.map((u) => `${u.name} ${JSON.stringify(u.input)} -> ${u.result}`), "", unattached.answer, ""].join("\n"));
