@@ -12,6 +12,7 @@ export {
   usageContextTokens,
 } from "./blocks.js";
 export { idempotencyKey, messageKeyPrefix } from "./identity.js";
+export { MEMBANK_GET_DESCRIPTION, MEMBANK_LIST_DESCRIPTION, runMembankGet, runMembankList } from "./membank.js";
 export {
   formatRetrieval,
   MESSAGES_DESCRIPTION,

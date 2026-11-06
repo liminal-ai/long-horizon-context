@@ -66,6 +66,13 @@ A strict `tsc` without `skipLibCheck` reports errors inside the Agent SDK's own 
 - A compact that leaves the served context at or past the trigger, as when the trigger is below the
   CLI's own prompt of about 37000 tokens, logs `the next automatic compact waits for new context`.
   The next automatic compact then waits for a request larger than the first one after the compact.
+- `membase` is `{ socketPath }`, the Unix socket of the machine's membase service. The sidecar
+  passes it to `initLhc`, and a start whose membase handshake fails fails the stream with
+  `initLhc: membase handshake failed (<code>): <reason>`. With it set, the `lhc` MCP server also
+  has `membank_list { kind? }` and `membank_get { id }`, attached or not, so the tool list never
+  changes during a session. On a thread with no bank both answer
+  `this thread is not attached to a membank`. `docs/onboard/06-host-claude-lhc.md` gives their
+  output.
 - `spawn` is `{ command, args?, env? }`, the command that runs the sidecar. The default is
   `node <this package>/dist/sidecar.js`. Pass it when the host stages and pins its own copy of the
   sidecar. claude-lhc does no pinning or staging of its own.
@@ -80,7 +87,8 @@ below). The sidecar passes them to the SDK with these changes:
 - It replaces `env` with a copy that sets `DISABLE_AUTO_COMPACT=1`, so the CLI's own compact never
   runs.
 - It sets `title` to `[LHC] <thread id>` on a new thread.
-- It adds the `lhc` retrieval MCP server to `mcpServers` and its two tools to `allowedTools`.
+- It adds the `lhc` MCP server to `mcpServers` and its tools to `allowedTools`: the two retrieval
+  tools, plus the two membank tools when `lhc.membase` is set.
 - It sets `pathToClaudeCodeExecutable` to `claude` when the host sends none.
 - It refuses `resumeDropsTurn` with `resumeDropsTurn is refused`. That option validates the CLI's
   own transcript, which a projected session does not share. Send `resumeSessionAt` alone.

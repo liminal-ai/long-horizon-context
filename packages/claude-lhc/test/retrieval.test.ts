@@ -39,7 +39,7 @@ async function thread(turns: Array<[string, string]>): Promise<ThreadRef> {
 }
 
 async function connect(ref: () => ThreadRef): Promise<Client> {
-  const server = createRetrievalServer(lhc, ref);
+  const server = createRetrievalServer(lhc, ref, null);
   const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
   await server.instance.connect(serverSide);
   const client = new Client({ name: "test", version: "0" });

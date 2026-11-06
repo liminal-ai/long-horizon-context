@@ -25,6 +25,7 @@ import type {
   SDKMessage,
   SDKUserMessage,
 } from "@anthropic-ai/claude-agent-sdk";
+import type { MembaseConfig } from "lhc";
 import type { ControlMethod } from "./controls.js";
 
 /**
@@ -32,6 +33,8 @@ import type { ControlMethod } from "./controls.js";
  * `lhc` block, which never reaches the SDK:
  *   lhc.home — the LHC store directory (registry and thread files). Required.
  *   lhc.compact — the compact policy a new thread stores. A resumed thread keeps its own.
+ *   lhc.membase — { socketPath } of the machine's membase service. The sidecar passes it to
+ *   initLhc and adds the membank tools to the lhc MCP server.
  *   lhc.forceRebuildFailure — every compact rebuild throws before touching LHC
  *   (proof scripts exercise the failure path with a live model; never set by t3code).
  * `resumeSessionAt` is a host rollback to that message. The sidecar records it in LHC
@@ -43,6 +46,7 @@ export type WireOptions = Record<string, unknown> & { lhc: SidecarOptions; resum
 export type SidecarOptions = {
   home: string;
   compact?: { trigger: number; target: number };
+  membase?: MembaseConfig;
   forceRebuildFailure?: boolean;
 };
 export type LhcStore = { lhc: Pick<SidecarOptions, "home"> };
@@ -116,11 +120,22 @@ export function parseSidecarOptions(value: unknown): SidecarOptions {
     throw new Error("lhc.home is required: pass the LHC store directory in the start options");
   }
   const compact = block["compact"];
+  const membase = block["membase"];
   return {
     home,
     ...(compact !== undefined ? { compact: parseCompactPolicy(compact, "lhc.compact") } : {}),
+    ...(membase !== undefined ? { membase: parseMembase(membase) } : {}),
     ...(block["forceRebuildFailure"] === true ? { forceRebuildFailure: true } : {}),
   };
+}
+
+function parseMembase(value: unknown): MembaseConfig {
+  const socketPath =
+    typeof value === "object" && value !== null ? (value as Record<string, unknown>)["socketPath"] : undefined;
+  if (typeof socketPath !== "string" || socketPath.trim() === "") {
+    throw new Error(`lhc.membase must be { socketPath } with a non-empty string; received ${JSON.stringify(value)}`);
+  }
+  return { socketPath };
 }
 
 export function parseCompactPolicy(value: unknown, field: string): { trigger: number; target: number } {
