@@ -91,7 +91,10 @@ async function upload(capture, id) {
   try {
     image = JSON.parse(r.stdout);
   } catch {}
-  const url = image?.variants?.find((v) => v.endsWith("/public"));
+  // The account's `full` variant only scales down past 4000x12000, so a capture reads back at its own size; `public` fits 1366x768.
+  const url =
+    image?.variants?.find((v) => v.endsWith("/full")) ??
+    image?.variants?.find((v) => v.endsWith("/public"))?.replace(/\/public$/, "/full");
   if (r.status !== 0 || image?.id !== id || !url)
     fail(`upload of ${capture.file} exited ${r.status}: ${(r.stderr || r.stdout).trim().slice(0, 400)}`);
   await readBack(url, capture.size);
