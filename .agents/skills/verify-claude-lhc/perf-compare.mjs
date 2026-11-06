@@ -34,6 +34,7 @@ const load = (file) => {
 const sides = { base: values.base.map((file) => ({ file, drives: load(file) })), head: values.head.map((file) => ({ file, drives: load(file) })) };
 const seededNames = (drives) => Object.keys(drives).filter((name) => !LIVE.includes(name));
 const baseline = [...new Set(sides.base.flatMap((run) => seededNames(run.drives)))];
+if (baseline.length === 0) problems.push("no base sample has a seeded drive");
 
 console.log(`base ${values["base-sha"]}`);
 console.log(`head ${values["head-sha"]}`);
