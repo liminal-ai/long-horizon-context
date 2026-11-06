@@ -114,7 +114,8 @@ cp "$probe_dir/dirty/head/probe."* "$run/head/"
 publish "$run" >"$probe_dir/mixed-runs.out" 2>&1
 expect "one side's captures from two runs" 1 "captures come from more than one run" $? "$probe_dir/mixed-runs.out"
 
-# A stub gh answers as user probe-me, lists the comments a case sets, records writes, and passes PR reads to gh on the original PATH.
+# A stub gh answers as user probe-me, lists the comments a case sets, records each write and saves it back to that list,
+# so a rerun reads what the last publish posted, and passes PR reads to gh on the original PATH.
 stub="$probe_dir/stub"
 mkdir -p "$stub"
 cat >"$stub/gh" <<'STUB'
@@ -123,8 +124,17 @@ if [ "$1 $2" = "api user" ]; then echo probe-me; exit 0; fi
 if [ "$2" = "--paginate" ]; then cat "$STUB_COMMENTS"; exit 0; fi
 if [ "$2" = "-X" ]; then
   echo "$3 $4" >>"$STUB_LOG"
-  echo '{"html_url":"https://github.com/stub#issuecomment-1"}'
-  exit 0
+  exec node -e '
+    const fs = require("fs");
+    const [file, method, path] = process.argv.slice(1);
+    const { body } = JSON.parse(fs.readFileSync(0, "utf8"));
+    const comments = fs.readFileSync(file, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l));
+    const id = method === "PATCH" ? Number(path.split("/").pop()) : 1000 + comments.length;
+    const kept = comments.filter((c) => c.id !== id);
+    kept.push({ id, login: "probe-me", body });
+    fs.writeFileSync(file, kept.map((c) => JSON.stringify(c) + "\n").join(""));
+    console.log(JSON.stringify({ html_url: `https://github.com/stub#issuecomment-${id}` }));
+  ' "$STUB_COMMENTS" "$3" "$4"
 fi
 PATH="$REAL_PATH" exec gh "$@"
 STUB
@@ -219,11 +229,15 @@ rc=$?
 [ -e "$run/published.json" ] && rc=98
 expect "video upload refused by Cloudflare" 1 "publish FAILED: upload of" "$rc" "$probe_dir/video-upload-fails.out"
 
-# A stub Stream: cf answers direct-upload and get for videos, uploads and reads go to a local server, and gh is the stub
-# above, so nothing reaches Cloudflare Stream or the PR.
-node -e 'require("http").createServer((q, s) => { q.resume(); q.on("end", () => s.end("ok")); })
-  .listen(0, "127.0.0.1", function () { require("fs").writeFileSync(process.argv[1], String(this.address().port)); })' \
-  "$probe_dir/stream.port" &
+# A stub Stream: cf answers direct-upload and get for videos, uploads and reads go to a local https server whose
+# self-signed certificate this run trusts, and gh is the stub above, so nothing reaches Cloudflare Stream or the PR.
+openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj /CN=127.0.0.1 -addext subjectAltName=IP:127.0.0.1 \
+  -keyout "$probe_dir/stream.key" -out "$probe_dir/stream.crt" 2>/dev/null
+node -e 'const fs = require("fs");
+  require("https").createServer({ key: fs.readFileSync(process.argv[2]), cert: fs.readFileSync(process.argv[3]) },
+    (q, s) => { q.resume(); q.on("end", () => s.end("ok")); })
+  .listen(0, "127.0.0.1", function () { fs.writeFileSync(process.argv[1], String(this.address().port)); })' \
+  "$probe_dir/stream.port" "$probe_dir/stream.key" "$probe_dir/stream.crt" &
 server_pid=$!
 for _ in $(seq 50); do [ -s "$probe_dir/stream.port" ] && break; sleep 0.1; done
 stream="$probe_dir/stream-stub"
@@ -231,12 +245,21 @@ mkdir -p "$stream"
 cp "$stub/gh" "$stream/gh"
 cat >"$stream/cf" <<'STUB'
 #!/usr/bin/env bash
-origin="http://127.0.0.1:$(cat "$STREAM_PORT")"
+origin="https://127.0.0.1:$(cat "$STREAM_PORT")"
 case "$1 $2 $3" in
   "stream videos direct-upload")
+    # Stream refuses any expiry that is not an ISO-8601 time, such as cf's own default "Now + 30 minutes".
+    expiry=""
+    for ((i = 1; i < $#; i++)); do [ "${!i}" = "--expiry" ] && j=$((i + 1)) && expiry="${!j}"; done
+    if ! [[ "$expiry" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]; then
+      echo "direct-upload refused: expiry '$expiry'" >>"$STUB_LOG"
+      echo "[10005] Bad Request: 400 Bad Request" >&2
+      exit 1
+    fi
     echo "direct-upload create" >>"$STUB_LOG"
     printf '{"uid":"%s","uploadURL":"%s/upload"}\n' "$(od -An -tx1 -N16 /dev/urandom | tr -d ' \n')" "$origin" ;;
   "stream videos get")
+    [ "$STREAM_HTTP" = 1 ] && origin="http://${origin#https://}"
     if [ "$STREAM_READY" = 1 ]; then
       printf '{"uid":"%s","readyToStream":true,"duration":2,"requireSignedURLs":false,"status":{"state":"ready"},"thumbnail":"%s/%s/thumbnails/thumbnail.jpg","preview":"%s/%s/watch","playback":{"hls":"%s/%s/manifest/video.m3u8"}}\n' \
         "$4" "$origin" "$4" "$origin" "$4" "$origin" "$4"
@@ -249,12 +272,20 @@ STUB
 chmod +x "$stream/cf"
 stream_publish() {
   local name="$1" ready="$2" log="$3"
-  printf '' >"$probe_dir/$name.comments"
-  STUB_COMMENTS="$probe_dir/$name.comments" STUB_LOG="$log" REAL_PATH="$PATH" STREAM_PORT="$probe_dir/stream.port" \
-    STREAM_READY="$ready" PATH="$stream:$PATH" publish "$probe_dir/stream-run" --ready-timeout 4 >"$probe_dir/$name.out" 2>&1
+  STUB_COMMENTS="$probe_dir/stream.comments" STUB_LOG="$log" REAL_PATH="$PATH" STREAM_PORT="$probe_dir/stream.port" \
+    LHC_STREAM_TEST_HOST="127.0.0.1:$(cat "$probe_dir/stream.port")" NODE_EXTRA_CA_CERTS="$probe_dir/stream.crt" \
+    STREAM_READY="$ready" PATH="$stream:$PATH" publish "${4:-$probe_dir/stream-run}" --ready-timeout 4 >"$probe_dir/$name.out" 2>&1
 }
 copy_video "$probe_dir/stream-run"
 : >"$probe_dir/stream.log"
+: >"$probe_dir/stream.comments"
+
+copy_video "$probe_dir/http-run"
+: >"$probe_dir/http.log"
+STREAM_HTTP=1 stream_publish stream-http 1 "$probe_dir/http.log" "$probe_dir/http-run"
+rc=$?
+grep -q '^POST \|^PATCH ' "$probe_dir/http.log" && rc=97
+expect "Stream reports an http watch URL" 1 "reports no https Cloudflare Stream thumbnail" "$rc" "$probe_dir/stream-http.out"
 
 stream_publish never-ready 0 "$probe_dir/stream.log"
 rc=$?
@@ -267,13 +298,15 @@ stream_publish stream-rerun 1 "$probe_dir/stream.log"
 second_stream=$?
 creates="$(grep -c '^direct-upload create' "$probe_dir/stream.log")"
 if [ "$first_stream" = 0 ] && [ "$second_stream" = 0 ] && [ "$creates" = 2 ] &&
+  ! grep -q '^direct-upload refused' "$probe_dir/stream.log" &&
   grep -q "^uploaded 0 images and 0 videos" "$probe_dir/stream-ready.out" &&
-  grep -q "^uploaded 0 images and 0 videos: " "$probe_dir/stream-rerun.out"; then
-  row "video rerun after a never-ready failure, then again" "2 uploads in all, none on either rerun" \
-    "PASS: $creates direct uploads, both reruns uploaded 0 images and 0 videos"
+  grep -q "^uploaded 0 images and 0 videos: " "$probe_dir/stream-rerun.out" &&
+  grep -q "^added comment" "$probe_dir/stream-ready.out" && grep -q "^updated comment" "$probe_dir/stream-rerun.out"; then
+  row "video rerun after a never-ready failure, then again" "2 uploads with an ISO expiry, none on either rerun, rerun updates the posted comment" \
+    "PASS: $creates direct uploads, both reruns uploaded 0 images and 0 videos, $(grep -m1 '^updated comment' "$probe_dir/stream-rerun.out")"
 else
-  row "video rerun after a never-ready failure, then again" "2 uploads in all, none on either rerun" \
-    "FAIL: exits $first_stream/$second_stream, $creates direct uploads"
+  row "video rerun after a never-ready failure, then again" "2 uploads with an ISO expiry, none on either rerun, rerun updates the posted comment" \
+    "FAIL: exits $first_stream/$second_stream, $creates direct uploads, $(tail -n1 "$probe_dir/stream-rerun.out" | cut -c1-120)"
   failures=$((failures + 1))
 fi
 kill "$server_pid" 2>/dev/null

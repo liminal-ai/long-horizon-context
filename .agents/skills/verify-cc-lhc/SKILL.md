@@ -267,8 +267,8 @@ It samples the screen every 200 ms and writes `<step>.mp4`, every distinct
 frame's text in `<step>.txt`, and `<step>.json` with the same commit, run id
 and hashes a screenshot gets. It refuses, and writes nothing, when any
 frame's text is token-shaped. The video is encoded only from those frames,
-so a screen that showed for less than 200 ms is in neither the video nor the
-check. A step is a PNG or a video on both sides, never one of each.
+and all their text is checked. Frames are sampled, so a screen that shows
+only briefly can fall between samples and be missed. A step is a PNG or a video on both sides, never one of each.
 `publish.mjs` gives a video the same checks as a PNG, and refuses one that
 resolves outside the run dir. It uploads the video to Cloudflare Stream
 through a one-time direct upload URL from `cf stream videos direct-upload
@@ -276,7 +276,9 @@ create`, so no API token leaves the `cf` CLI. The video is unsigned for the
 same reason the screenshots are, and Stream deletes it after 90 days because
 storage is metered. The publish waits up to `--ready-timeout` seconds
 (default 300) for `readyToStream` with a duration, then checks that the
-thumbnail, the HLS manifest and the watch page serve. A video that never
+thumbnail, the HLS manifest and the watch page serve. It refuses any upload,
+thumbnail, manifest or watch URL that is not https on a Cloudflare Stream
+host. A video that never
 becomes ready fails the publish and posts nothing. The comment shows the
 video's last frame as a thumbnail linked to its Stream watch page, base and
 head side by side. `published.json` records each upload as it lands, so a

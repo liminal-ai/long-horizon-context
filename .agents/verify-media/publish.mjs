@@ -27,6 +27,16 @@ const STATE = /<!-- lhc-captures-state (\{.*\}) -->/;
 const ACCOUNT = process.env.CLOUDFLARE_ACCOUNT_ID || "e8e382d5bf8ec24ee2125188819b995c";
 const SIDES = ["base", "head"];
 const STREAM_KEEP_DAYS = 90;
+// Test only: probes.sh points this at its local https stub Stream, which is not a Cloudflare host.
+const STREAM_TEST_HOST = process.env.LHC_STREAM_TEST_HOST;
+
+/** An https URL on a Cloudflare Stream host, so a published link can't point anywhere else. */
+function streamURL(v) {
+  if (typeof v !== "string" || !URL.canParse(v)) return false;
+  const { protocol, host, hostname } = new URL(v);
+  if (protocol !== "https:") return false;
+  return /(^|\.)(cloudflarestream\.com|videodelivery\.net)$/.test(hostname) || (!!STREAM_TEST_HOST && host === STREAM_TEST_HOST);
+}
 
 function fail(message) {
   console.error(`publish FAILED: ${message}`);
@@ -130,13 +140,15 @@ async function uploadImage(capture, id) {
 
 /** Posts the MP4 to a one-time Stream upload URL, so no API token leaves the cf CLI, and returns the video's uid. */
 async function uploadVideo(capture, name) {
-  const deletion = new Date(Date.now() + STREAM_KEEP_DAYS * 86_400_000).toISOString().replace(/\.\d+Z$/, "Z");
+  const iso = (ms) => new Date(Date.now() + ms).toISOString().replace(/\.\d+Z$/, "Z");
+  // cf 1.0.0-beta.18 otherwise sends its default expiry as the literal "Now + 30 minutes", which Stream answers with 400.
   const r = cf([
     ...["stream", "videos", "direct-upload", "create", "--max-duration-seconds", "300", "--require-signed-urls=false"],
-    ...["--scheduled-deletion", deletion, "--meta", JSON.stringify({ name })],
+    ...["--expiry", iso(30 * 60_000), "--scheduled-deletion", iso(STREAM_KEEP_DAYS * 86_400_000)],
+    ...["--meta", JSON.stringify({ name })],
   ]);
   const { uid, uploadURL } = r.json ?? {};
-  if (r.status !== 0 || typeof uid !== "string" || !/^[0-9a-f]{32}$/.test(uid) || typeof uploadURL !== "string")
+  if (r.status !== 0 || typeof uid !== "string" || !/^[0-9a-f]{32}$/.test(uid) || !streamURL(uploadURL))
     fail(`upload of ${capture.file} exited ${r.status}: ${r.said}`);
   const form = new FormData();
   form.append("file", new Blob([capture.bytes], { type: "video/mp4" }), basename(capture.file));
@@ -161,7 +173,8 @@ async function readyVideo(capture, uid, timeoutSeconds) {
   }
   if (video.requireSignedURLs !== false) fail(`Stream video ${uid} requires signed URLs, which expire inside GitHub`);
   const urls = [video.thumbnail, video.preview, video.playback?.hls];
-  if (!urls.every((u) => typeof u === "string")) fail(`Stream video ${uid} reports no thumbnail, watch page and HLS manifest`);
+  if (!urls.every(streamURL))
+    fail(`Stream video ${uid} reports no https Cloudflare Stream thumbnail, watch page and HLS manifest: ${urls.join(" ")}`);
   // The last frame shows where the recording ended up, which is the change; Stream's default is the first frame.
   const thumbnail = `${video.thumbnail}?time=${Math.max(0, video.duration - 0.5).toFixed(1)}s`;
   for (const url of [thumbnail, video.playback.hls, video.preview]) {
@@ -206,9 +219,9 @@ function stateOf(comment) {
           (s) =>
             typeof s?.step === "string" &&
             STEP.test(s.step) &&
-            url(s.base) &&
-            url(s.head) &&
-            (s.watch === undefined || (url(s.watch?.base) && url(s.watch?.head))),
+            (s.watch === undefined
+              ? url(s.base) && url(s.head)
+              : [s.base, s.head, s.watch?.base, s.watch?.head].every(streamURL)),
         ),
     );
   if (!ok) bad("does not hold a head commit and its runs");
