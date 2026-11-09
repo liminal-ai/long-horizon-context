@@ -136,8 +136,8 @@ Preconditions:
 
 ## Gotchas
 
-- On 2026-11-06 the live panel drive with Claude 2.1.317 failed the
-  content check with `entry not in source`. The first prompt came back
+- On 2026-11-06 and again on 2026-11-09 the live panel drive with Claude
+  2.1.317 failed the content check with `entry not in source`. The first prompt came back
   twice, once behind the CLI's `<system-reminder>` attribution block.
   Root cause: Claude now writes `api-request-blob` lines whose
   `message.role` is `user`, and `isUserLine`
@@ -148,7 +148,7 @@ Preconditions:
   notice, which it renders as a `●` line. Those come after the
   `[runtime note]` and are not rebuild content.
 - Seeded-drive reality: on 2026-10-28 the forced-bounds drive fired and
-  passed with a new transcript, and again on 2026-11-02. The one-shot
+  passed with a new transcript, and again on 2026-11-02 and 2026-11-09. The one-shot
   seam can still skip, and the SKIP branch exists for that; do not fake
   pressure by editing transcripts.
 - Capture that has not reached ready, or a transcript left mid-turn,

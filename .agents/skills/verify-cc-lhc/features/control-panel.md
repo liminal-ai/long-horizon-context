@@ -48,7 +48,9 @@ Preconditions:
   (`src/wrapper/first-load.ts`). Its commands work right away: type
   `/status`, then Enter, and capture the pane. Press Esc to reach Claude.
   A fresh Claude config then shows the theme picker, the security notes
-  and the folder-trust prompt; answer each in the pane. After a settled
+  and the folder-trust prompt; answer each in the pane. The trust prompt
+  defaults to `No, exit`, and Enter on it ends Claude and the wrapper, so
+  send Down, then Enter. After a settled
   turn, open the panel with `tmux send-keys -t <session> C-]`, which
   closes it again while it is open. The status receipt then shows
   `Latest provider context: <n> tokens (provider-reported)` and the
