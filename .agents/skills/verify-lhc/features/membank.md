@@ -9,11 +9,11 @@
 
 ## How to get to it (user POV)
 
-A person keeps lessons and skills in a membase bank and attaches a session's thread to that bank, so the agent on that thread can see the bank's items. LH-3 gives claude-lhc agents the tools. In core, a host reaches the bank through `sdk.membank`. Membase runs as a per-machine service on a Unix socket, started and seeded through the `verify-membase` skill in the membase repo.
+A person keeps lessons and skills in a membase bank and attaches a session's thread to that bank, so the agent on that thread can see the bank's items. LH-3 gives claude-lhc agents the tools. In core, a host reaches the bank through `sdk.membank`. Membase runs as a per-machine service on a Unix socket, started and seeded through the `verify-limbase` skill in the membase repo, now Limbase.
 
 ## Driving it with the harness
 
-1. In a membase checkout (`$MEMBASE_REPO`, default `~/lim-v2/code/membase`), follow `verify-membase` Launch: `scripts/offline-install.sh`, then `.agents/skills/verify-membase/scripts/lane.sh up <lane-dir>`, then enroll and approve the lane's machine. `up` prints `service pid <pid> socket <path>`. That path is the socket for every step below.
+1. In a membase checkout (`$MEMBASE_REPO`, default `~/lim-v2/code/membase`), follow `verify-limbase` Launch (the skill was `verify-membase` before the repo became Limbase): `scripts/offline-install.sh`, then `.agents/skills/verify-membase/scripts/lane.sh up <lane-dir>`, then enroll and approve the lane's machine. `up` prints `service pid <pid> socket <path>`. That path is the socket for every step below.
 2. Seed a bank with the membase CLI, for example `pnpm exec membase bank create books --description "Fiction craft"`, then `pnpm exec membase lesson add --bank books ...` and `pnpm exec membase skill add --bank books ...`.
 3. From this repo, after the Launch build:
 
@@ -47,6 +47,6 @@ The full set of codes, a membase run at another API version included, runs headl
 ## Gotchas
 
 - `initLhc` with `membase` set returns a promise. Without it, `initLhc` stays synchronous. Passing a config typed with an optional `membase` does not compile. Branch on it.
-- Keep the socket path to 103 characters or fewer. verify-membase's Launch step 2 says Node clients cannot connect to a longer one, which is why `lane.sh` puts the socket under `${XDG_RUNTIME_DIR:-/tmp}`.
+- Keep the socket path to 103 characters or fewer. verify-limbase's Launch step 2 says Node clients cannot connect to a longer one, which is why `lane.sh` puts the socket under `${XDG_RUNTIME_DIR:-/tmp}`.
 - Health fails with `membase_unavailable` (reason `NotEnrolled`) until the lane's machine is enrolled and approved.
 - Item ids are `L<n>` and `S<n>`. Bank names follow membase's rule, 1 to 63 letters, digits, `.`, `_` or `-`, starting with a letter or digit. Thread ids must be 1 to 128 letters, digits, `.`, `_`, `:` or `-`, starting with a letter or digit, which every `th_` id is but a `copyThread` `newThreadId` may not be. LHC refuses anything else with `invalid_membank_input` before calling membase.

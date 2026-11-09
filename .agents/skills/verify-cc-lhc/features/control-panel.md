@@ -20,7 +20,10 @@ context pressure and triggers compaction without leaving the session.
 ## How to get to it (user POV)
 
 - Press Ctrl-`]` during an interactive `cc-lhc` session.
-- Set `CC_LHC_LEADER=KEY` before launch to change the leader key.
+- Set `CC_LHC_LEADER` before launch to change the leader key. It takes one
+  control byte: a literal control character, `^X`, or hex such as `0x1d`.
+  NUL, BEL, TAB, LF, CR, Ctrl-C and ESC are refused, and so is any other
+  form, such as `ctrl-g`. A refused value logs a warning and keeps Ctrl-`]`.
 - Run `cc-lhc --lhc-help` to read the command list without a session.
 
 ## Driving it with verify-cc-lhc helpers
@@ -45,12 +48,15 @@ Preconditions:
   (`src/wrapper/first-load.ts`). Its commands work right away: type
   `/status`, then Enter, and capture the pane. Press Esc to reach Claude.
   A fresh Claude config then shows the theme picker, the security notes
-  and the folder-trust prompt; answer each in the pane. After a settled
+  and the folder-trust prompt; answer each in the pane. The trust prompt
+  defaults to `No, exit`, and Enter on it ends Claude and the wrapper, so
+  send Down, then Enter. After a settled
   turn, open the panel with `tmux send-keys -t <session> C-]`, which
   closes it again while it is open. The status receipt then shows
   `Latest provider context: <n> tokens (provider-reported)` and the
   thread id, and `/stats` shows `events=` above 0. Outcome: `wrapper.log`
-  gains no `cc-lhc capture degraded:` line. Without throwaway auth: `SKIP:`.
+  gains no `capture degraded` line (cc-lhc writes it in several forms, so grep
+  the bare phrase). Without throwaway auth: `SKIP:`.
 - **Panel preview.** `node packages/cc-lhc/dist/bin.js preview`
   (package script `preview:panel`) renders panel states without a
   session; useful as a smoke check, not as panel proof. Run it under a
@@ -60,9 +66,10 @@ Preconditions:
 
 - Panel commands start with `/` and are lowercase; Tab completes.
   Drives must send the literal command text a user would type.
-- `/help` and `/details` open their own screen, where Enter returns to
-  the panel home instead of running typed text. Send Enter once to get
-  home before the next command.
+- `/help`, `/details` and `/introduction` open their own screen, where
+  Enter returns to the panel home instead of running typed text, and Esc
+  closes the whole panel. Send Enter once to get home before the next
+  command.
 - `/bounds <target> <trigger>` applies for this wrapper run only and
   survives a handoff. A pair that breaks a coherence rule answers
   `rejected — nothing changed`. `/export` writes

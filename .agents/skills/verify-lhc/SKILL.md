@@ -50,7 +50,7 @@ node .agents/skills/verify-lhc/helpers/round-trip.mjs
 ```
 
 - User-only check: after compact, `getLlmRequestContext` still serves the seeded conversation a host would send to a model.
-- Outcome check: the same home passes `lhc thread health --home <dir> --thread-id <id>` through the real CLI binary.
+- Outcome check: the same home answers `lhc thread health --home <dir> --thread-id <id>` through the real CLI binary with exit 0, and the drive prints the counts. It does not grade them, and health exits 0 with failed derivations too, so read `failed=0 blocked=0` in the output yourself.
 
 Retrieval — `getTurns` / `getMessages` ([features/retrieval.md](features/retrieval.md)):
 
@@ -80,7 +80,7 @@ node .agents/skills/verify-lhc/helpers/compact-policy.mjs --migrate <schema-13 t
 - User-only check: a new thread reads `null`, and after `setCompactPolicy` it, its copy and its fork read back the same pair.
 - Outcome check: `--migrate` backs up a real thread file into the temp home, opens the copy, and shows `user_version` 14, a `null` policy and the source's event count. The source is opened read-only and never changes.
 
-Membank: attach, list, get, detach against membase ([features/membank.md](features/membank.md)). Start and seed a membase lane through the membase repo's `verify-membase` skill first. The feature file gives the steps.
+Membank: attach, list, get, detach against membase ([features/membank.md](features/membank.md)). Start and seed a membase lane through the membase repo's `verify-limbase` skill first. The repo is Limbase now (`liminal-ai/limbase`, formerly membase), and it keeps `.agents/skills/verify-membase/scripts/lane.sh` as a symlink to `verify-limbase`'s, the path the drives and the e2e call. The feature file gives the steps.
 
 ```sh
 node .agents/skills/verify-lhc/helpers/membank.mjs --socket <membase socket> --bank <seeded bank>

@@ -251,7 +251,7 @@ const NOT_ATTACHED = "this thread is not attached to a membank";
 
 function membaseGate() {
   const repo = process.env.MEMBASE_REPO;
-  if (!repo) return { skip: "needs an installed membase checkout; set MEMBASE_REPO (see verify-membase's Launch)" };
+  if (!repo) return { skip: "needs an installed membase checkout; set MEMBASE_REPO (see verify-limbase's Launch)" };
   const lane = join(repo, ".agents/skills/verify-membase/scripts/lane.sh");
   if (!existsSync(lane)) return { skip: `MEMBASE_REPO has no ${lane}` };
   if (!existsSync(join(repo, "node_modules"))) return { skip: `MEMBASE_REPO ${repo} is not installed (no node_modules); install it there with scripts/offline-install.sh` };

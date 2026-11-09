@@ -106,7 +106,7 @@ run_in_tmux() {
   TMUX_SESSION="cc-lhc-verify-${name}-$$"
   local exit_file="$ISO_HOME/${name}.exit"
   rm -f "$exit_file"
-  tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
+  tmux kill-session -t "=$TMUX_SESSION" 2>/dev/null || true
   tmux new-session -d -s "$TMUX_SESSION" -x 200 -y 50 -c "$ISO_HOME/work"
   tmux send-keys -t "$TMUX_SESSION" \
     "{ $cmd ; } >'$log' 2>&1 </dev/null; echo \$? >'$exit_file'" Enter
@@ -114,21 +114,21 @@ run_in_tmux() {
   while [ ! -f "$exit_file" ]; do
     if [ "$SECONDS" -ge "$deadline" ]; then
       tmux capture-pane -p -t "$TMUX_SESSION" >"$EVIDENCE_DIR/${name}-pane.txt" 2>/dev/null || true
-      tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
+      tmux kill-session -t "=$TMUX_SESSION" 2>/dev/null || true
       fail "$name timed out after ${VERIFY_CC_LHC_TIMEOUT:-240}s (pane: ${name}-pane.txt)"
       return 124
     fi
     sleep 1
   done
   tmux capture-pane -p -t "$TMUX_SESSION" >"$EVIDENCE_DIR/${name}-pane.txt" 2>/dev/null || true
-  tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
+  tmux kill-session -t "=$TMUX_SESSION" 2>/dev/null || true
   TMUX_SESSION=""
   cat "$exit_file"
 }
 
 cleanup_tmux() {
   if [ -n "${TMUX_SESSION:-}" ]; then
-    tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
+    tmux kill-session -t "=$TMUX_SESSION" 2>/dev/null || true
     TMUX_SESSION=""
   fi
 }

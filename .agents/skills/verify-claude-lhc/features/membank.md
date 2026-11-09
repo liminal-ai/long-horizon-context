@@ -48,9 +48,11 @@ list and calls them like any MCP tool.
   two real turns, one on an attached thread and one on an unattached thread.
   It costs two short model turns per run.
 
-Install membase first per its `verify-membase` skill
-(`scripts/offline-install.sh`), because the drives call its `lane.sh` and
-`pnpm exec membase` from `MEMBASE_REPO`.
+Install membase first per its `verify-limbase` skill (the repo is Limbase
+now; the skill was `verify-membase`), with `scripts/offline-install.sh`,
+because the drives call `.agents/skills/verify-membase/scripts/lane.sh`, a
+symlink Limbase keeps for LHC, and `pnpm exec membase`, an alias of the
+`limbase` CLI, from `MEMBASE_REPO`.
 
 ## Gotchas
 

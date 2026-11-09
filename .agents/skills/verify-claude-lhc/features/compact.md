@@ -25,8 +25,11 @@
 - Compact policy: a new thread stores the start's `lhc.compact` pair on
   its `thread_metadata` row. A resume keeps the stored pair and logs
   `compact policy from thread: trigger <t> target <g>` when the host sent
-  another. A thread with no stored pair stores the host's. A start with
-  neither fails (`compactPolicy.ts`).
+  another. A thread with no stored pair stores the host's and logs
+  `compact policy stored on thread: trigger <t> target <g>`. A new thread
+  with no `lhc.compact` fails with `lhc.compact is required to create a
+  thread` (`session.ts`), and a resume with neither fails
+  (`compactPolicy.ts`).
 - Window cap: each generation and each `setModel` read
   `getContextUsage().rawMaxTokens`. A trigger above 80% of the window
   drops to 80% and the target to at most half of that, logged as

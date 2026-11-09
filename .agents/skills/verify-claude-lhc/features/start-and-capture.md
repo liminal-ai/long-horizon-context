@@ -12,7 +12,8 @@
   map to intake events are captured into LHC before they are forwarded as
   `msg` (capture-before-forward). System frames such as `system/init` are
   forwarded only. Tool approvals cross the wire as `canUseTool`
-  `req`/`res` pairs.
+  `req`/`res` pairs, except for the `lhc` MCP server's own tools, which the
+  sidecar allows without asking (`session.ts`).
 - Shutdown: closing stdin ends the sidecar with exit 0 (`sidecar.ts`).
 
 ## How to get to it (user POV)
@@ -35,6 +36,13 @@ User-only half: stderr logs `created thread <id> as generation <requested
 id>`, no `error` frame, stdin close exits 0. Outcome half: the isolated
 `lhc.home` holds `registry.sqlite` and exactly one
 `threads/*.sqlite`.
+
+```sh
+.agents/skills/verify-claude-lhc/drive.mjs start-no-home
+```
+
+A `start` with `lhc.compact` and no `lhc.home` answers one `error` frame
+starting `lhc.home ` and exits 1, and no store directory is created.
 
 The capture half of a real turn needs the model and is **live only**:
 `packages/claude-lhc/scripts/standalone.ts` (turn 1 reads a seeded `notes.txt`

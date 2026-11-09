@@ -47,7 +47,7 @@ Preconditions:
   Outcome: the rebuilt transcript grows and `wrapper.log` shows no
   `capture degraded`. Pass line: `VERIFY-CC-LHC rebuild: PASS`.
 - **Refusal entry.** Run `rollout write` with a non-UUID `--session-id`
-  or without `--token-family`: expect exit 2 and a usage line, nothing
+  or without `--token-family`: expect exit 2 and a `usage:` error line, nothing
   written. (Also covered by `test/commands/rollout-write.test.ts`.)
 
 ## Gotchas
@@ -59,7 +59,8 @@ Preconditions:
 - Without registered lineage, an interactive resume refuses capture:
   `wrapper.log` logs `capture degraded` with
   `prefix_boundary:unknown_provenance` and nothing is ingested. A `-p`
-  resume of a rebuilt file with no accepted lineage exits 2 before
+  resume of a rebuilt file with no recorded lineage, or one whose prefix is
+  `unknown`, exits 2 before
   capture starts, with guidance that capture is off
   (`src/intake/unlinked-rebuild.ts`). The drive's exit-0 and
   no-degradation outcomes are the check that `rollout write` registered
