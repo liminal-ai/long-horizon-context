@@ -60,7 +60,8 @@ and `Gotchas`.
   manual via the panel, and pre-launch on one-shot seats; interactive
   spawn-first handoff and carried background work.
 - [Control panel](./control-panel.md) — Ctrl-`]` panel: `/status`,
-  `/stats`, `/bounds`, `/smart-compact`, `/export`, `/help`.
+  `/stats`, `/smart-compact`, `/smart-prune`, `/bounds`, `/allocation`,
+  `/details`, `/export`, `/help`, `/introduction`.
 
 ## Not yet mapped
 

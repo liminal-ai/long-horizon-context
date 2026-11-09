@@ -51,7 +51,7 @@ try {
     console.log(`attached ${attached.threadId} to ${attached.bank} by ${attached.machine}`);
 
     const summaries = unwrap(await sdk.membank.list(ref), "list");
-    if (summaries.length === 0) fail(`bank ${values.bank} has no items; seed it through verify-membase first`);
+    if (summaries.length === 0) fail(`bank ${values.bank} has no items; seed it through verify-limbase first`);
     const items = [];
     for (const summary of summaries) {
       const item = unwrap(await sdk.membank.get(ref, summary.id), `get ${summary.id}`);

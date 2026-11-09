@@ -16,7 +16,7 @@ A compacted context shows chunk summaries tagged with turn ids (`<turns>t1 t2</t
 node .agents/skills/verify-lhc/helpers/retrieval.mjs
 ```
 
-Pass line: `verify-lhc retrieval: PASS`. Asserts `t1`/`t2` served with seeded text, `m1` returned byte-identical to the seeded prompt, and `t999` reported unserved.
+Pass line: `verify-lhc retrieval: PASS`. Asserts `t1` and `t2` both served and `t1` holding its seeded prompt, `m1` returned byte-identical to the seeded prompt, and `t999` reported unserved.
 
 ## Gotchas
 
